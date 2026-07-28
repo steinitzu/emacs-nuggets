@@ -383,6 +383,153 @@ frame actually draws."
           (should-not md-table-align-mode))
       (kill-buffer buf))))
 
+;;;; Fitting a table to the window
+;;
+;; A table wider than the window wraps, and a wrapped row is not merely ugly:
+;; its continuation lines restart at the window's left edge, so the column grid
+;; is gone.  Narrowing the frame is what makes these assertions bite -- at the
+;; default frame width the fixture below fits and nothing is elided.
+
+(defconst md-table-align-tests--wide
+  "| Name | Description | Status |
+|------|-------------|--------|
+| alpha | first item description here | open |
+| beta | second item description | done |
+")
+
+;; Aligned but unfitted, the fixture needs 48 columns: 4 borders, 6 spaces of
+;; padding, and content of 5 ("alpha"), 27 ("first item description here") and
+;; 6 ("Status").  Every test below runs it in a 40-column frame.
+(defconst md-table-align-tests--wide-frame 40)
+
+(defmacro md-table-align-tests--with-frame-width (width &rest body)
+  "Run BODY with the frame WIDTH columns wide, then restore it."
+  (declare (indent 1) (debug t))
+  `(let ((original (frame-width)))
+     (unwind-protect
+         (progn (set-frame-width nil ,width) (redisplay t) ,@body)
+       (set-frame-width nil original)
+       (redisplay t))))
+
+(defun md-table-align-tests--screen-lines ()
+  "Return the screen lines occupied by each line holding a pipe."
+  (save-excursion
+    (goto-char (point-min))
+    (let (out)
+      (while (not (eobp))
+        (when (save-excursion (search-forward "|" (line-end-position) t))
+          (push (count-screen-lines (line-beginning-position)
+                                    (line-end-position))
+                out))
+        (forward-line 1))
+      (nreverse out))))
+
+(defun md-table-align-tests--elisions ()
+  "Return the `help-echo' of every elision overlay, in buffer order."
+  (let (out)
+    (dolist (ov (overlays-in (point-min) (point-max)))
+      (when (and (overlay-get ov 'md-table-align)
+                 (overlay-get ov 'help-echo))
+        (push (cons (overlay-start ov) (overlay-get ov 'help-echo)) out)))
+    (mapcar #'cdr (sort out :key #'car))))
+
+(ert-deftest md-table-align-test-wide-table-wraps-without-fitting ()
+  "The fixture really does overflow, so the fitting tests are not vacuous."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (let ((md-table-align-fit-to-window nil))
+        (md-table-align-tests--enable)
+        (should (seq-some (lambda (n) (> n 1))
+                          (md-table-align-tests--screen-lines)))))))
+
+(ert-deftest md-table-align-test-fitting-keeps-rows-on-one-screen-line ()
+  "With fitting on, every row of an overflowing table occupies one line."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (should (equal (md-table-align-tests--screen-lines) '(1 1 1 1))))))
+
+(ert-deftest md-table-align-test-fitted-table-is-still-aligned ()
+  "Fitting must not cost the alignment it exists to protect."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (let ((rows (md-table-align-tests--pipe-columns)))
+        (should (= (length rows) 4))
+        (dolist (row rows)
+          (should (equal row (car rows))))))))
+
+(ert-deftest md-table-align-test-fitting-elides-the-widest-column ()
+  "The shortfall is taken from the widest column, not spread over all of them."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (let ((elided (md-table-align-tests--elisions)))
+        ;; Only the Description cells are too wide for their capped column.
+        (should (equal elided
+                       '("first item description here"
+                         "second item description")))))))
+
+(ert-deftest md-table-align-test-elided-text-stays-readable ()
+  "Elision overlays carry the full cell text for `display-local-help'."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (goto-char (point-min))
+      ;; Must land inside the elided tail, not merely inside the cell.
+      (should (search-forward "here" nil t))
+      (should (equal (get-char-property (match-beginning 0) 'help-echo)
+                     "first item description here")))))
+
+(ert-deftest md-table-align-test-fitting-does-not-modify-buffer-text ()
+  "Eliding is display-only, like every other overlay here."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (let ((before (buffer-substring-no-properties (point-min) (point-max))))
+        (md-table-align-tests--enable)
+        (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                       before))
+        (should-not (buffer-modified-p))))))
+
+(ert-deftest md-table-align-test-table-that-fits-is-not-elided ()
+  "A table with room to spare is left entirely alone."
+  (md-table-align-tests--with-buffer md-table-align-tests--simple
+    (md-table-align-tests--enable)
+    (should-not (md-table-align-tests--elisions))
+    (dolist (row (md-table-align-tests--pipe-columns))
+      (should (equal row md-table-align-tests--simple-columns)))))
+
+(ert-deftest md-table-align-test-widening-the-frame-restores-the-table ()
+  "Growing the window re-fits, and the elisions go away."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (should (md-table-align-tests--elisions))
+      (set-frame-width nil 100)
+      ;; `set-frame-width' runs the window-change hooks the mode listens on.
+      (redisplay t)
+      (should-not (md-table-align-tests--elisions))
+      (should (equal (md-table-align-tests--screen-lines) '(1 1 1 1))))))
+
+(ert-deftest md-table-align-test-fits-down-to-the-floor ()
+  "Columns shrink as far as `md-table-align-min-column-width' and no further.
+At 20 columns the fixture fits with all three columns exactly at the floor."
+  (md-table-align-tests--with-frame-width 20
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (should (md-table-align-tests--elisions))
+      (should (equal (md-table-align-tests--screen-lines) '(1 1 1 1))))))
+
+(ert-deftest md-table-align-test-gives-up-rather-than-mangle ()
+  "A window too narrow even for floor-width columns leaves the table to wrap.
+Falling back to the current behaviour beats a row of bare ellipses."
+  (md-table-align-tests--with-frame-width 16
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (should-not (md-table-align-tests--elisions))
+      (should (seq-some (lambda (n) (> n 1))
+                        (md-table-align-tests--screen-lines))))))
+
 (provide 'md-table-align-tests)
 
 ;;; md-table-align-tests.el ends here
