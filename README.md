@@ -107,6 +107,35 @@ Customization:
 | `md-table-align-padding` | `1` | Spaces rendered between a cell border and its content. |
 | `md-table-align-pixel-width-function` | `md-table-align-pixel-width` | Measures a cell's rendered width, in pixels. |
 | `md-table-align-modes` | `(markdown-ts-mode)` | Modes `global-md-table-align-mode` activates in. |
+| `md-table-align-fit-to-window` | `t` | Narrow tables too wide for the window so they do not wrap. |
+| `md-table-align-ellipsis` | `…` | Marks cell content elided to make a table fit. |
+| `md-table-align-min-column-width` | `3` | Narrowest a column may be shrunk to, in characters. |
+
+#### Wide tables and word wrap
+
+Under `visual-line-mode` a table wider than the window wraps, and a wrapped
+table is not just ugly — the continuation lines restart at the window's left
+edge, so the alignment is gone entirely.
+
+Emacs has no way to switch wrapping off for part of a buffer, so `md-table-align`
+instead makes wide tables narrow enough that they don't wrap. A table needing 48
+columns, shown in a 40-column window, renders as:
+
+```
+| Name  | Description        | Status |
+|-------|--------------------|--------|
+| alpha | first item descri… | open   |
+| beta  | second item descr… | done   |
+```
+
+Only the widest column gives up space; `Name` and `Status` are untouched.
+Widen the window and the full table comes back on its own.
+
+Elided text is hidden, not lost — put point on it and press `C-h .`
+(`display-local-help`), or hover the mouse over it, to read the whole cell.
+
+Set `md-table-align-fit-to-window` to `nil` to turn this off and let wide
+tables wrap as before.
 
 #### How it works
 
@@ -148,7 +177,12 @@ inherits the remapped default's `:height` and renders wider per character than
 - The delimiter row (`|:---|---:|`) renders as a run of dash characters, so its
   width is quantised to whole characters. Its closing border is pinned exactly;
   any sub-character shortfall shows as a small gap before it.
-- Long lines still wrap; alignment does not add horizontal scrolling.
+- Fitting hides text rather than scrolling to it. There is no horizontal
+  scrolling for tables.
+- A table shown in two differently sized windows at once is fitted to whichever
+  window you are in, so it is only correct in one of them at a time.
+- A window too narrow even for minimum-width columns is left to wrap, on the
+  grounds that a row of bare ellipses would be worse.
 
 ## Development
 
