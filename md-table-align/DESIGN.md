@@ -87,22 +87,43 @@ columns are computed **absolutely**, including any leading indentation of the
 table (tables nested in list items or blockquotes). Line-number margins don't
 interfere since they sit outside the text area.
 
-## Table discovery
+## Table discovery — tree-sitter only
 
-Pluggable, because the two target modes offer very different facilities.
+**Scope decision:** this package targets `markdown-ts-mode` (or any buffer with
+a `markdown` tree-sitter parser) exclusively. A regexp backend for
+`markdown-mode` was considered and deliberately dropped — the grammar does
+enough work that supporting a hand-rolled scanner would roughly double the
+discovery code and carry all the edge-case risk.
 
-- **tree-sitter backend** — used when a `markdown` parser exists in the buffer
-  (i.e. `markdown-ts-mode`). Query for `pipe_table` nodes; children are
-  `pipe_table_header`, `pipe_table_delimiter_row`, `pipe_table_row`, with
-  `pipe_table_cell` leaves and `pipe_table_align_left`/`_right` markers.
-  Verified: the grammar correctly does **not** match pipe-looking lines inside a
-  fenced code block.
-- **regexp backend** — used otherwise (`markdown-mode`, `gfm-mode`, plain
-  `text-mode`). Scan for maximal runs of lines matching a pipe-row regexp whose
-  second line is a delimiter row, skipping fenced code blocks.
+What the grammar provides, verified against the real parse tree:
 
-Both backends return the same shape: a list of tables, each a list of rows, each
-row a list of `(cell-beg . cell-end)` plus delimiter positions.
+```
+pipe_table
+  pipe_table_header          | [1-2]  pipe_table_cell [3-8] "Name "  | [8-9] ...
+  pipe_table_delimiter_row   pipe_table_delimiter_cell
+                               pipe_table_align_left  ":"
+                               pipe_table_align_right ":"
+  pipe_table_row             ...
+```
+
+- Exact table bounds, so no fenced-code-block false positives (verified: pipe
+  rows inside a ``` fence produce no `pipe_table` node).
+- Anonymous `|` nodes with **exact buffer positions** — no pipe scanning needed.
+- `pipe_table_cell` content bounds.
+- `pipe_table_align_left` / `pipe_table_align_right` marker nodes — no delimiter
+  parsing needed.
+- Escaped pipes (`a\|b`) are natively kept in one cell.
+- Pipes inside code spans (`` `x|y` ``) **do** split cells — this is
+  GFM-correct (cell splitting precedes inline parsing, matching GitHub), and it
+  means rows can be ragged, which the layout handles.
+
+Discovery is therefore: `treesit-query-capture` for `(pipe_table) @t` over the
+region, then walk each table's row/cell/pipe children.
+
+### Requirements
+
+Emacs 29+ with tree-sitter, plus the `markdown` grammar installed. The mode
+refuses to enable (with a clear message) when no parser is available.
 
 ## Application strategy
 
@@ -135,8 +156,8 @@ mode, `redisplay`, then read back geometry with `posn-at-point`:
 - `buffer-modified-p` is `nil` and `buffer-string` is byte-identical after
   alignment;
 - alignment works with `buffer-read-only` set to `t`;
-- runs against **both** `markdown-mode` and `markdown-ts-mode`;
-- disabling the mode restores the original rendered columns.
+- disabling the mode restores the original rendered columns;
+- pipe rows inside a fenced code block are left untouched.
 
 This exercises the genuine redisplay engine — the only thing that can confirm
 the feature actually works.
@@ -145,8 +166,8 @@ the feature actually works.
 on discovered table structure, parsed alignment specs, and computed widths.
 No stubbing of Emacs internals.
 
-Test dependencies (`markdown-mode` from MELPA, tree-sitter markdown grammars)
-install into a gitignored `.test-env/` and are built by `make deps`.
+The tree-sitter `markdown` / `markdown-inline` grammars install into a
+gitignored `.test-env/` and are built by `make deps`.
 
 ## Known limitations (documented, not fixed in v1)
 
@@ -154,5 +175,5 @@ install into a gitignored `.test-env/` and are built by `make deps`.
   will not align exactly. Pixel mode is the planned follow-up.
 - Very long lines that wrap will still wrap; alignment does not imply
   horizontal scrolling.
-- Escaped pipes (`\|`) inside cells: the regexp backend must not split on them;
-  the tree-sitter backend handles this natively.
+- `markdown-mode` (the MELPA package) is not supported — it has no tree-sitter
+  parser. Use `markdown-ts-mode`, or create a `markdown` parser in the buffer.
