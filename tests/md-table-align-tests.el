@@ -211,6 +211,42 @@
 
 ;;;; Width measurement
 
+(ert-deftest md-table-align-test-layout-is-driven-by-measured-width ()
+  "Scaling the measurement scales the whole layout by the same factor.
+
+Nothing in the layout may assume one character occupies one unit.  That
+assumption is exactly what broke under `mixed-pitch-mode', where the
+table face inherits a scaled `:height' and renders ~1.15x wider per
+character than the frame's canonical character width, so alignment
+computed from character counts drifted by that ratio.
+
+Doubling the width function must double every position; any position
+still derived from a character count would stay put and break the grid.
+
+Content rows only.  The delimiter row renders as a run of dash
+characters, so its width is quantised to whole characters of the real
+font and cannot follow a width function that disagrees with what the
+frame actually draws."
+  (md-table-align-tests--with-buffer md-table-align-tests--simple
+    (let ((md-table-align-width-function
+           (lambda (s) (* 2 (string-width s)))))
+      (md-table-align-tests--enable)
+      (let ((rows (md-table-align-tests--pipe-columns))
+            (expected (mapcar (lambda (c) (* 2 c))
+                              md-table-align-tests--simple-columns)))
+        ;; Entry 1 is the delimiter row; 0, 2 and 3 carry data.
+        (dolist (i '(0 2 3))
+          (should (equal (nth i rows) expected)))))))
+
+(ert-deftest md-table-align-test-default-width-function-measures-pixels ()
+  "The default width function reports rendered width, not character count."
+  (md-table-align-tests--with-buffer md-table-align-tests--simple
+    (should (eq md-table-align-width-function #'md-table-align-pixel-width))
+    ;; On a TTY the canonical character width is 1, so pixels and columns
+    ;; coincide and this reduces to a character count.
+    (should (= (md-table-align-pixel-width "abcd") (* 4 (frame-char-width))))
+    (should (= (md-table-align-pixel-width "") 0))))
+
 (ert-deftest md-table-align-test-measures-double-width-characters ()
   "CJK cells are measured by display width, not character count."
   (md-table-align-tests--with-buffer "| ab | x |

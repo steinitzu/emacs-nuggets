@@ -45,15 +45,53 @@
   "Number of spaces rendered between a cell border and its content."
   :type 'natnum)
 
-(defcustom md-table-align-width-function #'string-width
-  "Function measuring the display width of a cell's text.
-Called with one string argument, returns a width in character columns.
-`string-width' handles CJK double-width characters correctly."
+(defcustom md-table-align-width-function #'md-table-align-pixel-width
+  "Function measuring the rendered width of a cell's text.
+Called with one propertized string, returns a width in pixels.
+
+The default measures with `string-pixel-width' against the current
+buffer, so the result reflects the faces actually in play -- including
+buffer-local face remapping from `mixed-pitch-mode' or
+`variable-pitch-mode', and any font fallback.  Character counting is not
+good enough here: a table whose face inherits a scaled `:height' renders
+wider per character than the frame's canonical character width, and
+alignment computed from character counts drifts by that ratio."
   :type 'function)
 
 (defcustom md-table-align-modes '(markdown-ts-mode)
   "Major modes in which `global-md-table-align-mode' enables alignment."
   :type '(repeat symbol))
+
+;;;; Measurement
+
+(defun md-table-align-pixel-width (string)
+  "Return the rendered width of STRING in pixels.
+STRING keeps its text properties, so its faces are accounted for, and it
+is measured against the current buffer so face remapping applies.
+
+On a terminal the canonical character width is 1, so this returns the
+same number a character count would, and everything downstream reduces
+to character columns."
+  (if (string-empty-p string)
+      0
+    (string-pixel-width string (current-buffer))))
+
+(defun md-table-align--measure (beg end)
+  "Return the rendered pixel width of the buffer text between BEG and END."
+  (if (>= beg end)
+      0
+    ;; Deliberately keeps text properties: faces are what make this differ
+    ;; from a character count.
+    (funcall md-table-align-width-function (buffer-substring beg end))))
+
+(defun md-table-align--space-width (node)
+  "Return the pixel width of one space as rendered inside table NODE.
+Padding is specified in spaces, so it has to be converted using the font
+the table actually renders in, not the frame's canonical character."
+  (let* ((start (treesit-node-start node))
+         (face (get-text-property start 'face))
+         (space (if face (propertize " " 'face face) " ")))
+    (max 1 (funcall md-table-align-width-function space))))
 
 ;;;; Overlays
 
@@ -63,12 +101,15 @@ Called with one string argument, returns a width in character columns.
     (when (overlay-get ov 'md-table-align)
       (delete-overlay ov))))
 
-(defun md-table-align--stretch (column)
-  "Return a one-space string that renders as a stretch glyph up to COLUMN."
-  (propertize " " 'display `(space :align-to ,column)))
+(defun md-table-align--stretch (x)
+  "Return a one-space string rendering as a stretch glyph out to pixel X.
+The `(X)' list form of `:align-to' means pixels; a bare number would mean
+multiples of the frame's canonical character width, which is not what the
+table renders in."
+  (propertize " " 'display `(space :align-to (,x))))
 
-(defun md-table-align--pad (from to column)
-  "Render the text at TO as starting at COLUMN.
+(defun md-table-align--pad (from to x)
+  "Render the text at TO as starting at pixel X.
 
 The region [FROM, TO) is whitespace to be replaced by a stretch glyph.
 When that region is empty there is nothing to replace, so a stretch glyph
@@ -80,8 +121,8 @@ at all, such as `|a|', still be aligned."
     (overlay-put ov 'md-table-align t)
     (overlay-put ov 'evaporate t)
     (if (> to from)
-        (overlay-put ov 'display `(space :align-to ,column))
-      (overlay-put ov 'before-string (md-table-align--stretch column)))
+        (overlay-put ov 'display `(space :align-to (,x)))
+      (overlay-put ov 'before-string (md-table-align--stretch x)))
     ov))
 
 (defun md-table-align--replace (from to string)
@@ -104,8 +145,10 @@ at all, such as `|a|', still be aligned."
 ;; and each cell is:
 ;;
 ;;   :beg :end   bounds of the trimmed cell text
-;;   :width      display width of that text
+;;   :width      rendered pixel width of that text
 ;;   :colons     (LEFT . RIGHT) colon markers, delimiter cells only
+;;
+;; All widths and positions below are in pixels.
 
 (defun md-table-align--trimmed-bounds (beg end)
   "Return (BEG . END) shrunk past surrounding whitespace."
@@ -122,11 +165,10 @@ at all, such as `|a|', still be aligned."
   (let* ((bounds (md-table-align--trimmed-bounds
                   (treesit-node-start node) (treesit-node-end node)))
          (beg (car bounds))
-         (end (cdr bounds))
-         (text (buffer-substring-no-properties beg end)))
+         (end (cdr bounds)))
     (list :beg beg
           :end end
-          :width (funcall md-table-align-width-function text)
+          :width (md-table-align--measure beg end)
           :colons
           (when delimiter
             (cons (and (treesit-search-subtree
@@ -176,12 +218,13 @@ The `:cells' list is indexed by column and holds nil for empty columns."
 
 ;;;; Layout
 
-(defun md-table-align--column-widths (rows)
-  "Return a vector of target content widths for the columns of ROWS.
+(defun md-table-align--column-widths (rows unit)
+  "Return a vector of target content widths in pixels for the columns of ROWS.
+UNIT is the pixel width of one space, used as the minimum column width.
 Delimiter rows do not contribute, since their dashes are re-rendered to
 whatever width the data requires."
   (let* ((n (apply #'max 0 (mapcar (lambda (r) (length (plist-get r :cells))) rows)))
-         (widths (make-vector n 1)))
+         (widths (make-vector n unit)))
     (dolist (row rows widths)
       (unless (plist-get row :delimiter)
         (let ((i 0))
@@ -205,18 +248,25 @@ whatever width the data requires."
           (setq i (1+ i)))))
     aligns))
 
-(defun md-table-align--indent-column (rows)
-  "Return the screen column at which ROWS should start."
+(defun md-table-align--indent-pixels (rows)
+  "Return the pixel offset at which ROWS should start.
+Measured rather than derived from the column, so an indented table lands
+correctly whatever its leading whitespace renders as."
   (let ((first (apply #'min (mapcar (lambda (r) (car (plist-get r :pipes))) rows))))
-    (save-excursion
-      (goto-char first)
-      (current-column))))
+    (md-table-align--measure
+     (save-excursion (goto-char first) (line-beginning-position))
+     first)))
 
-(defun md-table-align--delimiter-string (width colons)
-  "Return a delimiter rendering WIDTH columns wide, honouring COLONS."
-  (let ((s (make-string (max width 1) ?-)))
+(defun md-table-align--delimiter-string (inner unit colons)
+  "Return a delimiter spanning at most INNER pixels, honouring COLONS.
+UNIT is the pixel width of one character.  A run of dashes can only be a
+whole number of characters wide, so the count is rounded *down*: any
+shortfall is taken up by the stretch glyph that pins the closing border,
+whereas overshooting could not be undone."
+  (let* ((n (max 1 (floor inner unit)))
+         (s (make-string n ?-)))
     (when (car colons) (aset s 0 ?:))
-    (when (cdr colons) (aset s (1- (length s)) ?:))
+    (when (cdr colons) (aset s (1- n) ?:))
     s))
 
 (defun md-table-align--content-offset (align width cell-width)
@@ -226,13 +276,15 @@ whatever width the data requires."
     ('center (/ (max 0 (- width cell-width)) 2))
     (_ 0)))
 
-(defun md-table-align--layout-row (row widths aligns indent)
-  "Place overlays aligning ROW to WIDTHS and ALIGNS, starting at INDENT."
+(defun md-table-align--layout-row (row widths aligns indent unit)
+  "Place overlays aligning ROW to WIDTHS and ALIGNS, starting at pixel INDENT.
+UNIT is the pixel width of one space, which converts
+`md-table-align-padding' from spaces into pixels."
   (let ((pipes (plist-get row :pipes))
         (cells (plist-get row :cells))
         (delimiter (plist-get row :delimiter))
-        (pad md-table-align-padding)
-        (column indent)
+        (pad (* md-table-align-padding unit))
+        (x indent)
         (i 0))
     (dolist (cell cells)
       (let ((width (aref widths i))
@@ -247,8 +299,9 @@ whatever width the data requires."
                  (cell-width (if cell (plist-get cell :width) 0))
                  (empty (<= end beg))
                  (inner (+ pad width pad)))
-            ;; Column of the character just after this cell's opening pipe.
-            (setq column (+ column 1))
+            ;; Step past the opening pipe.  Its width is measured rather than
+            ;; assumed, for the same reason cell widths are.
+            (setq x (+ x (md-table-align--measure open (1+ open))))
             (cond
              (delimiter
               ;; Re-render the dashes across the full inner width, matching
@@ -256,31 +309,41 @@ whatever width the data requires."
               (md-table-align--replace
                (1+ open) (or close (1+ end))
                (md-table-align--delimiter-string
-                inner (and cell (plist-get cell :colons)))))
+                inner unit (and cell (plist-get cell :colons)))))
              ;; Nothing to position when the cell is empty; the closing
              ;; border below takes care of the whole gap.
              ((not empty)
               (md-table-align--pad
                (1+ open) beg
-               (+ column pad (md-table-align--content-offset
-                              (aref aligns i) width cell-width)))))
-            (setq column (+ column inner))
-            ;; Push the closing pipe onto the grid.  For an empty cell the
-            ;; entire span between the borders is padding, so stretch that
-            ;; rather than leaving a degenerate zero-length overlay.
-            (when (and close (not delimiter))
-              (md-table-align--pad (if empty (1+ open) end) close column))))
+               (+ x pad (md-table-align--content-offset
+                         (aref aligns i) width cell-width)))))
+            (setq x (+ x inner))
+            ;; Push the closing pipe onto the grid.
+            (when close
+              (md-table-align--pad
+               (cond
+                ;; The delimiter's dashes already occupy the whole span and
+                ;; are character-quantised, so pin the border from where it
+                ;; sits and let the stretch absorb the rounding shortfall.
+                (delimiter close)
+                ;; For an empty cell the entire span between the borders is
+                ;; padding; stretching it avoids a degenerate zero-length
+                ;; overlay.
+                (empty (1+ open))
+                (t end))
+               close x))))
         (setq i (1+ i))))))
 
 (defun md-table-align--layout-table (node)
   "Align the table at NODE by placing overlays."
   (let ((rows (md-table-align--parse-table node)))
     (when (cdr rows)
-      (let* ((widths (md-table-align--column-widths rows))
+      (let* ((unit (md-table-align--space-width node))
+             (widths (md-table-align--column-widths rows unit))
              (aligns (md-table-align--alignments rows (length widths)))
-             (indent (md-table-align--indent-column rows)))
+             (indent (md-table-align--indent-pixels rows)))
         (dolist (row rows)
-          (md-table-align--layout-row row widths aligns indent))))))
+          (md-table-align--layout-row row widths aligns indent unit))))))
 
 ;;;; Discovery
 

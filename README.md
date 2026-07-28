@@ -140,24 +140,19 @@ family:
 (set-face-attribute 'fixed-pitch nil :family "Source Code Pro")
 ```
 
-Alignment is measured in the frame's canonical character width, so for columns
-to line up exactly, the font `fixed-pitch` resolves to must have the same
-advance width as your frame font. To check:
-
-```elisp
-(list :frame-char-width (frame-char-width)
-      :table-font-width (window-font-width nil 'markdown-ts-table))
-```
-
-Equal values mean alignment is exact. If they differ, match `fixed-pitch` to
-your default face more closely — the `:width` and `:height` attributes are the
-usual culprits.
+Alignment itself needs no configuration under mixed-pitch. Cells are measured
+in pixels with `string-pixel-width` against the buffer, so the layout follows
+whatever the text really renders as — including face remapping and font
+fallback — rather than assuming one character occupies one canonical character
+width. That assumption is wrong under `mixed-pitch-mode`, where the table face
+inherits the remapped default's `:height` and renders wider per character than
+`frame-char-width` reports.
 
 #### Limitations
 
-- Alignment is in character-width units, so proportional fonts will not line up
-  exactly. Monospace fonts (and any terminal) are exact, provided the check
-  above passes.
+- The delimiter row (`|:---|---:|`) renders as a run of dash characters, so its
+  width is quantised to whole characters. Its closing border is pinned exactly;
+  any sub-character shortfall shows as a small gap before it.
 - Long lines still wrap; alignment does not add horizontal scrolling.
 
 ## Development

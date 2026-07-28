@@ -73,12 +73,9 @@ Cell width uses `string-width`, not `length`, so CJK double-width characters and
 combining marks measure correctly. Target column width is the max over all rows.
 
 `:align-to N` with a bare number is in units of the frame's canonical character
-width. On a TTY and on any monospace GUI font this is exact. Variable-pitch
-fonts would need pixel units (`(space :align-to (N))` with `string-pixel-width`).
-
-**v1 scope:** character-width units. The measurement is isolated behind
-`md-table-align-width-function` so a pixel backend can drop in later without
-touching the layout code. Non-goal for v1.
+width. **This is not good enough**, and v1 shipping it was a bug — see
+"Pixel units" below. Alignment uses `(space :align-to (N))`, the list form,
+which is pixels, with widths from `string-pixel-width`.
 
 ### Absolute columns
 
@@ -169,10 +166,60 @@ No stubbing of Emacs internals.
 The tree-sitter `markdown` / `markdown-inline` grammars install into a
 gitignored `.test-env/` and are built by `make deps`.
 
-## Known limitations (documented, not fixed in v1)
+## Pixel units (v2)
 
-- Variable-pitch fonts: alignment is in character units, so proportional fonts
-  will not align exactly. Pixel mode is the planned follow-up.
+v1 aligned in character-width units and documented proportional fonts as a
+known limitation. That framing was wrong: the limitation bites **monospace**
+tables too, and it produced a real bug.
+
+Under `mixed-pitch-mode`, the buffer's `default` face is remapped with a scaled
+`:height` (e.g. `1.15`). Neither `markdown-ts-table` nor `fixed-pitch`
+specifies a height, so the table inherits the scaled one and renders ~1.15x
+wider per character — while `frame-char-width`, which drives bare-number
+`:align-to`, stays unscaled. Measured on a real config: **19 px/char rendered
+against a 17 px grid**. The error accumulates across a row, and the widest cell
+in each column — which by construction has only one space of slack — overflows.
+Shorter cells in the same column still fit, which is what makes the failure
+look sporadic rather than systematic.
+
+The fix is to stop counting characters:
+
+- cells are measured with `string-pixel-width` against the **current buffer**,
+  so face remapping and font fallback are included;
+- `md-table-align-padding` is converted from spaces to pixels using the width
+  of a space *in the table's own face*;
+- the opening border's width is measured rather than assumed;
+- the indent is measured, not taken from `current-column`;
+- positions are emitted as `(space :align-to (PIXELS))`.
+
+On a TTY the canonical character width is 1, so every measurement reduces to a
+character count and the layout is identical to v1 — which is why the existing
+tests continued to pass unchanged.
+
+### Instruments matter
+
+Two measurements pointed the wrong way during diagnosis and cost real time:
+
+- `window-font-width` reports **17** for the table face where the text actually
+  renders at **19**; it does not reflect the buffer-local remap the face
+  inherits its height from. It looked like proof the fonts matched.
+- `window-text-pixel-size` clamps at the window edge, so every over-long
+  trailing cell reported an identical width and looked like a uniform defect.
+
+`string-pixel-width` with the buffer argument has neither problem and is the
+instrument to reach for.
+
+### Delimiter row quantisation
+
+A run of dashes can only be a whole number of characters wide, so it cannot hit
+an arbitrary pixel target. The count is rounded **down** — overshooting could
+not be undone — and the closing border is pinned with a stretch glyph that
+absorbs the shortfall. Any residue shows as a sub-character gap before the
+border.
+
+## Known limitations
+
+- The delimiter row is character-quantised, as above.
 - Very long lines that wrap will still wrap; alignment does not imply
   horizontal scrolling.
 - `markdown-mode` (the MELPA package) is not supported — it has no tree-sitter
