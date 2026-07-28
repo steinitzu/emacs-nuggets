@@ -14,20 +14,15 @@ test: deps
 	@tests/run-tests.sh
 
 ## Build the tree-sitter grammars the tests need.
+##
+## Interactively, `markdown-ts-mode' offers to install these itself on first
+## use.  Batch mode cannot answer that prompt, so the tests need them built up
+## front.  The recipes come from `markdown-ts-mode' rather than being repeated
+## here, so the test environment tracks the commit Emacs pins.
 deps: $(GRAMMARS)/libtree-sitter-markdown.so
 
 $(GRAMMARS)/libtree-sitter-markdown.so:
-	@echo "Installing tree-sitter markdown grammars into $(GRAMMARS)"
-	@mkdir -p $(GRAMMARS)
-	@$(EMACS) --batch --eval '(progn \
-	  (require (quote treesit)) \
-	  (setq treesit-language-source-alist \
-	    (quote ((markdown "https://github.com/tree-sitter-grammars/tree-sitter-markdown" \
-	                      "split_parser" "tree-sitter-markdown/src") \
-	            (markdown-inline "https://github.com/tree-sitter-grammars/tree-sitter-markdown" \
-	                             "split_parser" "tree-sitter-markdown-inline/src")))) \
-	  (treesit-install-language-grammar (quote markdown) "$(GRAMMARS)") \
-	  (treesit-install-language-grammar (quote markdown-inline) "$(GRAMMARS)"))'
+	@EMACS_TOOLS_GRAMMAR_DIR=$(GRAMMARS) $(EMACS) --batch -l tests/install-grammars.el
 
 ## Byte-compile everything, treating warnings as failures.
 compile:

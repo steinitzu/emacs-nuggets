@@ -20,7 +20,7 @@ Clone the repository and point Emacs at it:
 (require 'md-table-align)
 ```
 
-Requires Emacs 29.1 or newer.
+Requires Emacs 31 or newer.
 
 ## Packages
 
@@ -59,24 +59,19 @@ measured by display width so CJK text lines up correctly.
 
 #### Requirements
 
-Table discovery uses tree-sitter, so the buffer needs a `markdown` parser —
-in practice, `markdown-ts-mode`. Install the grammars once:
+Table discovery uses tree-sitter, so the buffer needs a `markdown` parser — in
+practice `markdown-ts-mode`, which ships with Emacs 31. There are no grammars
+to install by hand: loading the library registers the grammar sources itself
+(pinned to a known-good commit), and the mode calls `treesit-ensure-installed`,
+so Emacs offers to build them the first time you open a Markdown file.
+`treesit-auto-install-grammar` defaults to `ask`; set it to `always` if you
+would rather not be prompted.
+
+Emacs does not associate `.md` with `markdown-ts-mode`, and the mode is not
+autoloaded, so both lines are needed:
 
 ```elisp
-(setq treesit-language-source-alist
-      '((markdown "https://github.com/tree-sitter-grammars/tree-sitter-markdown"
-                  "split_parser" "tree-sitter-markdown/src")
-        (markdown-inline "https://github.com/tree-sitter-grammars/tree-sitter-markdown"
-                         "split_parser" "tree-sitter-markdown-inline/src")))
-
-(treesit-install-language-grammar 'markdown)
-(treesit-install-language-grammar 'markdown-inline)
-```
-
-Note that Emacs does **not** associate `.md` files with `markdown-ts-mode` by
-default. You probably want:
-
-```elisp
+(require 'markdown-ts-mode)
 (add-to-list 'auto-mode-alist '("\\.md\\'" . markdown-ts-mode))
 ```
 

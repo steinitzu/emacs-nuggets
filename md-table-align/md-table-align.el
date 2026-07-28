@@ -2,7 +2,7 @@
 
 ;; Author: Steinthor Palsson
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1"))
+;; Package-Requires: ((emacs "31.1"))
 ;; Keywords: markdown, faces, convenience
 
 ;;; Commentary:

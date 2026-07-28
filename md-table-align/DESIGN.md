@@ -120,8 +120,10 @@ region, then walk each table's row/cell/pipe children.
 
 ### Requirements
 
-Emacs 29+ with tree-sitter, plus the `markdown` grammar installed. The mode
-refuses to enable (with a clear message) when no parser is available.
+Emacs 31+, where `markdown-ts-mode` is built in. It registers the grammar
+sources itself and calls `treesit-ensure-installed`, so the grammar needs no
+manual setup — Emacs offers to build it on first use. The mode here refuses to
+enable (with a clear message) when no parser is available.
 
 ## Application strategy
 
