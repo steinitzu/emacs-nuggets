@@ -163,6 +163,34 @@ make test      # run the test suite
 make compile   # byte-compile, warnings are errors
 ```
 
+### Reloading in a live session
+
+```
+M-x emacs-tools-reload       ; one extension, completing over what is loaded
+M-x emacs-tools-reload-all   ; every loaded extension
+```
+
+Use these rather than `load-file` while iterating. `load` on its own does not
+give you a clean slate:
+
+- `defvar` and `defcustom` **do not reassign a variable that is already
+  bound**, so a changed default silently keeps its old value — and if the
+  meaning of that variable changed too, the stale value gets reinterpreted
+  rather than rejected;
+- overlays, hooks and `jit-lock` registrations from the previous definition
+  survive;
+- a stale `.elc` shadows the `.el` you just edited.
+
+`emacs-tools-reload` unloads the feature first, which unbinds everything its
+file defined, then loads the `.el` path explicitly. Minor modes that are
+switched on are turned off beforehand and back on afterwards, so their buffers
+are rebuilt by the new code. The loader itself is deliberately not reloadable —
+unloading `emacs-tools` would remove the functions doing the unloading.
+
+Extensions can hook the unload by defining `FEATURE-unload-function`, which
+`unload-feature` calls before stripping definitions; `md-table-align` uses it
+to switch itself off everywhere so no overlay outlives its code.
+
 Tests assert on what the redisplay engine actually drew — they read back rendered
 columns with `posn-at-point` — so they need a real frame. `make test` runs Emacs
 under a pty to get a TTY frame; batch mode has no frame that lays text out.

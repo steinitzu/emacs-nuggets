@@ -35,6 +35,9 @@
 (add-to-list 'load-path md-table-align-tests--root)
 (require 'emacs-tools)
 
+;; Test files require each other, so they must be findable by name.
+(add-to-list 'load-path md-table-align-tests--dir)
+
 (defun md-table-align-tests--finish (exit)
   "Write the run transcript to the log file and quit with EXIT."
   (with-current-buffer (messages-buffer)
@@ -47,7 +50,10 @@
 (let ((exit 1))
   (unwind-protect
       (progn
-        (load (expand-file-name "md-table-align-tests.el" md-table-align-tests--dir) nil t)
+        ;; This file matches "-tests.el" too; loading it would recurse.
+        (dolist (file (directory-files md-table-align-tests--dir t "-tests\\.el\\'"))
+          (unless (equal (file-name-nondirectory file) "run-tests.el")
+            (load file nil t)))
         (let ((stats (ert-run-tests-batch)))
           (setq exit (if (and (zerop (ert-stats-completed-unexpected stats))
                               (> (ert-stats-total stats) 0))

@@ -36,9 +36,24 @@ A collection of Emacs extensions, distributed as a single installable package.
 - For Emacs extensions this means: run a real Emacs (batch or `--eval` driven),
   in a real buffer, with real mode activation, and assert on real buffer/display
   state. Avoid stubbing Emacs internals.
-- Tests use ERT and are runnable via `make test` from the repo root.
+- Tests use ERT and are runnable via `make test` from the repo root. The runner
+  loads every `tests/*-tests.el`, so a new extension just adds a file.
 - An Emacs is installed and available for testing; install any dependencies the
   test environment needs.
+
+### Live reloading
+
+The user iterates in a running Emacs. `M-x emacs-tools-reload` unloads a feature
+and reloads its `.el`, resetting state a plain `load` keeps — `defcustom`
+defaults, overlays, hooks, and stale `.elc` files.
+
+Consequences when changing an extension:
+
+- Changing the **meaning or units** of an existing `defcustom` is a trap: a
+  session (or a user's config) holding the old value has it silently
+  reinterpreted. Rename the variable instead, so stale bindings go inert.
+- An extension that installs overlays, hooks or `jit-lock` handlers should
+  define `FEATURE-unload-function` to tear them down.
 
 ### Documentation
 

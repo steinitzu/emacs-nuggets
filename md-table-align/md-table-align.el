@@ -420,6 +420,17 @@ Requires a `markdown' tree-sitter parser in the buffer; see
 (define-globalized-minor-mode global-md-table-align-mode
   md-table-align-mode md-table-align--maybe-enable)
 
+(defun md-table-align-unload-function ()
+  "Switch the mode off everywhere before `unload-feature' removes it.
+Without this, unloading would strip the definitions while overlays and
+`jit-lock' registrations from this package were still installed.
+Returning nil leaves the standard unloading to `unload-feature'."
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when (bound-and-true-p md-table-align-mode)
+        (md-table-align-mode -1))))
+  nil)
+
 (provide 'md-table-align)
 
 ;;; md-table-align.el ends here
