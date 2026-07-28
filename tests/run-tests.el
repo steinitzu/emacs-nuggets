@@ -30,7 +30,10 @@
 (setq treesit-extra-load-path
       (list (expand-file-name ".test-env/tree-sitter" md-table-align-tests--root)))
 
-(add-to-list 'load-path (expand-file-name "md-table-align" md-table-align-tests--root))
+;; Load extensions the way an end user does -- through the collection loader --
+;; so `make test' also exercises the install path.
+(add-to-list 'load-path md-table-align-tests--root)
+(require 'emacs-tools)
 
 (defun md-table-align-tests--finish (exit)
   "Write the run transcript to the log file and quit with EXIT."

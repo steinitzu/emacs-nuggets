@@ -302,6 +302,36 @@
     (should-not (seq-filter (lambda (ov) (overlay-get ov 'md-table-align))
                             (overlays-in (point-min) (point-max))))))
 
+(ert-deftest md-table-align-test-global-mode-enables-in-markdown-buffers ()
+  "`global-md-table-align-mode' turns the mode on in Markdown buffers only."
+  (let ((md (generate-new-buffer "*md-table-align-global-md*"))
+        (other (generate-new-buffer "*md-table-align-global-other*")))
+    (unwind-protect
+        (progn
+          (global-md-table-align-mode 1)
+          (with-current-buffer md
+            (insert md-table-align-tests--simple)
+            (markdown-ts-mode)
+            (should md-table-align-mode))
+          (with-current-buffer other
+            (text-mode)
+            (should-not md-table-align-mode)))
+      (global-md-table-align-mode -1)
+      (kill-buffer md)
+      (kill-buffer other))))
+
+(ert-deftest md-table-align-test-loader-puts-extensions-on-load-path ()
+  "The collection loader makes each extension directory requirable."
+  (require 'emacs-tools)
+  (let ((dirs (mapcar #'file-name-nondirectory
+                      (mapcar #'directory-file-name
+                              (emacs-tools-extension-directories)))))
+    (should (member "md-table-align" dirs))
+    ;; Bookkeeping directories must not be mistaken for extensions.
+    (should-not (member ".test-env" dirs))
+    (dolist (dir (emacs-tools-extension-directories))
+      (should (member dir load-path)))))
+
 (ert-deftest md-table-align-test-refuses-without-parser ()
   "The mode declines to enable where no `markdown' parser exists."
   (let ((buf (generate-new-buffer "*md-table-align-no-parser*")))

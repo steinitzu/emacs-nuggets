@@ -177,3 +177,47 @@ gitignored `.test-env/` and are built by `make deps`.
   horizontal scrolling.
 - `markdown-mode` (the MELPA package) is not supported — it has no tree-sitter
   parser. Use `markdown-ts-mode`, or create a `markdown` parser in the buffer.
+
+## Validation against implementation
+
+Checked after implementing. 20 tests pass in a real TTY frame; `make compile`
+is clean with `byte-compile-error-on-warn`.
+
+Held up as designed:
+
+- Overlay stretch glyphs align tables with buffer text byte-identical,
+  `buffer-modified-p` nil, and `buffer-read-only` set.
+- Tree-sitter discovery skips fenced code blocks and needs no fence scanning.
+- Delimiter rows re-render across the full inner width, matching the
+  `|:------|----:|` output of `markdown-table-align`.
+- `string-width` measurement aligns CJK cells correctly.
+- jit-lock registration re-aligns whole tables after an edit with no stale
+  overlays.
+
+### Deviations
+
+**Discovery returns table nodes, not parsed rows.** The design had each backend
+returning a full row/cell structure. With a single tree-sitter backend that
+indirection bought nothing, so `md-table-align--tables` returns `pipe_table`
+nodes and parsing is one shared code path over their children.
+
+**Column index is derived from pipe count, not cell order.** Not anticipated.
+The grammar emits *no* `pipe_table_cell` node for some empty cells, so counting
+cell nodes silently shifted every column after a gap. Column index now comes
+from how many `|` nodes precede a cell, which is correct whether or not a node
+exists. Caught by `md-table-align-test-handles-empty-cells`.
+
+**Empty cells are padded from the opening border.** Also not anticipated. When a
+cell *is* emitted but empty, its trimmed bounds collapse onto the closing pipe,
+so the content overlay consumed the entire gap and left the border overlay
+zero-length and ineffective. Empty cells now skip content positioning and
+stretch the whole inter-border span instead.
+
+**All tests run in the TTY frame.** The design split tests into e2e (TTY frame)
+and integration (batch). Running the whole suite in the TTY frame is strictly
+better — every test then asserts against real redisplay — and costs nothing, so
+there is no batch tier.
+
+**The loader is exercised by the test harness.** `tests/run-tests.el` loads
+extensions via `emacs-tools.el` rather than adding directories itself, so every
+run also smoke-tests the documented install path.
