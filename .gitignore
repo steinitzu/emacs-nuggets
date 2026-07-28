@@ -1,3 +1,4 @@
 .test-env/
 *.elc
 tests/.last-run.log
+hacks/

@@ -10,6 +10,9 @@ A collection of Emacs extensions, distributed as a single installable package.
 - The whole library is installable as a package by loading this directory (each
   extension folder is added to `load-path`).
 - Repo root holds shared docs (`README.md`, `CLAUDE.md`) and the loader.
+- `tests/` holds the suite. `hacks/` is untracked local scratch for one-off
+  debug scripts — gitignored, and excluded from `load-path` by the loader via
+  `emacs-tools-non-extension-directories`.
 
 ### Workflow
 

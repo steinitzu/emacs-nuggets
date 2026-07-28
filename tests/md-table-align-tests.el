@@ -327,8 +327,11 @@
                       (mapcar #'directory-file-name
                               (emacs-tools-extension-directories)))))
     (should (member "md-table-align" dirs))
-    ;; Bookkeeping directories must not be mistaken for extensions.
+    ;; Directories that hold Lisp but ship nothing must not be mistaken for
+    ;; extensions: the suite itself, untracked scratch, and build output.
     (should-not (member ".test-env" dirs))
+    (should-not (member "tests" dirs))
+    (should-not (member "hacks" dirs))
     (dolist (dir (emacs-tools-extension-directories))
       (should (member dir load-path)))))
 

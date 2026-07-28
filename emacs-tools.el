@@ -23,13 +23,20 @@
   (file-name-directory (or load-file-name buffer-file-name))
   "Root directory of the emacs-tools collection.")
 
+(defconst emacs-tools-non-extension-directories '("tests" "hacks")
+  "Directories under the repository root that hold Lisp but ship nothing.
+`tests' is the test suite; `hacks' is untracked local scratch.  Neither
+belongs on `load-path'.")
+
 (defun emacs-tools-extension-directories ()
   "Return the directories holding individual extensions."
   (seq-filter
    (lambda (dir)
-     (and (file-directory-p dir)
-          (not (string-prefix-p "." (file-name-nondirectory dir)))
-          (directory-files dir nil "\\.el\\'" t)))
+     (let ((name (file-name-nondirectory (directory-file-name dir))))
+       (and (file-directory-p dir)
+            (not (string-prefix-p "." name))
+            (not (member name emacs-tools-non-extension-directories))
+            (directory-files dir nil "\\.el\\'" t))))
    (directory-files emacs-tools-directory t "\\`[^.]" t)))
 
 (defun emacs-tools-setup-load-path ()
