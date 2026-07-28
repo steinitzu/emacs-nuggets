@@ -69,8 +69,9 @@ renders as a continuous rule instead of a gap (experiment 3).
 
 ### Width measurement
 
-Cell width uses `string-width`, not `length`, so CJK double-width characters and
-combining marks measure correctly. Target column width is the max over all rows.
+Cell width is measured with `string-pixel-width` against the buffer, which
+handles CJK double-width characters, combining marks, per-face metrics and font
+fallback in one go. Target column width is the max over all rows.
 
 `:align-to N` with a bare number is in units of the frame's canonical character
 width. **This is not good enough**, and v1 shipping it was a bug — see
@@ -137,7 +138,7 @@ to full table bounds.
 - `md-table-align-mode` — buffer-local minor mode. Works in read-only buffers.
 - `global-md-table-align-mode` — enables in markdown-ish modes.
 - `md-table-align-buffer` / `md-table-align-clear` — one-shot commands.
-- Customization: `md-table-align-width-function`, minimum cell padding,
+- Customization: `md-table-align-pixel-width-function`, minimum cell padding,
   which modes the global mode activates in.
 
 ## Testing strategy

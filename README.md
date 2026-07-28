@@ -110,7 +110,7 @@ Customization:
 | Option | Default | Description |
 |:-------|:--------|:------------|
 | `md-table-align-padding` | `1` | Spaces rendered between a cell border and its content. |
-| `md-table-align-width-function` | `string-width` | Measures a cell's display width. |
+| `md-table-align-pixel-width-function` | `md-table-align-pixel-width` | Measures a cell's rendered width, in pixels. |
 | `md-table-align-modes` | `(markdown-ts-mode)` | Modes `global-md-table-align-mode` activates in. |
 
 #### How it works

@@ -2,3 +2,4 @@
 *.elc
 tests/.last-run.log
 hacks/
+flycheck_*.el

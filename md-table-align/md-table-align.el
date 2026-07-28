@@ -45,7 +45,7 @@
   "Number of spaces rendered between a cell border and its content."
   :type 'natnum)
 
-(defcustom md-table-align-width-function #'md-table-align-pixel-width
+(defcustom md-table-align-pixel-width-function #'md-table-align-pixel-width
   "Function measuring the rendered width of a cell's text.
 Called with one propertized string, returns a width in pixels.
 
@@ -82,7 +82,7 @@ to character columns."
       0
     ;; Deliberately keeps text properties: faces are what make this differ
     ;; from a character count.
-    (funcall md-table-align-width-function (buffer-substring beg end))))
+    (funcall md-table-align-pixel-width-function (buffer-substring beg end))))
 
 (defun md-table-align--space-width (node)
   "Return the pixel width of one space as rendered inside table NODE.
@@ -91,7 +91,7 @@ the table actually renders in, not the frame's canonical character."
   (let* ((start (treesit-node-start node))
          (face (get-text-property start 'face))
          (space (if face (propertize " " 'face face) " ")))
-    (max 1 (funcall md-table-align-width-function space))))
+    (max 1 (funcall md-table-align-pixel-width-function space))))
 
 ;;;; Overlays
 

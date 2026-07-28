@@ -228,7 +228,7 @@ characters, so its width is quantised to whole characters of the real
 font and cannot follow a width function that disagrees with what the
 frame actually draws."
   (md-table-align-tests--with-buffer md-table-align-tests--simple
-    (let ((md-table-align-width-function
+    (let ((md-table-align-pixel-width-function
            (lambda (s) (* 2 (string-width s)))))
       (md-table-align-tests--enable)
       (let ((rows (md-table-align-tests--pipe-columns))
@@ -241,7 +241,7 @@ frame actually draws."
 (ert-deftest md-table-align-test-default-width-function-measures-pixels ()
   "The default width function reports rendered width, not character count."
   (md-table-align-tests--with-buffer md-table-align-tests--simple
-    (should (eq md-table-align-width-function #'md-table-align-pixel-width))
+    (should (eq md-table-align-pixel-width-function #'md-table-align-pixel-width))
     ;; On a TTY the canonical character width is 1, so pixels and columns
     ;; coincide and this reduces to a character count.
     (should (= (md-table-align-pixel-width "abcd") (* 4 (frame-char-width))))
