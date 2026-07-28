@@ -220,13 +220,169 @@ not be undone — and the closing border is pinned with a stretch glyph that
 absorbs the shortfall. Any residue shows as a sub-character gap before the
 border.
 
+## Fit to window (v3)
+
+A table wider than the window wraps, and a wrapped row is not merely ugly —
+alignment is destroyed, because the continuation lines restart at the window's
+left edge with no relation to the column grid. Under `visual-line-mode`, which
+is how prose Markdown is usually read, this is the common case rather than the
+exceptional one.
+
+### What was asked for, and why it can't be done
+
+The natural framing is "keep word wrap, but turn it off for tables." **Emacs
+cannot do this.** Wrapping is a property of the buffer and window
+(`truncate-lines`, `word-wrap`), with no per-line or per-region equivalent.
+Four experiments in a real TTY frame, 105-character row in a 60-column frame:
+
+| # | Attempt | Result |
+|---|---------|--------|
+| 1 | Baseline `visual-line-mode` | wraps — 2 screen lines |
+| 2 | Whole row replaced by an overlay `display` string | still wraps — a display string is laid out like text |
+| 3 | Row containing no break opportunities at all | still wraps — `word-wrap` falls back to char wrapping |
+| 4 | `truncate-lines` as a window parameter | no such parameter; the variable is buffer-local only |
+
+Two mechanisms *do* give one screen line per row: `truncate-lines t`
+(buffer-wide, so all prose unwraps too — rejected as too disruptive) and an
+overlay `display` property eliding part of the row. The latter is the design.
+
+For the record, one further option was tested and rejected: under
+`truncate-lines t`, an injected `"\n"` — as either `display` or `before-string`
+— *does* create a real visual line break, so prose could in principle be
+re-wrapped by hand. That means reimplementing `fill` against every edit and
+resize. Not worth it.
+
+### Prior art
+
+`org-table--shrink-field` (Emacs `lisp/org/org-table.el`) solves the same
+problem and settles two objections that otherwise sink the approach:
+
+- **Elided content stays reachable.** Each overlay carries `help-echo` with the
+  field's full text, so a mouse hover or `C-h .` (`display-local-help`) reveals
+  it. Hiding text is acceptable when it can be read back on demand.
+- **Editing inside an elided span is survivable.** Org installs
+  `modification-hooks`, `insert-in-front-hooks` and `insert-behind-hooks` that
+  delete the whole column's overlays, so editing near a shrunk field expands it.
+
+Also borrowed: a private overlay-type tag for sweeping, a defcustom indicator
+string, and `priority` so shrinking overlays order predictably against others.
+
+Org's *policy* is not borrowed. It shrinks on explicit command or a `<N>` width
+cookie, never to fit the window, so the fitting rule below is ours.
+
+For the resize half, `visual-fill-column` is the established pattern:
+buffer-local `window-configuration-change-hook` plus `window-state-change-functions`
+(Emacs > 27.1), with a handler that takes a window and recomputes for it.
+
+`valign` — the closest sibling package, same stretch-glyph technique — does not
+address wide tables at all, so there is nothing to borrow and nothing to
+conflict with.
+
+### Mechanism
+
+A **fit step** sits between width computation and overlay placement. It leaves
+`md-table-align--column-widths` alone and reduces its result to a budget:
+
+1. Measure the row's natural width: indent, plus each column's border, padding,
+   content and padding, plus the closing border.
+2. Compare with the window's text area in pixels.
+3. If it overflows, cap column widths (below), then lay out against the capped
+   widths.
+4. Any cell whose content exceeds its column's cap gets a **shrink overlay**
+   replacing the tail of its text with the ellipsis, sized so that visible
+   prefix + ellipsis fits the cap.
+
+Alignment is otherwise unchanged: the existing stretch glyphs position content
+against whatever widths they are handed.
+
+### Shrink policy: cap the widest
+
+Columns are capped at a single value `C` chosen so `Σ min(wᵢ, C) = budget` —
+found by binary search on `C`. This spends the shortfall on the widest columns
+first and leaves narrow columns (`Status`, `Yes`/`No`) untouched, which is what
+makes the result readable rather than uniformly mangled. Proportional shrinking
+was rejected for clipping columns that had room to spare; dropping trailing
+columns was rejected for losing whole fields.
+
+`C` has a floor of `md-table-align-min-column-width` characters. If every
+column is at the floor and the row still overflows — a table with more columns
+than the window has room for — fitting gives up and the row wraps as it does
+today. Failing back to the status quo is the right failure mode.
+
+### Measurement is not corrupted by shrinking
+
+Org needs `org-table-with-shrunk-columns` — expand, operate, re-shrink —
+because its shrink state persists across operations. This package needs no such
+dance, for two independent reasons: `md-table-align--clear-region` wipes every
+overlay before a table is laid out afresh, and measurement goes through
+`buffer-substring`, which carries text properties but **not** overlays. Widths
+are therefore always measured against unshrunk text.
+
+### Which window a table is fitted to
+
+Overlays belong to the buffer, not a window, so a buffer displayed in two
+windows of different widths can only be laid out for one of them. Verified
+that overlays accept a `window` property restricting them to a single window
+(a 49-column and a 50-column window showing the same buffer rendered the row at
+1 and 2 screen lines respectively), so a full per-window layout is possible.
+
+v3 does **not** do that. It fits to the window the buffer is currently being
+viewed in — the selected window when it shows the buffer, otherwise the first
+one — and re-fits when that changes. Since `window-state-change-functions` also
+fires on a change of selected window, moving between two windows re-fits to
+whichever you are in, which covers the case that actually bites. The cost is
+that a table simultaneously visible in two differently-sized windows is correct
+in only one. The `window` property is the upgrade path if that proves annoying;
+it costs one set of overlays per window, which is why it is not the default.
+
+### Re-render triggers
+
+`jit-lock` covers edits but not geometry: resizing a window does not invalidate
+fontification. Fitting therefore adds buffer-local
+`window-configuration-change-hook` and `window-state-change-functions`, both
+routed to a handler that compares the fitting window's pixel width against the
+width the current layout was computed for and does nothing when they match.
+That guard matters — these hooks fire often, and re-aligning unconditionally
+would re-lay every visible table on every window operation.
+
+### Deferred: reveal the cell at point
+
+The obviously desirable refinement is that the cell containing point is never
+shrunk, so moving through a table reveals cells in passing. This is a better
+rule than Org's edit-triggered expansion and fits the re-layout model, but it
+needs a `post-command-hook` and cursor-motion-triggered relayout. Deferred to
+keep v3 reviewable; `help-echo` and `C-h .` cover reading in the meantime.
+
+### Interface added
+
+- `md-table-align-fit-to-window` — enable fitting. Default `t`: a wrapped table
+  is never what anyone wanted.
+- `md-table-align-ellipsis` — indicator for elided text, default `…`.
+- `md-table-align-min-column-width` — floor for the cap, in characters.
+
+### Testing
+
+The TTY frame makes this directly assertable, with the frame narrowed to force
+overflow:
+
+- every row of an overflowing table occupies exactly **one screen line**
+  (`count-screen-lines`), where without fitting it occupies more;
+- pipes still align across rows — fitting must not break the v1 guarantee;
+- widening the frame restores the unshrunk table;
+- `buffer-string` is unchanged and `buffer-modified-p` is nil, as ever;
+- a table that already fits gets no shrink overlays at all;
+- a table with more columns than can fit falls back to wrapping rather than
+  producing a degenerate layout.
+
 ## Known limitations
 
 - The delimiter row is character-quantised, as above.
-- Very long lines that wrap will still wrap; alignment does not imply
-  horizontal scrolling.
 - `markdown-mode` (the MELPA package) is not supported — it has no tree-sitter
   parser. Use `markdown-ts-mode`, or create a `markdown` parser in the buffer.
+- A table visible in two differently-sized windows at once is fitted to one of
+  them (see "Which window a table is fitted to").
+- Fitting hides text. It is readable via `C-h .` or a mouse hover, but it is
+  hidden, and there is no horizontal scrolling to bring it back.
 
 ## Validation against implementation
 
