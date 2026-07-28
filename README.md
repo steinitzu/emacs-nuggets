@@ -123,10 +123,41 @@ never mark a buffer modified, which is what makes read-only buffers work.
 See [md-table-align/DESIGN.md](md-table-align/DESIGN.md) for the reasoning,
 including why overlays are used rather than text properties.
 
+#### Using it with mixed-pitch / variable-pitch
+
+`markdown-ts-mode` faces tables through
+`markdown-ts-table` → `markdown-ts-code-block` → `fixed-pitch`, so under
+`mixed-pitch-mode` they stay monospace on their own — no need to add anything to
+`mixed-pitch-fixed-pitch-faces`.
+
+There is one catch. Emacs ships `fixed-pitch` with `:family "Monospace"`, which
+is a generic fontconfig alias rather than a real family. If you never override
+it, your tables (and code blocks, and inline code) render in whatever fontconfig
+picks — commonly DejaVu Sans Mono — instead of your coding font. Name a real
+family:
+
+```elisp
+(set-face-attribute 'fixed-pitch nil :family "Source Code Pro")
+```
+
+Alignment is measured in the frame's canonical character width, so for columns
+to line up exactly, the font `fixed-pitch` resolves to must have the same
+advance width as your frame font. To check:
+
+```elisp
+(list :frame-char-width (frame-char-width)
+      :table-font-width (window-font-width nil 'markdown-ts-table))
+```
+
+Equal values mean alignment is exact. If they differ, match `fixed-pitch` to
+your default face more closely — the `:width` and `:height` attributes are the
+usual culprits.
+
 #### Limitations
 
 - Alignment is in character-width units, so proportional fonts will not line up
-  exactly. Monospace fonts (and any terminal) are exact.
+  exactly. Monospace fonts (and any terminal) are exact, provided the check
+  above passes.
 - Long lines still wrap; alignment does not add horizontal scrolling.
 
 ## Development
