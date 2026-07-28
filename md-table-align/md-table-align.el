@@ -32,6 +32,7 @@
 
 (require 'treesit)
 (require 'cl-lib)
+(require 'jit-lock)
 
 (declare-function treesit-parser-list "treesit")
 (declare-function treesit-query-capture "treesit")
@@ -62,6 +63,34 @@ alignment computed from character counts drifts by that ratio."
   "Major modes in which `global-md-table-align-mode' enables alignment."
   :type '(repeat symbol))
 
+(defcustom md-table-align-fit-to-window t
+  "Non-nil means narrow tables too wide to fit the window.
+
+A wrapped table is not merely ugly: its continuation lines restart at the
+window's left edge with no relation to the column grid, so alignment is
+destroyed.  Emacs has no way to disable wrapping for part of a buffer, so
+the alternative is to make the table narrow enough not to wrap, by eliding
+the tail of cells in the widest columns.
+
+Elided text is still readable with \\[display-local-help] or by hovering
+the mouse over it."
+  :type 'boolean)
+
+(defcustom md-table-align-ellipsis "…"
+  "String marking cell content elided to fit a table to the window."
+  :type 'string)
+
+(defcustom md-table-align-min-column-width 3
+  "Smallest width, in characters, that fitting will shrink a column to.
+When every column is this narrow and the table still overflows, fitting
+gives up and the table wraps."
+  :type 'natnum)
+
+(defvar-local md-table-align--fitted-width nil
+  "Window text width, in pixels, the current layout was computed for.
+Nil when the buffer has not been laid out, or was laid out with no window
+to fit to.")
+
 ;;;; Measurement
 
 (defun md-table-align-pixel-width (string)
@@ -84,14 +113,15 @@ to character columns."
     ;; from a character count.
     (funcall md-table-align-pixel-width-function (buffer-substring beg end))))
 
-(defun md-table-align--space-width (node)
-  "Return the pixel width of one space as rendered inside table NODE.
-Padding is specified in spaces, so it has to be converted using the font
-the table actually renders in, not the frame's canonical character."
+(defun md-table-align--glyph-width (node string)
+  "Return the pixel width of STRING as rendered inside table NODE.
+Everything specified in characters -- padding, the minimum column width,
+the ellipsis -- has to be converted using the font the table actually
+renders in, not the frame's canonical character."
   (let* ((start (treesit-node-start node))
          (face (get-text-property start 'face))
-         (space (if face (propertize " " 'face face) " ")))
-    (max 1 (funcall md-table-align-pixel-width-function space))))
+         (s (if face (propertize string 'face face) string)))
+    (max 1 (funcall md-table-align-pixel-width-function s))))
 
 ;;;; Overlays
 
@@ -133,6 +163,29 @@ at all, such as `|a|', still be aligned."
       (overlay-put ov 'evaporate t)
       (overlay-put ov 'display string)
       ov)))
+
+(defun md-table-align--elide (beg end width ellipsis)
+  "Elide the tail of [BEG, END) so it renders no wider than WIDTH pixels.
+ELLIPSIS is the pixel width of `md-table-align-ellipsis'.  Returns the
+rendered width of what is left, which is at most WIDTH."
+  (let ((limit (- width ellipsis))
+        (keep beg))
+    ;; Longest prefix that still leaves room for the ellipsis.  Measured a
+    ;; character at a time rather than by counting: a proportional font gives
+    ;; no fixed relationship between characters and pixels.
+    (while (and (< keep end)
+                (<= (md-table-align--measure beg (1+ keep)) limit))
+      (setq keep (1+ keep)))
+    (when (< keep end)
+      (let ((ov (make-overlay keep end)))
+        (overlay-put ov 'md-table-align t)
+        (overlay-put ov 'evaporate t)
+        ;; Elided text has to stay reachable: both `display-local-help' and a
+        ;; mouse hover surface `help-echo'.
+        (overlay-put ov 'help-echo (buffer-substring-no-properties beg end))
+        (overlay-put ov 'display md-table-align-ellipsis)
+        (overlay-put ov 'priority 1)))
+    (+ (md-table-align--measure beg keep) ellipsis)))
 
 ;;;; Table model
 ;;
@@ -269,6 +322,70 @@ whereas overshooting could not be undone."
     (when (cdr colons) (aset s (1- n) ?:))
     s))
 
+(defun md-table-align--window ()
+  "Return the window this buffer should be fitted to, if any.
+Overlays belong to the buffer rather than to a window, so a table can only
+be laid out for one of the windows showing it.  The selected window is the
+one the user is reading in; `window-state-change-functions' fires when that
+changes, so moving between windows re-fits to whichever you are in."
+  (if (eq (window-buffer (selected-window)) (current-buffer))
+      (selected-window)
+    (car (get-buffer-window-list nil nil nil))))
+
+(defun md-table-align--available-width ()
+  "Return the pixel width available to a table, or nil if no window shows it."
+  (when-let* ((window (md-table-align--window)))
+    (window-body-width window t)))
+
+(defun md-table-align--cap-widths (widths fixed available floor)
+  "Cap WIDTHS in place so FIXED plus their total fits in AVAILABLE pixels.
+
+FIXED is the width of everything that is not cell content: the indent, the
+borders and the padding.  FLOOR is the narrowest a column may become.
+
+All columns are capped at one value, chosen by binary search so the capped
+total just fits.  A single cap spends the shortfall on the widest columns
+and leaves narrow ones untouched, which is what keeps the result readable;
+shrinking every column proportionally would clip columns that had room to
+spare.
+
+Returns non-nil when a cap was applied.  When the table cannot fit even
+with every column at FLOOR, nothing is capped and the table is left to
+wrap -- falling back to the current behaviour beats a degenerate layout."
+  (let ((budget (- available fixed))
+        (total (seq-reduce #'+ widths 0)))
+    (when (and (> total budget)
+               (<= (* (length widths) floor) budget))
+      (let ((lo floor)
+            (hi (seq-max widths)))
+        (while (< lo hi)
+          (let* ((mid (/ (+ lo hi 1) 2))
+                 (capped (seq-reduce (lambda (acc w) (+ acc (min w mid)))
+                                     widths 0)))
+            (if (<= capped budget)
+                (setq lo mid)
+              (setq hi (1- mid)))))
+        (dotimes (i (length widths))
+          (aset widths i (min (aref widths i) lo)))
+        t))))
+
+(defun md-table-align--fit (node widths indent unit)
+  "Cap WIDTHS so the table at NODE fits the window it is displayed in.
+INDENT is the table's leading offset and UNIT the width of one space, both
+in pixels."
+  (when-let* (((and md-table-align-fit-to-window (> (length widths) 0)))
+              (available (md-table-align--available-width))
+              (columns (length widths)))
+    (md-table-align--cap-widths
+     widths
+     (+ indent
+        (* (1+ columns) (md-table-align--glyph-width node "|"))
+        (* columns 2 md-table-align-padding unit))
+     ;; Reserve one character cell: a wrapped line spends one on the
+     ;; continuation glyph, and it absorbs rounding at the window edge.
+     (- available unit)
+     (* md-table-align-min-column-width unit))))
+
 (defun md-table-align--content-offset (align width cell-width)
   "Return leading padding for CELL-WIDTH text in a WIDTH column under ALIGN."
   (pcase align
@@ -276,16 +393,21 @@ whereas overshooting could not be undone."
     ('center (/ (max 0 (- width cell-width)) 2))
     (_ 0)))
 
-(defun md-table-align--layout-row (row widths aligns indent unit)
-  "Place overlays aligning ROW to WIDTHS and ALIGNS, starting at pixel INDENT.
-UNIT is the pixel width of one space, which converts
-`md-table-align-padding' from spaces into pixels."
-  (let ((pipes (plist-get row :pipes))
-        (cells (plist-get row :cells))
-        (delimiter (plist-get row :delimiter))
-        (pad (* md-table-align-padding unit))
-        (x indent)
-        (i 0))
+(defun md-table-align--layout-row (row ctx)
+  "Place overlays aligning ROW according to layout context CTX.
+CTX is a plist of `:widths', `:aligns', `:indent', `:unit' -- the pixel
+width of one space, which converts `md-table-align-padding' from spaces
+into pixels -- and `:ellipsis', the pixel width of the elision indicator."
+  (let* ((widths (plist-get ctx :widths))
+         (aligns (plist-get ctx :aligns))
+         (unit (plist-get ctx :unit))
+         (ellipsis (plist-get ctx :ellipsis))
+         (pipes (plist-get row :pipes))
+         (cells (plist-get row :cells))
+         (delimiter (plist-get row :delimiter))
+         (pad (* md-table-align-padding unit))
+         (x (plist-get ctx :indent))
+         (i 0))
     (dolist (cell cells)
       (let ((width (aref widths i))
             (open (nth i pipes))
@@ -299,6 +421,10 @@ UNIT is the pixel width of one space, which converts
                  (cell-width (if cell (plist-get cell :width) 0))
                  (empty (<= end beg))
                  (inner (+ pad width pad)))
+            ;; Content wider than its own column only happens once fitting has
+            ;; capped that column, so this is where a table is made to fit.
+            (when (and (not empty) (not delimiter) (> cell-width width))
+              (setq cell-width (md-table-align--elide beg end width ellipsis)))
             ;; Step past the opening pipe.  Its width is measured rather than
             ;; assumed, for the same reason cell widths are.
             (setq x (+ x (md-table-align--measure open (1+ open))))
@@ -338,12 +464,23 @@ UNIT is the pixel width of one space, which converts
   "Align the table at NODE by placing overlays."
   (let ((rows (md-table-align--parse-table node)))
     (when (cdr rows)
-      (let* ((unit (md-table-align--space-width node))
+      (let* ((unit (md-table-align--glyph-width node " "))
              (widths (md-table-align--column-widths rows unit))
              (aligns (md-table-align--alignments rows (length widths)))
-             (indent (md-table-align--indent-pixels rows)))
+             (indent (md-table-align--indent-pixels rows))
+             ctx)
+        ;; Widths are measured before any overlay exists -- the region was
+        ;; swept clear, and `buffer-substring' carries text properties but not
+        ;; overlays -- so capping never compounds a previous cap.
+        (md-table-align--fit node widths indent unit)
+        (setq ctx (list :widths widths
+                        :aligns aligns
+                        :indent indent
+                        :unit unit
+                        :ellipsis (md-table-align--glyph-width
+                                   node md-table-align-ellipsis)))
         (dolist (row rows)
-          (md-table-align--layout-row row widths aligns indent unit))))))
+          (md-table-align--layout-row row ctx))))))
 
 ;;;; Discovery
 
@@ -359,6 +496,7 @@ UNIT is the pixel width of one space, which converts
 
 (defun md-table-align--align-region (beg end)
   "Align every table overlapping the region BEG to END."
+  (setq md-table-align--fitted-width (md-table-align--available-width))
   (dolist (node (md-table-align--tables beg end))
     (let ((tbeg (treesit-node-start node))
           (tend (treesit-node-end node)))
@@ -388,6 +526,23 @@ Buffer text is not modified, so this works in read-only buffers."
 
 ;;;; Modes
 
+(defvar md-table-align-mode)
+
+(defun md-table-align--refit (&rest _)
+  "Re-align when the window a table is fitted to has changed width.
+`jit-lock' covers edits but not geometry: resizing a window does not
+invalidate fontification.  Clearing and asking `jit-lock' to refontify
+keeps the work lazy -- only tables that come back on screen are laid out
+again."
+  (when (and md-table-align-mode md-table-align-fit-to-window)
+    (let ((width (md-table-align--available-width)))
+      ;; These hooks fire on every window operation; the width guard is what
+      ;; stops that turning into a re-layout of every visible table.
+      (unless (or (null width) (eql width md-table-align--fitted-width))
+        (setq md-table-align--fitted-width width)
+        (md-table-align-clear)
+        (jit-lock-refontify)))))
+
 ;;;###autoload
 (define-minor-mode md-table-align-mode
   "Render Markdown tables aligned, without modifying buffer text.
@@ -404,10 +559,19 @@ Requires a `markdown' tree-sitter parser in the buffer; see
             (setq md-table-align-mode nil)
             (message "md-table-align: no `markdown' tree-sitter parser available"))
         (jit-lock-register #'md-table-align--jit t)
+        ;; Window geometry is not something `jit-lock' watches, so fitting
+        ;; needs its own triggers.  `window-state-change-functions' also fires
+        ;; on a change of selected window, which is what re-fits a table when
+        ;; you move to a differently sized window.
+        (add-hook 'window-configuration-change-hook #'md-table-align--refit nil t)
+        (add-hook 'window-state-change-functions #'md-table-align--refit nil t)
         ;; Text already fontified before we registered would otherwise never
         ;; reach our jit-lock handler.
         (md-table-align-buffer))
     (jit-lock-unregister #'md-table-align--jit)
+    (remove-hook 'window-configuration-change-hook #'md-table-align--refit t)
+    (remove-hook 'window-state-change-functions #'md-table-align--refit t)
+    (setq md-table-align--fitted-width nil)
     (md-table-align-clear)))
 
 (defun md-table-align--maybe-enable ()
