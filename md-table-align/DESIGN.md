@@ -429,7 +429,9 @@ overflow:
 - A table visible in two differently-sized windows at once is fitted to one of
   them (see "Which window a table is fitted to").
 - Fitting hides text. It is readable via `C-h .` or a mouse hover, but it is
-  hidden, and there is no horizontal scrolling to bring it back.
+  hidden, and there is no horizontal scrolling to bring it back. Whether that
+  trade is acceptable at all is **an open question**, not a settled one — see
+  [docs/seeing-elided-table-text.md](../docs/seeing-elided-table-text.md).
 
 ## Validation against implementation
 

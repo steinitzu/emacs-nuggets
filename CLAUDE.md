@@ -13,6 +13,11 @@ A collection of Emacs extensions, distributed as a single installable package.
 - `tests/` holds the suite. `hacks/` is untracked local scratch for one-off
   debug scripts — gitignored, and excluded from `load-path` by the loader via
   `emacs-tools-non-extension-directories`.
+- `docs/` holds cross-session notes: open questions, decisions deferred, and
+  findings worth not re-deriving. One file per question. These are working
+  notes, distinct from `README.md` (for users) and `DESIGN.md` (per extension,
+  for what was built and why). The loader ignores it — a directory with no
+  `.el` files is never treated as an extension.
 
 ### Workflow
 
