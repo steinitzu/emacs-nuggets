@@ -360,6 +360,53 @@ keep v3 reviewable; `help-echo` and `C-h .` cover reading in the meantime.
 - `md-table-align-ellipsis` — indicator for elided text, default `…`.
 - `md-table-align-min-column-width` — floor for the cap, in characters.
 
+### Validation against implementation (v3)
+
+40 tests pass in a real TTY frame; `make compile` is clean with
+`byte-compile-error-on-warn`. Rendered output was read back at several frame
+widths, reconstructed from `posn-at-point` geometry:
+
+```
+=== fitting OFF (frame 40) ===   === fitting ON (frame 40) ===
+ tatus  | Description       |S    | Name  | Description        | Status |
+|-------|-------------------|--   |-------|--------------------|--------|
+|pen ha | first item descr… |o    | alpha | first item descri… | open   |
+ one a  | second item desc… |d    | beta  | second item descr… | done   |
+```
+
+The left-hand column is what the wrapping actually looks like once
+reconstructed — the second screen line of each row starts at the window edge,
+which is the failure this feature exists to remove.
+
+Held up as designed: the cap falls on the widest column only (`Name` and
+`Status` are untouched at 40 columns); widening restores the full table with no
+explicit refresh; `buffer-string` and `buffer-modified-p` are unaffected; a
+window too narrow for floor-width columns falls back to wrapping.
+
+#### Deviations
+
+**Borders are budgeted from one measurement, not per pipe.** The fit step
+computes fixed overhead as `(columns + 1) × width-of("|")`, while the layout
+pass measures each pipe individually. Every `|` in a table renders in the same
+face, so these agree; they would diverge only if a single table's pipes were
+faced differently, which the grammar gives no way to express. Budgeting per
+pipe would mean measuring the whole table twice for no gain.
+
+**`md-table-align--layout-row` takes a context plist.** It had five positional
+arguments and fitting needed a sixth. Grouping the per-table layout constants
+into one `ctx` plist was cheaper than growing the signature further.
+
+**`md-table-align--space-width` became `md-table-align--glyph-width`.** It now
+converts the ellipsis and the minimum column width as well as padding, so a
+name naming only spaces was wrong. Internal, so no compatibility concern —
+unlike a `defcustom`, which the repo conventions require renaming rather than
+redefining.
+
+**The floor is inclusive.** A table that fits with *every* column exactly at
+`md-table-align-min-column-width` is fitted rather than abandoned. The design
+text ("if every column is at the floor and the row still overflows") already
+implies this, but it was ambiguous enough to write the first test backwards.
+
 ### Testing
 
 The TTY frame makes this directly assertable, with the frame narrowed to force

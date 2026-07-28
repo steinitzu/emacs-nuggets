@@ -526,23 +526,6 @@ Buffer text is not modified, so this works in read-only buffers."
 
 ;;;; Modes
 
-(defvar md-table-align-mode)
-
-(defun md-table-align--refit (&rest _)
-  "Re-align when the window a table is fitted to has changed width.
-`jit-lock' covers edits but not geometry: resizing a window does not
-invalidate fontification.  Clearing and asking `jit-lock' to refontify
-keeps the work lazy -- only tables that come back on screen are laid out
-again."
-  (when (and md-table-align-mode md-table-align-fit-to-window)
-    (let ((width (md-table-align--available-width)))
-      ;; These hooks fire on every window operation; the width guard is what
-      ;; stops that turning into a re-layout of every visible table.
-      (unless (or (null width) (eql width md-table-align--fitted-width))
-        (setq md-table-align--fitted-width width)
-        (md-table-align-clear)
-        (jit-lock-refontify)))))
-
 ;;;###autoload
 (define-minor-mode md-table-align-mode
   "Render Markdown tables aligned, without modifying buffer text.
@@ -573,6 +556,23 @@ Requires a `markdown' tree-sitter parser in the buffer; see
     (remove-hook 'window-state-change-functions #'md-table-align--refit t)
     (setq md-table-align--fitted-width nil)
     (md-table-align-clear)))
+
+(defvar md-table-align-mode)
+
+(defun md-table-align--refit (&rest _)
+  "Re-align when the window a table is fitted to has changed width.
+`jit-lock' covers edits but not geometry: resizing a window does not
+invalidate fontification.  Clearing and asking `jit-lock' to refontify
+keeps the work lazy -- only tables that come back on screen are laid out
+again."
+  (when (and md-table-align-mode md-table-align-fit-to-window)
+    (let ((width (md-table-align--available-width)))
+      ;; These hooks fire on every window operation; the width guard is what
+      ;; stops that turning into a re-layout of every visible table.
+      (unless (or (null width) (eql width md-table-align--fitted-width))
+        (setq md-table-align--fitted-width width)
+        (md-table-align-clear)
+        (jit-lock-refontify)))))
 
 (defun md-table-align--maybe-enable ()
   "Enable `md-table-align-mode' if this buffer's mode calls for it."
