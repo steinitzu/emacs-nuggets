@@ -99,6 +99,9 @@ Commands:
 | `global-md-table-align-mode` | Enables the above in `md-table-align-modes`. |
 | `md-table-align-buffer` | Align every table once, right now. |
 | `md-table-align-clear` | Remove all alignment from the buffer. |
+| `md-table-align-hscroll-left` | Scroll the table at point left; bound over `C-x <` (`scroll-left`). |
+| `md-table-align-hscroll-right` | Scroll the table at point right; bound over `C-x >` (`scroll-right`). |
+| `md-table-align-hscroll-reset` | Return the scrolled table to its left edge. |
 
 Customization:
 
@@ -107,9 +110,9 @@ Customization:
 | `md-table-align-padding` | `1` | Spaces rendered between a cell border and its content. |
 | `md-table-align-pixel-width-function` | `md-table-align-pixel-width` | Measures a cell's rendered width, in pixels. |
 | `md-table-align-modes` | `(markdown-ts-mode)` | Modes `global-md-table-align-mode` activates in. |
-| `md-table-align-fit-to-window` | `t` | Narrow tables too wide for the window so they do not wrap. |
-| `md-table-align-ellipsis` | `…` | Marks cell content elided to make a table fit. |
-| `md-table-align-min-column-width` | `3` | Narrowest a column may be shrunk to, in characters. |
+| `md-table-align-hscroll` | `t` | Clip wide tables to the window and scroll them sideways. |
+| `md-table-align-ellipsis` | `…` | Marks where the window's edge has clipped a table. |
+| `md-table-align-hscroll-indicator` | `t` | Whether to mark clipped edges at all. |
 
 #### Wide tables and word wrap
 
@@ -117,25 +120,46 @@ Under `visual-line-mode` a table wider than the window wraps, and a wrapped
 table is not just ugly — the continuation lines restart at the window's left
 edge, so the alignment is gone entirely.
 
-Emacs has no way to switch wrapping off for part of a buffer, so `md-table-align`
-instead makes wide tables narrow enough that they don't wrap. A table needing 48
-columns, shown in a 40-column window, renders as:
+Emacs has no way to switch wrapping off for part of a buffer, so
+`md-table-align` clips each table to a horizontal viewport instead, and lets
+you scroll it. A table needing 48 columns, shown in a 40-column window:
 
 ```
-| Name  | Description        | Status |
-|-------|--------------------|--------|
-| alpha | first item descri… | open   |
-| beta  | second item descr… | done   |
+| Name  | Description…
+|-------|-----------------------------…
+| alpha | first item description here…
+| beta  | second item description…
 ```
 
-Only the widest column gives up space; `Name` and `Status` are untouched.
-Widen the window and the full table comes back on its own.
+Scroll it and the rest arrives, with the columns still on their grid:
 
-Elided text is hidden, not lost — put point on it and press `C-h .`
-(`display-local-help`), or hover the mouse over it, to read the whole cell.
+```
+…Description                 | Status |
+…----------------------------|--------|
+…first item description here | open   |
+…second item description     | done   |
+```
 
-Set `md-table-align-fit-to-window` to `nil` to turn this off and let wide
-tables wrap as before.
+Scrolling works the way it already does in a `truncate-lines` buffer, so there
+is nothing new to learn:
+
+- **The viewport follows point.** Move onto a cell that is off screen and the
+  table scrolls to it, honouring `hscroll-margin` and `hscroll-step` exactly as
+  `auto-hscroll-mode` does. Most of the time you never scroll by hand at all.
+- **`C-x <` and `C-x >`** scroll the table at point explicitly. Outside a table
+  they do what they always did.
+- Only the table moves. Prose above and below it stays where it is, which is
+  something native horizontal scrolling cannot do — it shifts the whole window,
+  and needs `truncate-lines` to work at all.
+
+Only the table you are in is ever scrolled, and it returns to its left edge
+when you leave it. Widen the window and the whole table comes back on its own.
+
+Clipped text is also readable without scrolling: put point on it and press
+`C-h .` (`display-local-help`), or hover the mouse over it.
+
+Set `md-table-align-hscroll` to `nil` to turn this off and let wide tables
+wrap as before.
 
 #### How it works
 
@@ -177,12 +201,14 @@ inherits the remapped default's `:height` and renders wider per character than
 - The delimiter row (`|:---|---:|`) renders as a run of dash characters, so its
   width is quantised to whole characters. Its closing border is pinned exactly;
   any sub-character shortfall shows as a small gap before it.
-- Fitting hides text rather than scrolling to it. There is no horizontal
-  scrolling for tables.
-- A table shown in two differently sized windows at once is fitted to whichever
-  window you are in, so it is only correct in one of them at a time.
-- A window too narrow even for minimum-width columns is left to wrap, on the
-  grounds that a row of bare ellipses would be worse.
+- A table shown in two differently sized windows at once is laid out for
+  whichever window you are in, so it is only correct in one of them at a time.
+- Only one table carries a scroll offset at a time — the one point is in.
+  Leaving it puts it back to its left edge.
+- The first column does not stay pinned while the rest scrolls, so a scrolled
+  row loses its row label.
+- A window with no room for even a couple of characters of table is left to
+  wrap, on the grounds that clipping it to nothing would be worse.
 
 ## Development
 
