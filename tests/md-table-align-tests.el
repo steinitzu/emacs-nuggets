@@ -383,23 +383,27 @@ frame actually draws."
           (should-not md-table-align-mode))
       (kill-buffer buf))))
 
-;;;; Fitting a table to the window
+;;;; Clipping a wide table to the window, and scrolling it
 ;;
 ;; A table wider than the window wraps, and a wrapped row is not merely ugly:
 ;; its continuation lines restart at the window's left edge, so the column grid
-;; is gone.  Narrowing the frame is what makes these assertions bite -- at the
-;; default frame width the fixture below fits and nothing is elided.
+;; is gone.  Instead each table is clipped to a horizontal viewport that
+;; scrolls.  Narrowing the frame is what makes these assertions bite -- at the
+;; default frame width the fixture below fits and nothing is clipped.
 
 (defconst md-table-align-tests--wide
-  "| Name | Description | Status |
+  "prose before the table
+| Name | Description | Status |
 |------|-------------|--------|
 | alpha | first item description here | open |
 | beta | second item description | done |
+prose after the table
 ")
 
-;; Aligned but unfitted, the fixture needs 48 columns: 4 borders, 6 spaces of
-;; padding, and content of 5 ("alpha"), 27 ("first item description here") and
-;; 6 ("Status").  Every test below runs it in a 40-column frame.
+;; Aligned, the fixture needs 48 columns: 4 borders, 6 spaces of padding, and
+;; content of 5 (\"alpha\"), 27 (\"first item description here\") and 6
+;; (\"Status\").  Its grid therefore puts pipes at columns 0, 8, 38 and 47.
+;; Every test below runs it in a 40-column frame.
 (defconst md-table-align-tests--wide-frame 40)
 
 (defmacro md-table-align-tests--with-frame-width (width &rest body)
@@ -424,111 +428,275 @@ frame actually draws."
         (forward-line 1))
       (nreverse out))))
 
-(defun md-table-align-tests--elisions ()
-  "Return the `help-echo' of every elision overlay, in buffer order."
+(defun md-table-align-tests--clipped-p (pos)
+  "Return non-nil when POS is inside text the viewport has clipped away."
+  (seq-some (lambda (ov) (overlay-get ov 'md-table-align-clip))
+            (overlays-at pos)))
+
+(defun md-table-align-tests--clips ()
+  "Return the text of every clipped span, in buffer order."
   (let (out)
     (dolist (ov (overlays-in (point-min) (point-max)))
-      (when (and (overlay-get ov 'md-table-align)
-                 (overlay-get ov 'help-echo))
+      (when (overlay-get ov 'md-table-align-clip)
         (push (cons (overlay-start ov) (overlay-get ov 'help-echo)) out)))
     (mapcar #'cdr (sort out :key #'car))))
 
-(ert-deftest md-table-align-test-wide-table-wraps-without-fitting ()
-  "The fixture really does overflow, so the fitting tests are not vacuous."
+(defun md-table-align-tests--visible-pipe-columns ()
+  "Return the rendered columns of the pipes still on screen, one list per row.
+Pipes inside a clipped span are left out: they all collapse onto the
+start of the overlay hiding them and carry no positional information."
+  (save-excursion
+    (goto-char (point-min))
+    (let (rows)
+      (while (not (eobp))
+        (let* ((eol (line-end-position))
+               ;; Asked before the loop below consumes every pipe on the line:
+               ;; a row whose pipes are all clipped still counts as a row.
+               (pipe-row (save-excursion (search-forward "|" eol t)))
+               (cols nil))
+          (while (search-forward "|" eol t)
+            (unless (md-table-align-tests--clipped-p (1- (point)))
+              (push (md-table-align-tests--column (1- (point))) cols)))
+          (when pipe-row (push (nreverse cols) rows)))
+        (forward-line 1))
+      (nreverse rows))))
+
+(defun md-table-align-tests--goto-table ()
+  "Put point on the first pipe of the table."
+  (goto-char (point-min))
+  (should (search-forward "|" nil t))
+  (goto-char (match-beginning 0)))
+
+(defun md-table-align-tests--scroll (columns)
+  "Scroll the table at point COLUMNS to the left, then let redisplay settle."
+  (md-table-align-tests--goto-table)
+  (md-table-align-hscroll-left columns)
+  (redisplay t))
+
+(ert-deftest md-table-align-test-wide-table-wraps-without-scrolling ()
+  "The fixture really does overflow, so the clipping tests are not vacuous."
   (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
     (md-table-align-tests--with-buffer md-table-align-tests--wide
-      (let ((md-table-align-fit-to-window nil))
+      (let ((md-table-align-hscroll nil))
         (md-table-align-tests--enable)
         (should (seq-some (lambda (n) (> n 1))
                           (md-table-align-tests--screen-lines)))))))
 
-(ert-deftest md-table-align-test-fitting-keeps-rows-on-one-screen-line ()
-  "With fitting on, every row of an overflowing table occupies one line."
+(ert-deftest md-table-align-test-clipping-keeps-rows-on-one-screen-line ()
+  "Every row of an overflowing table occupies exactly one screen line."
   (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
     (md-table-align-tests--with-buffer md-table-align-tests--wide
       (md-table-align-tests--enable)
       (should (equal (md-table-align-tests--screen-lines) '(1 1 1 1))))))
 
-(ert-deftest md-table-align-test-fitted-table-is-still-aligned ()
-  "Fitting must not cost the alignment it exists to protect."
+(ert-deftest md-table-align-test-rows-stay-on-one-line-at-every-offset ()
+  "Scrolling must not reintroduce the wrapping clipping exists to prevent."
   (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
     (md-table-align-tests--with-buffer md-table-align-tests--wide
       (md-table-align-tests--enable)
-      (let ((rows (md-table-align-tests--pipe-columns)))
+      (dolist (offset '(1 5 10 20 40))
+        (md-table-align-tests--goto-table)
+        (md-table-align-hscroll-reset)
+        (md-table-align-tests--scroll offset)
+        (should (equal (md-table-align-tests--screen-lines) '(1 1 1 1)))))))
+
+(ert-deftest md-table-align-test-clipped-table-is-still-aligned ()
+  "Clipping must not cost the alignment it exists to protect."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (let ((rows (md-table-align-tests--visible-pipe-columns)))
         (should (= (length rows) 4))
         (dolist (row rows)
           (should (equal row (car rows))))))))
 
-(ert-deftest md-table-align-test-fitting-elides-the-widest-column ()
-  "The shortfall is taken from the widest column, not spread over all of them."
+(ert-deftest md-table-align-test-rows-agree-at-every-offset ()
+  "At any offset, every row agrees on where each visible pipe renders.
+
+This is the assertion that catches deriving the scroll position from
+buffer columns rather than from the aligned grid: cells differ in length,
+so the same buffer column is a different grid column on every row, and
+the columns drift apart as soon as the offset is not zero."
   (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
     (md-table-align-tests--with-buffer md-table-align-tests--wide
       (md-table-align-tests--enable)
-      (let ((elided (md-table-align-tests--elisions)))
-        ;; Only the Description cells are too wide for their capped column.
-        (should (equal elided
-                       '("first item description here"
-                         "second item description")))))))
+      (dolist (offset '(1 3 5 8 10))
+        (md-table-align-tests--goto-table)
+        (md-table-align-hscroll-reset)
+        (md-table-align-tests--scroll offset)
+        (let ((rows (md-table-align-tests--visible-pipe-columns)))
+          (should (= (length rows) 4))
+          (dolist (row rows)
+            (should (equal row (car rows)))))))))
 
-(ert-deftest md-table-align-test-elided-text-stays-readable ()
-  "Elision overlays carry the full cell text for `display-local-help'."
+(ert-deftest md-table-align-test-scrolling-shifts-the-grid ()
+  "The visible pipes are the table's own grid, shifted by the offset.
+
+The fixture's grid puts pipes at 0, 8, 38 and 47.  In a 40-column frame
+the viewport is 38 wide once a column is held back for the wrap glyph and
+one for the trailing indicator, so the pipe at 38 falls exactly on its
+edge and is excluded.
+
+Scrolling two columns shifts everything left by two and spends one column
+on the leading indicator, a net shift of one: 8 and 38 render at 7 and
+37.  The pipe at 38 becomes visible in the process -- the viewport is one
+wider than at offset zero, because there is no longer a trailing
+indicator competing for the room."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (should (equal (car (md-table-align-tests--visible-pipe-columns))
+                     '(0 8)))
+      (md-table-align-tests--scroll 2)
+      (should (equal (car (md-table-align-tests--visible-pipe-columns))
+                     '(7 37))))))
+
+(ert-deftest md-table-align-test-scrolling-reveals-the-last-column ()
+  "Scrolling far enough brings the rightmost column into view.
+This is the whole point of the feature: with fitting, the tail of a wide
+table could not be reached at all."
   (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
     (md-table-align-tests--with-buffer md-table-align-tests--wide
       (md-table-align-tests--enable)
       (goto-char (point-min))
-      ;; Must land inside the elided tail, not merely inside the cell.
-      (should (search-forward "here" nil t))
-      (should (equal (get-char-property (match-beginning 0) 'help-echo)
-                     "first item description here")))))
+      (should (search-forward "open" nil t))
+      (should (md-table-align-tests--clipped-p (match-beginning 0)))
+      ;; Far more than the table is wide; the offset clamps to its edge.
+      (md-table-align-tests--scroll 200)
+      (goto-char (point-min))
+      (should (search-forward "open" nil t))
+      (should-not (md-table-align-tests--clipped-p (match-beginning 0))))))
 
-(ert-deftest md-table-align-test-fitting-does-not-modify-buffer-text ()
-  "Eliding is display-only, like every other overlay here."
+(ert-deftest md-table-align-test-scrolling-back-restores-the-left-edge ()
+  "Scrolling right undoes scrolling left, ending at offset zero."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (let ((before (md-table-align-tests--visible-pipe-columns)))
+        (md-table-align-tests--scroll 6)
+        (should-not (equal (md-table-align-tests--visible-pipe-columns) before))
+        (md-table-align-tests--goto-table)
+        (md-table-align-hscroll-right 6)
+        (redisplay t)
+        (should (equal (md-table-align-tests--visible-pipe-columns) before))))))
+
+(ert-deftest md-table-align-test-clipped-text-stays-readable ()
+  "Clip overlays carry the hidden text for `display-local-help'."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (goto-char (point-min))
+      (should (search-forward "open" nil t))
+      (let ((help (get-char-property (match-beginning 0) 'help-echo)))
+        (should help)
+        (should (string-search "open" help))))))
+
+(ert-deftest md-table-align-test-prose-is-untouched-by-scrolling ()
+  "Only table rows are clipped, so surrounding prose never moves.
+Native `hscroll' cannot do this: it shifts the whole window, and needs
+`truncate-lines' to work at all."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (dolist (offset '(0 5 10))
+        (md-table-align-tests--goto-table)
+        (md-table-align-hscroll-reset)
+        (when (> offset 0) (md-table-align-tests--scroll offset))
+        (dolist (text '("prose before the table" "prose after the table"))
+          (should (= (md-table-align-tests--column-of text) 0)))))))
+
+(ert-deftest md-table-align-test-point-is-never-inside-clipped-text ()
+  "Moving point into a scrolled-off cell brings the viewport to it.
+
+Not a nicety: text hidden by a `display' overlay collapses point onto the
+overlay's start, so without this the cursor would sit where nothing is
+rendered."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (goto-char (point-min))
+      (should (search-forward "open" nil t))
+      (goto-char (match-beginning 0))
+      (should (md-table-align-tests--clipped-p (point)))
+      ;; What `post-command-hook' runs after any command that moves point.
+      (md-table-align--follow-point)
+      (redisplay t)
+      (should-not (md-table-align-tests--clipped-p (point))))))
+
+(ert-deftest md-table-align-test-leaving-a-table-resets-its-offset ()
+  "A table left scrolled would be one whose first columns are just missing."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (let ((before (md-table-align-tests--visible-pipe-columns)))
+        (md-table-align-tests--scroll 6)
+        (should-not (equal (md-table-align-tests--visible-pipe-columns) before))
+        (goto-char (point-min))
+        (md-table-align--follow-point)
+        (redisplay t)
+        (should (equal (md-table-align-tests--visible-pipe-columns) before))))))
+
+(ert-deftest md-table-align-test-clipping-does-not-modify-buffer-text ()
+  "Clipping is display-only, like every other overlay here."
   (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
     (md-table-align-tests--with-buffer md-table-align-tests--wide
       (let ((before (buffer-substring-no-properties (point-min) (point-max))))
         (md-table-align-tests--enable)
+        (md-table-align-tests--scroll 6)
         (should (equal (buffer-substring-no-properties (point-min) (point-max))
                        before))
         (should-not (buffer-modified-p))))))
 
-(ert-deftest md-table-align-test-table-that-fits-is-not-elided ()
+(ert-deftest md-table-align-test-table-that-fits-is-not-clipped ()
   "A table with room to spare is left entirely alone."
   (md-table-align-tests--with-buffer md-table-align-tests--simple
     (md-table-align-tests--enable)
-    (should-not (md-table-align-tests--elisions))
+    (should-not (md-table-align-tests--clips))
+    (dolist (row (md-table-align-tests--pipe-columns))
+      (should (equal row md-table-align-tests--simple-columns)))))
+
+(ert-deftest md-table-align-test-table-that-fits-does-not-scroll ()
+  "There is nothing off screen to scroll to, so the command does nothing."
+  (md-table-align-tests--with-buffer md-table-align-tests--simple
+    (md-table-align-tests--enable)
+    (md-table-align-tests--scroll 5)
+    (should-not (md-table-align-tests--clips))
     (dolist (row (md-table-align-tests--pipe-columns))
       (should (equal row md-table-align-tests--simple-columns)))))
 
 (ert-deftest md-table-align-test-widening-the-frame-restores-the-table ()
-  "Growing the window re-fits, and the elisions go away."
+  "Growing the window past the table's width clears the clipping."
   (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
     (md-table-align-tests--with-buffer md-table-align-tests--wide
       (md-table-align-tests--enable)
-      (should (md-table-align-tests--elisions))
+      (should (md-table-align-tests--clips))
       (set-frame-width nil 100)
       ;; `set-frame-width' runs the window-change hooks the mode listens on.
       (redisplay t)
-      (should-not (md-table-align-tests--elisions))
+      (should-not (md-table-align-tests--clips))
       (should (equal (md-table-align-tests--screen-lines) '(1 1 1 1))))))
 
-(ert-deftest md-table-align-test-fits-down-to-the-floor ()
-  "Columns shrink as far as `md-table-align-min-column-width' and no further.
-At 20 columns the fixture fits with all three columns exactly at the floor."
-  (md-table-align-tests--with-frame-width 20
+(ert-deftest md-table-align-test-widening-clamps-a-scroll-offset ()
+  "An offset outlives a resize only as far as the wider window allows."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
     (md-table-align-tests--with-buffer md-table-align-tests--wide
       (md-table-align-tests--enable)
-      (should (md-table-align-tests--elisions))
-      (should (equal (md-table-align-tests--screen-lines) '(1 1 1 1))))))
+      (md-table-align-tests--scroll 8)
+      (set-frame-width nil 100)
+      (redisplay t)
+      (should-not (md-table-align-tests--clips))
+      (dolist (row (md-table-align-tests--visible-pipe-columns))
+        (should (equal row '(0 8 38 47)))))))
 
-(ert-deftest md-table-align-test-gives-up-rather-than-mangle ()
-  "A window too narrow even for floor-width columns leaves the table to wrap.
-Falling back to the current behaviour beats a row of bare ellipses."
+(ert-deftest md-table-align-test-narrow-window-still-shows-one-line-rows ()
+  "A window far too narrow for the columns clips rather than mangles.
+Where fitting gave up and let the table wrap, scrolling has no floor to
+hit: there is always a viewport, however little of the table it holds."
   (md-table-align-tests--with-frame-width 16
     (md-table-align-tests--with-buffer md-table-align-tests--wide
       (md-table-align-tests--enable)
-      (should-not (md-table-align-tests--elisions))
-      (should (seq-some (lambda (n) (> n 1))
-                        (md-table-align-tests--screen-lines))))))
+      (should (md-table-align-tests--clips))
+      (should (equal (md-table-align-tests--screen-lines) '(1 1 1 1))))))
 
 (provide 'md-table-align-tests)
 
