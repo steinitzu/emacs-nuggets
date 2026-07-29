@@ -1,7 +1,7 @@
 ;;; md-table-align.el --- Display-only alignment of Markdown tables -*- lexical-binding: t; -*-
 
 ;; Author: Steinthor Palsson
-;; Version: 0.1.0
+;; Version: 0.2.0
 ;; Package-Requires: ((emacs "31.1"))
 ;; Keywords: markdown, faces, convenience
 
@@ -19,6 +19,11 @@
 ;; Table discovery uses tree-sitter, so a `markdown' parser must be available
 ;; (see `markdown-ts-mode').  This gets fenced code blocks, escaped pipes and
 ;; per-column alignment markers right without any hand-rolled parsing.
+;;
+;; A table wider than the window is clipped to a horizontal viewport rather
+;; than left to wrap, and that viewport scrolls the way a `truncate-lines'
+;; buffer already does: it follows point, and \\[scroll-left] and
+;; \\[scroll-right] move it by hand.  See `md-table-align-hscroll'.
 ;;
 ;; Usage:
 ;;
@@ -63,33 +68,69 @@ alignment computed from character counts drifts by that ratio."
   "Major modes in which `global-md-table-align-mode' enables alignment."
   :type '(repeat symbol))
 
-(defcustom md-table-align-fit-to-window t
-  "Non-nil means narrow tables too wide to fit the window.
+(defcustom md-table-align-hscroll t
+  "Non-nil means clip wide tables to the window and scroll them sideways.
 
-A wrapped table is not merely ugly: its continuation lines restart at the
-window's left edge with no relation to the column grid, so alignment is
-destroyed.  Emacs has no way to disable wrapping for part of a buffer, so
-the alternative is to make the table narrow enough not to wrap, by eliding
-the tail of cells in the widest columns.
+A table wider than the window would otherwise wrap, and a wrapped row is
+not merely ugly: its continuation lines restart at the window's left edge
+with no relation to the column grid, so alignment is destroyed.  Emacs
+cannot turn wrapping off for part of a buffer, so each table is instead
+clipped to a horizontal viewport that scrolls.
 
-Elided text is still readable with \\[display-local-help] or by hovering
-the mouse over it."
+Scrolling follows the model a `truncate-lines' buffer already uses, so
+there is nothing new to learn: the viewport follows point, honouring
+`hscroll-margin' and `hscroll-step', and \\[scroll-left] and
+\\[scroll-right] move it explicitly."
   :type 'boolean)
 
 (defcustom md-table-align-ellipsis "…"
-  "String marking cell content elided to fit a table to the window."
+  "String marking table content clipped away by the window's edge."
   :type 'string)
 
-(defcustom md-table-align-min-column-width 3
-  "Smallest width, in characters, that fitting will shrink a column to.
-When every column is this narrow and the table still overflows, fitting
-gives up and the table wraps."
-  :type 'natnum)
+(defcustom md-table-align-hscroll-indicator t
+  "Non-nil means mark a table's clipped edges with `md-table-align-ellipsis'.
+The indicator occupies space inside the viewport, so turning this off
+gives the table itself slightly more room."
+  :type 'boolean)
 
-(defvar-local md-table-align--fitted-width nil
+(make-obsolete-variable
+ 'md-table-align-fit-to-window
+ "wide tables are now clipped and scrolled rather than elided in place;
+see `md-table-align-hscroll'."
+ "0.2.0")
+
+(make-obsolete-variable
+ 'md-table-align-min-column-width
+ "columns are no longer capped, so there is no width to floor;
+see `md-table-align-hscroll'."
+ "0.2.0")
+
+(defvar-local md-table-align--layout-width nil
   "Window text width, in pixels, the current layout was computed for.
 Nil when the buffer has not been laid out, or was laid out with no window
-to fit to.")
+to lay it out against.")
+
+(defvar-local md-table-align--hscroll 0
+  "Horizontal offset, in pixels, of the table currently scrolled.")
+
+(defvar-local md-table-align--hscroll-table nil
+  "Marker at the start of the table `md-table-align--hscroll' applies to.
+
+Only one table is scrolled at a time: the one point is in.  Per-table
+offsets were considered and rejected -- keyed by position they go stale
+on the first edit above the table, and a table left scrolled is one whose
+first columns are inexplicably missing.
+
+A marker rather than a plain position, so that editing above the table
+cannot silently hand its offset to whatever moves into its place.")
+
+(defvar-local md-table-align--metrics-cache nil
+  "Cons of (KEY . CONTEXT) memoising the most recent table measurement.")
+
+;; Defined by the minor mode below, but consulted by the scrolling code above
+;; it -- the hooks that drive scrolling must do nothing in buffers where the
+;; mode was switched off.
+(defvar md-table-align-mode)
 
 ;;;; Measurement
 
@@ -164,28 +205,37 @@ at all, such as `|a|', still be aligned."
       (overlay-put ov 'display string)
       ov)))
 
-(defun md-table-align--elide (beg end width ellipsis)
-  "Elide the tail of [BEG, END) so it renders no wider than WIDTH pixels.
-ELLIPSIS is the pixel width of `md-table-align-ellipsis'.  Returns the
-rendered width of what is left, which is at most WIDTH."
-  (let ((limit (- width ellipsis))
-        (keep beg))
-    ;; Longest prefix that still leaves room for the ellipsis.  Measured a
-    ;; character at a time rather than by counting: a proportional font gives
-    ;; no fixed relationship between characters and pixels.
+(defun md-table-align--split-at (beg end limit)
+  "Return the largest position in [BEG, END] whose text from BEG fits LIMIT.
+LIMIT is in pixels.  Measured a character at a time rather than counted:
+in a proportional font there is no fixed relationship between characters
+and pixels, so the boundary has to be found by measuring up to it."
+  (let ((keep beg))
     (while (and (< keep end)
                 (<= (md-table-align--measure beg (1+ keep)) limit))
       (setq keep (1+ keep)))
-    (when (< keep end)
-      (let ((ov (make-overlay keep end)))
-        (overlay-put ov 'md-table-align t)
-        (overlay-put ov 'evaporate t)
-        ;; Elided text has to stay reachable: both `display-local-help' and a
-        ;; mouse hover surface `help-echo'.
-        (overlay-put ov 'help-echo (buffer-substring-no-properties beg end))
-        (overlay-put ov 'display md-table-align-ellipsis)
-        (overlay-put ov 'priority 1)))
-    (+ (md-table-align--measure beg keep) ellipsis)))
+    keep))
+
+(defun md-table-align--hide (beg end indicate)
+  "Render the buffer text between BEG and END as nothing.
+With INDICATE, it renders as `md-table-align-ellipsis' instead, so the
+edge reads as clipped rather than as the end of the row.
+
+This is what keeps a clipped row on one screen line: text left outside
+the viewport would still be laid out, and would still wrap."
+  (when (> end beg)
+    (let ((ov (make-overlay beg end)))
+      (overlay-put ov 'md-table-align t)
+      ;; Tagged apart from the alignment overlays: this is the one kind that
+      ;; takes text away rather than moving it.
+      (overlay-put ov 'md-table-align-clip t)
+      (overlay-put ov 'evaporate t)
+      (overlay-put ov 'display (if indicate md-table-align-ellipsis ""))
+      ;; Clipped text stays readable without scrolling to it: both
+      ;; `display-local-help' and a mouse hover surface `help-echo'.
+      (overlay-put ov 'help-echo (buffer-substring-no-properties beg end))
+      (overlay-put ov 'priority 1)
+      ov)))
 
 ;;;; Table model
 ;;
@@ -337,54 +387,57 @@ changes, so moving between windows re-fits to whichever you are in."
   (when-let* ((window (md-table-align--window)))
     (window-body-width window t)))
 
-(defun md-table-align--cap-widths (widths fixed available floor)
-  "Cap WIDTHS in place so FIXED plus their total fits in AVAILABLE pixels.
+(defun md-table-align--table-width (ctx)
+  "Return the pixel width the table described by CTX renders at.
 
-FIXED is the width of everything that is not cell content: the indent, the
-borders and the padding.  FLOOR is the narrowest a column may become.
+Borders are budgeted from one measurement rather than per pipe.  Every
+`|' in a table renders in the same face, so the two agree; they could
+only diverge if a single table's pipes were faced differently, which the
+grammar gives no way to express."
+  (let ((widths (plist-get ctx :widths)))
+    (+ (plist-get ctx :indent)
+       (* (1+ (length widths)) (plist-get ctx :pipe))
+       (* (length widths) 2 md-table-align-padding (plist-get ctx :unit))
+       (seq-reduce #'+ widths 0))))
 
-All columns are capped at one value, chosen by binary search so the capped
-total just fits.  A single cap spends the shortfall on the widest columns
-and leaves narrow ones untouched, which is what keeps the result readable;
-shrinking every column proportionally would clip columns that had room to
-spare.
+(defun md-table-align--viewport (ctx offset)
+  "Return the viewport a table with context CTX is clipped to at OFFSET.
 
-Returns non-nil when a cap was applied.  When the table cannot fit even
-with every column at FLOOR, nothing is capped and the table is left to
-wrap -- falling back to the current behaviour beats a degenerate layout."
-  (let ((budget (- available fixed))
-        (total (seq-reduce #'+ widths 0)))
-    (when (and (> total budget)
-               (<= (* (length widths) floor) budget))
-      (let ((lo floor)
-            (hi (seq-max widths)))
-        (while (< lo hi)
-          (let* ((mid (/ (+ lo hi 1) 2))
-                 (capped (seq-reduce (lambda (acc w) (+ acc (min w mid)))
-                                     widths 0)))
-            (if (<= capped budget)
-                (setq lo mid)
-              (setq hi (1- mid)))))
-        (dotimes (i (length widths))
-          (aset widths i (min (aref widths i) lo)))
-        t))))
+The result is a plist of `:offset' (clamped so scrolling cannot run past
+the table's right edge), `:budget' -- the pixels left for the table --
+`:lead' and `:trail' for the clipped-edge indicators, and `:maxoff'.
 
-(defun md-table-align--fit (node widths indent unit)
-  "Cap WIDTHS so the table at NODE fits the window it is displayed in.
-INDENT is the table's leading offset and UNIT the width of one space, both
-in pixels."
-  (when-let* (((and md-table-align-fit-to-window (> (length widths) 0)))
-              (available (md-table-align--available-width))
-              (columns (length widths)))
-    (md-table-align--cap-widths
-     widths
-     (+ indent
-        (* (1+ columns) (md-table-align--glyph-width node "|"))
-        (* columns 2 md-table-align-padding unit))
-     ;; Reserve one character cell: a wrapped line spends one on the
-     ;; continuation glyph, and it absorbs rounding at the window edge.
-     (- available unit)
-     (* md-table-align-min-column-width unit))))
+Nil when nothing should be clipped: no window to measure against, or
+scrolling turned off.  The indicators are folded into the budget rather
+than drawn over the table, so that a column is never half-hidden behind
+one."
+  (when-let* (((and md-table-align-hscroll (> (length (plist-get ctx :widths)) 0)))
+              (avail (md-table-align--available-width)))
+    (let* ((unit (plist-get ctx :unit))
+           (ell (if md-table-align-hscroll-indicator (plist-get ctx :ellipsis) 0))
+           (width (plist-get ctx :table-width))
+           ;; Reserve one character cell: a wrapped line spends one on the
+           ;; continuation glyph, and it absorbs rounding at the window edge.
+           (available (- avail unit))
+           ;; At the rightmost offset a lead indicator is showing, so that is
+           ;; the budget the limit has to be computed against.  Choosing it
+           ;; this way makes the clamp a fixed point: laying out at `maxoff'
+           ;; reproduces exactly this budget, and the table's right edge lands
+           ;; exactly on the viewport's.
+           (maxoff (if (<= width available) 0 (max 0 (- width (- available ell)))))
+           (o (max 0 (min offset maxoff)))
+           (lead (if (> o 0) ell 0))
+           (trail (if (> (- width o) (- available lead)) ell 0))
+           (budget (- available lead trail)))
+      ;; A window with no room for even a couple of characters of table would
+      ;; clip it to nothing.  Leaving it to wrap is the better failure: it is
+      ;; what happened before any of this existed, and it hides nothing.
+      (when (>= budget (* 2 unit))
+        (list :offset o
+              :lead lead
+              :trail trail
+              :budget budget
+              :maxoff maxoff)))))
 
 (defun md-table-align--content-offset (align width cell-width)
   "Return leading padding for CELL-WIDTH text in a WIDTH column under ALIGN."
@@ -393,25 +446,34 @@ in pixels."
     ('center (/ (max 0 (- width cell-width)) 2))
     (_ 0)))
 
-(defun md-table-align--layout-row (row ctx)
-  "Place overlays aligning ROW according to layout context CTX.
-CTX is a plist of `:widths', `:aligns', `:indent', `:unit' -- the pixel
-width of one space, which converts `md-table-align-padding' from spaces
-into pixels -- and `:ellipsis', the pixel width of the elision indicator."
+(defun md-table-align--row-plan (row ctx)
+  "Return the layout steps for ROW under context CTX, in buffer order.
+
+Each step is a plist describing one thing that has to land somewhere
+definite on the grid: `:kind' is `pipe', `content' or `dashes', `:beg'
+and `:end' bound the buffer text it covers, `:x' is the pixel column its
+rendering starts at and `:width' how wide that rendering is.
+
+Computing the grid separately from placing it is what makes horizontal
+scrolling possible.  The coordinates here are absolute -- what the table
+would look like in an unbounded window -- and the viewport is a
+transformation applied to them afterwards.  Deriving a scroll offset from
+buffer columns instead looks equivalent and is not: cells differ in
+length, so the same buffer column is a different grid column on every
+row, and the alignment the package exists to provide collapses."
   (let* ((widths (plist-get ctx :widths))
          (aligns (plist-get ctx :aligns))
          (unit (plist-get ctx :unit))
-         (ellipsis (plist-get ctx :ellipsis))
          (pipes (plist-get row :pipes))
          (cells (plist-get row :cells))
          (delimiter (plist-get row :delimiter))
          (pad (* md-table-align-padding unit))
          (x (plist-get ctx :indent))
-         (i 0))
+         (i 0)
+         steps)
     (dolist (cell cells)
       (let ((width (aref widths i))
-            (open (nth i pipes))
-            (close (nth (1+ i) pipes)))
+            (open (nth i pipes)))
         ;; Without an opening pipe there is no border to align against.
         (when open
           ;; A column may have no cell node at all, and an empty cell's
@@ -419,68 +481,190 @@ into pixels -- and `:ellipsis', the pixel width of the elision indicator."
           (let* ((beg (if cell (plist-get cell :beg) (1+ open)))
                  (end (if cell (plist-get cell :end) (1+ open)))
                  (cell-width (if cell (plist-get cell :width) 0))
-                 (empty (<= end beg))
-                 (inner (+ pad width pad)))
-            ;; Content wider than its own column only happens once fitting has
-            ;; capped that column, so this is where a table is made to fit.
-            (when (and (not empty) (not delimiter) (> cell-width width))
-              (setq cell-width (md-table-align--elide beg end width ellipsis)))
-            ;; Step past the opening pipe.  Its width is measured rather than
-            ;; assumed, for the same reason cell widths are.
-            (setq x (+ x (md-table-align--measure open (1+ open))))
+                 (close (nth (1+ i) pipes))
+                 (inner (+ pad width pad))
+                 ;; Measured rather than assumed, for the same reason cell
+                 ;; widths are.
+                 (pw (md-table-align--measure open (1+ open))))
+            (push (list :kind 'pipe :beg open :end (1+ open) :x x :width pw)
+                  steps)
+            (setq x (+ x pw))
             (cond
              (delimiter
-              ;; Re-render the dashes across the full inner width, matching
-              ;; the `|:------|----:|' style `markdown-table-align' produces.
-              (md-table-align--replace
-               (1+ open) (or close (1+ end))
-               (md-table-align--delimiter-string
-                inner unit (and cell (plist-get cell :colons)))))
-             ;; Nothing to position when the cell is empty; the closing
-             ;; border below takes care of the whole gap.
-             ((not empty)
-              (md-table-align--pad
-               (1+ open) beg
-               (+ x pad (md-table-align--content-offset
-                         (aref aligns i) width cell-width)))))
-            (setq x (+ x inner))
-            ;; Push the closing pipe onto the grid.
-            (when close
-              (md-table-align--pad
-               (cond
-                ;; The delimiter's dashes already occupy the whole span and
-                ;; are character-quantised, so pin the border from where it
-                ;; sits and let the stretch absorb the rounding shortfall.
-                (delimiter close)
-                ;; For an empty cell the entire span between the borders is
-                ;; padding; stretching it avoids a degenerate zero-length
-                ;; overlay.
-                (empty (1+ open))
-                (t end))
-               close x))))
-        (setq i (1+ i))))))
+              ;; The dashes are re-rendered across the full inner width,
+              ;; matching the `|:------|----:|' style `markdown-table-align'
+              ;; produces.
+              (push (list :kind 'dashes
+                          :beg (1+ open) :end (or close (1+ end))
+                          :x x :width inner
+                          :colons (and cell (plist-get cell :colons)))
+                    steps))
+             ;; Nothing to position when the cell is empty: the stretch to the
+             ;; closing border takes care of the whole gap.
+             ((> end beg)
+              (push (list :kind 'content :beg beg :end end
+                          :x (+ x pad (md-table-align--content-offset
+                                       (aref aligns i) width cell-width))
+                          :width cell-width)
+                    steps)))
+            (setq x (+ x inner))))
+        (setq i (1+ i))))
+    ;; The pipe closing the last column belongs to no cell of its own.
+    (when-let* ((last (nth (length cells) pipes)))
+      (push (list :kind 'pipe :beg last :end (1+ last) :x x
+                  :width (md-table-align--measure last (1+ last)))
+            steps))
+    (nreverse steps)))
 
-(defun md-table-align--layout-table (node)
-  "Align the table at NODE by placing overlays."
+(defun md-table-align--clip-steps (steps lo hi)
+  "Return the members of STEPS rendering inside the pixel span [LO, HI).
+
+Steps wholly outside it are dropped, and steps straddling an edge are
+trimmed according to what they are: `content' is split at a character
+boundary and keeps the part inside, `dashes' is simply regenerated
+narrower, and a `pipe' is all-or-nothing, since half a border reads as a
+mistake rather than as a clipped edge.
+
+A dropped pipe is never stranded between two visible steps.  At the left
+edge everything before it is further left still, so it falls inside the
+hidden prefix; at the right edge, inside the hidden suffix."
+  (delq
+   nil
+   (mapcar
+    (lambda (step)
+      (let ((x (plist-get step :x))
+            (w (plist-get step :width))
+            (beg (plist-get step :beg))
+            (end (plist-get step :end)))
+        (unless (or (<= (+ x w) lo) (>= x hi))
+          (pcase (plist-get step :kind)
+            ('pipe (and (>= x lo) (<= (+ x w) hi) step))
+            ('content
+             (let ((b beg) (e end) (nx x))
+               (when (< x lo)
+                 (setq b (md-table-align--split-at beg end (- lo x))
+                       nx (+ x (md-table-align--measure beg b))))
+               (when (> (+ x w) hi)
+                 (setq e (md-table-align--split-at beg end (- hi x))))
+               (when (> e b)
+                 (list :kind 'content :beg b :end e :x nx
+                       :width (md-table-align--measure b e)))))
+            ('dashes
+             ;; A dash run's rendered width has no relation to how many
+             ;; characters back it, so it cannot be split at a character the
+             ;; way content can.  It is regenerated at the visible width
+             ;; instead, and keeps only the alignment colons whose end of the
+             ;; run survived.
+             (let ((vx (max x lo))
+                   (vend (min (+ x w) hi))
+                   (colons (plist-get step :colons)))
+               (when (> vend vx)
+                 (list :kind 'dashes :beg beg :end end :x vx
+                       :width (- vend vx)
+                       :colons (cons (and (car colons) (>= x lo))
+                                     (and (cdr colons) (<= (+ x w) hi)))))))))))
+    steps)))
+
+(defun md-table-align--place (step from shift unit first)
+  "Place the overlays rendering STEP, shifted by SHIFT pixels.
+FROM is the buffer position the preceding step ended at, UNIT the pixel
+width of one character, and FIRST marks the leftmost visible step."
+  (let ((x (+ (plist-get step :x) shift))
+        (beg (plist-get step :beg))
+        (end (plist-get step :end)))
+    (pcase (plist-get step :kind)
+      ('dashes
+       ;; The dash string is generated to length, so it positions itself --
+       ;; except at the viewport's left edge, where there is a clipped prefix
+       ;; in front of it to step over.
+       (when first (md-table-align--pad beg beg x))
+       (md-table-align--replace
+        beg end (md-table-align--delimiter-string
+                 (plist-get step :width) unit (plist-get step :colons))))
+      (_ (md-table-align--pad from beg x)))))
+
+(defun md-table-align--layout-row (row ctx)
+  "Place overlays laying ROW out according to layout context CTX.
+When CTX carries a `:view', the row is clipped to it and everything
+outside is hidden; otherwise the row is laid out in full and may wrap."
+  (let* ((view (plist-get ctx :view))
+         (offset (if view (plist-get view :offset) 0))
+         (lead (if view (plist-get view :lead) 0))
+         (steps (md-table-align--row-plan row ctx))
+         (visible (if view
+                      (md-table-align--clip-steps
+                       steps offset (+ offset (plist-get view :budget)))
+                    steps))
+         (first-pipe (car (plist-get row :pipes)))
+         (bol (save-excursion (goto-char first-pipe) (line-beginning-position)))
+         (eol (save-excursion (goto-char first-pipe) (line-end-position))))
+    (if (null visible)
+        ;; Scrolled clear of every column on this row.
+        (when view (md-table-align--hide bol eol (> offset 0)))
+      (let ((cut (plist-get (car visible) :beg))
+            (cutr (plist-get (car (last visible)) :end))
+            (shift (- lead offset))
+            (prev nil))
+        (when view
+          ;; Everything outside the viewport is one contiguous buffer prefix
+          ;; and one contiguous suffix -- different ones on every row, since
+          ;; the grid position of a buffer position depends on the row's own
+          ;; cell contents.
+          (md-table-align--hide bol cut (> lead 0))
+          (md-table-align--hide cutr eol (> (plist-get view :trail) 0)))
+        ;; With the clipped text rendering at zero width, what is left lays
+        ;; out compactly, so every step sits left of its target and each
+        ;; stretch glyph still only ever pushes forward -- which is the
+        ;; invariant alignment has relied on since v1.
+        (dolist (step visible)
+          (md-table-align--place step (or prev cut) shift
+                                 (plist-get ctx :unit) (null prev))
+          (setq prev (plist-get step :end)))))))
+
+(defun md-table-align--measure-table (node)
+  "Return the layout context for the table at NODE, or nil if it has no rows.
+Widths are measured before any overlay exists -- the region is swept
+clear first, and `buffer-substring' carries text properties but not
+overlays -- so a clipped table is never measured against its own
+clipping."
   (let ((rows (md-table-align--parse-table node)))
     (when (cdr rows)
       (let* ((unit (md-table-align--glyph-width node " "))
              (widths (md-table-align--column-widths rows unit))
-             (aligns (md-table-align--alignments rows (length widths)))
-             (indent (md-table-align--indent-pixels rows))
-             ctx)
-        ;; Widths are measured before any overlay exists -- the region was
-        ;; swept clear, and `buffer-substring' carries text properties but not
-        ;; overlays -- so capping never compounds a previous cap.
-        (md-table-align--fit node widths indent unit)
-        (setq ctx (list :widths widths
-                        :aligns aligns
-                        :indent indent
+             (ctx (list :rows rows
+                        :widths widths
+                        :aligns (md-table-align--alignments rows (length widths))
+                        :indent (md-table-align--indent-pixels rows)
                         :unit unit
+                        :pipe (md-table-align--glyph-width node "|")
                         :ellipsis (md-table-align--glyph-width
-                                   node md-table-align-ellipsis)))
-        (dolist (row rows)
-          (md-table-align--layout-row row ctx))))))
+                                   node md-table-align-ellipsis))))
+        (plist-put ctx :table-width (md-table-align--table-width ctx))))))
+
+(defun md-table-align--metrics (node)
+  "Return the layout context for the table at NODE, measuring it if needed.
+
+Memoised against the buffer's modification tick.  Point motion inside a
+table consults the grid on every command, and re-measuring every cell
+that often would make simply moving the cursor crawl."
+  (let ((key (list (buffer-chars-modified-tick)
+                   (treesit-node-start node)
+                   (treesit-node-end node)
+                   md-table-align-padding)))
+    (if (equal (car md-table-align--metrics-cache) key)
+        (cdr md-table-align--metrics-cache)
+      (let ((ctx (md-table-align--measure-table node)))
+        (setq md-table-align--metrics-cache (cons key ctx))
+        ctx))))
+
+(defun md-table-align--layout-table (node)
+  "Align the table at NODE by placing overlays."
+  (when-let* ((ctx (md-table-align--metrics node)))
+    (let ((ctx (plist-put (copy-sequence ctx)
+                          :view (md-table-align--viewport
+                                 ctx (md-table-align--offset-of node)))))
+      (dolist (row (plist-get ctx :rows))
+        (md-table-align--layout-row row ctx)))))
 
 ;;;; Discovery
 
@@ -496,7 +680,7 @@ into pixels -- and `:ellipsis', the pixel width of the elision indicator."
 
 (defun md-table-align--align-region (beg end)
   "Align every table overlapping the region BEG to END."
-  (setq md-table-align--fitted-width (md-table-align--available-width))
+  (setq md-table-align--layout-width (md-table-align--available-width))
   (dolist (node (md-table-align--tables beg end))
     (let ((tbeg (treesit-node-start node))
           (tend (treesit-node-end node)))
@@ -506,6 +690,189 @@ into pixels -- and `:ellipsis', the pixel width of the elision indicator."
 (defun md-table-align--jit (beg end)
   "Alignment entry point for `jit-lock', covering BEG to END."
   (md-table-align--align-region beg end))
+
+(defun md-table-align--table-at (pos)
+  "Return the `pipe_table' node containing POS, if any."
+  (when (md-table-align--parser)
+    (when-let* ((node (treesit-node-at pos 'markdown)))
+      (treesit-parent-until
+       node (lambda (n) (equal (treesit-node-type n) "pipe_table")) t))))
+
+;;;; Horizontal scrolling
+
+(defun md-table-align--offset-of (node)
+  "Return the offset the table at NODE should be laid out with.
+Only the table point is in carries one; every other table in the buffer
+renders from its own left edge."
+  (if (and md-table-align--hscroll-table
+           (eql (marker-position md-table-align--hscroll-table)
+                (treesit-node-start node)))
+      md-table-align--hscroll
+    0))
+
+(defun md-table-align--row-at (ctx pos)
+  "Return the row of CTX whose line contains POS, if any."
+  (seq-find
+   (lambda (row)
+     (when-let* ((pipe (car (plist-get row :pipes))))
+       (save-excursion
+         (goto-char pipe)
+         (and (<= (line-beginning-position) pos)
+              (<= pos (line-end-position))))))
+   (plist-get ctx :rows)))
+
+(defun md-table-align--aligned-x (ctx pos)
+  "Return the pixel column on CTX's grid at which POS renders, or nil.
+Positions in the whitespace between two cells report the next thing that
+renders, which is where the cursor appears once alignment has closed the
+gap up."
+  (when-let* ((row (md-table-align--row-at ctx pos)))
+    (let ((steps (md-table-align--row-plan row ctx))
+          (last nil))
+      (or (catch 'found
+            (dolist (step steps)
+              (let ((beg (plist-get step :beg))
+                    (end (plist-get step :end)))
+                (when (< pos beg)
+                  (throw 'found (plist-get step :x)))
+                (when (< pos end)
+                  (throw 'found
+                         (if (eq (plist-get step :kind) 'content)
+                             (+ (plist-get step :x)
+                                (md-table-align--measure beg pos))
+                           (plist-get step :x))))
+                (setq last step)))
+            nil)
+          ;; Past the last thing on the row -- trailing whitespace, or the
+          ;; end of a ragged row.
+          (and last (+ (plist-get last :x) (plist-get last :width)))))))
+
+(defun md-table-align--desired-offset (x view unit)
+  "Return the offset of VIEW adjusted to keep grid column X in sight.
+
+This is `auto-hscroll-mode''s rule, in pixels: point may come within
+`hscroll-margin' columns of an edge before the viewport moves, and it
+then moves by `hscroll-step' -- centring X when that is zero, as Emacs
+does.  A fixed step is not always enough to reach X, so it falls back to
+centring rather than creeping one step per command."
+  (let* ((offset (plist-get view :offset))
+         (budget (plist-get view :budget))
+         (maxoff (plist-get view :maxoff))
+         ;; A margin wider than the viewport would leave nowhere to stand.
+         (margin (min (* (max 0 hscroll-margin) unit) (/ budget 3)))
+         (clamp (lambda (o) (max 0 (min maxoff (round o)))))
+         (centre (lambda () (funcall clamp (- x (/ budget 2)))))
+         (step (cond ((not (numberp hscroll-step)) nil)
+                     ((floatp hscroll-step)
+                      (and (> hscroll-step 0) (* hscroll-step budget)))
+                     ((> hscroll-step 0) (* hscroll-step unit)))))
+    (if (and (>= x (+ offset margin))
+             (<= x (- (+ offset budget) margin)))
+        offset
+      (if (null step)
+          (funcall centre)
+        (let ((moved (funcall clamp (if (< x (+ offset margin))
+                                        (- offset step)
+                                      (+ offset step)))))
+          (if (and (>= x (+ moved margin))
+                   (<= x (- (+ moved budget) margin)))
+              moved
+            (funcall centre)))))))
+
+(defun md-table-align--relayout (node)
+  "Lay the table at NODE out again from scratch."
+  (let ((beg (treesit-node-start node))
+        (end (treesit-node-end node)))
+    (md-table-align--clear-region beg end)
+    (md-table-align--layout-table node)))
+
+(defun md-table-align--set-offset (node offset)
+  "Lay the table at NODE out again, scrolled to OFFSET."
+  (setq md-table-align--hscroll offset)
+  (if md-table-align--hscroll-table
+      (set-marker md-table-align--hscroll-table (treesit-node-start node))
+    (setq md-table-align--hscroll-table
+          (copy-marker (treesit-node-start node))))
+  (md-table-align--relayout node))
+
+(defun md-table-align--reset-offset ()
+  "Return the scrolled table, if there is one, to its left edge."
+  (when md-table-align--hscroll-table
+    (let ((pos (marker-position md-table-align--hscroll-table))
+          (scrolled (/= md-table-align--hscroll 0)))
+      (setq md-table-align--hscroll 0)
+      (set-marker md-table-align--hscroll-table nil)
+      (setq md-table-align--hscroll-table nil)
+      (when-let* ((scrolled)
+                  (pos)
+                  (node (md-table-align--table-at pos)))
+        (md-table-align--relayout node)))))
+
+(defun md-table-align--scroll-into-view (node)
+  "Scroll the table at NODE, if need be, so that point is inside it."
+  (when-let* ((ctx (md-table-align--metrics node))
+              (view (md-table-align--viewport
+                     ctx (md-table-align--offset-of node)))
+              (x (md-table-align--aligned-x ctx (point))))
+    (let ((want (md-table-align--desired-offset x view (plist-get ctx :unit))))
+      (unless (eql want (plist-get view :offset))
+        (md-table-align--set-offset node want)))))
+
+(defun md-table-align--follow-point ()
+  "Keep point inside the viewport of the table it is in.
+
+This is `auto-hscroll-mode' for tables, and it is not a refinement: text
+hidden by a `display' overlay collapses point onto that overlay's start,
+so a viewport that ignored point would make cursor motion through
+scrolled-off text meaningless.  Defining the viewport to contain point
+means point is never inside hidden text at all."
+  (when (and md-table-align-mode md-table-align-hscroll)
+    (let ((node (md-table-align--table-at (point))))
+      ;; Moving away from a scrolled table -- to another table, or out of
+      ;; tables entirely -- puts it back the way it was found.
+      (unless (and node
+                   md-table-align--hscroll-table
+                   (eql (marker-position md-table-align--hscroll-table)
+                        (treesit-node-start node)))
+        (md-table-align--reset-offset))
+      (when node
+        (md-table-align--scroll-into-view node)))))
+
+(defun md-table-align--point-into-view (ctx view)
+  "Move point into VIEW when clipping under CTX has left it outside.
+Deliberately mirrors the vertical case: `scroll-up' drags point along
+rather than leaving it off screen, and an explicit horizontal scroll that
+left point behind would simply be undone by `md-table-align--follow-point'."
+  (when-let* ((row (md-table-align--row-at ctx (point)))
+              (offset (plist-get view :offset))
+              (visible (md-table-align--clip-steps
+                        (md-table-align--row-plan row ctx)
+                        offset (+ offset (plist-get view :budget)))))
+    (let ((cut (plist-get (car visible) :beg))
+          (cutr (plist-get (car (last visible)) :end)))
+      (cond ((< (point) cut) (goto-char cut))
+            ((> (point) cutr) (goto-char cutr))))))
+
+(defun md-table-align--scroll (columns sign)
+  "Scroll the table at point by COLUMNS in direction SIGN.
+COLUMNS nil means a viewport-ful less the two columns of context
+`scroll-left' keeps.  Returns non-nil when a table was scrolled."
+  (when-let* ((node (md-table-align--table-at (point)))
+              (ctx (md-table-align--metrics node))
+              (view (md-table-align--viewport
+                     ctx (md-table-align--offset-of node))))
+    (let* ((unit (plist-get ctx :unit))
+           (budget (plist-get view :budget))
+           (delta (* sign (if columns
+                              (* columns unit)
+                            (max unit (- budget (* 2 unit))))))
+           (want (max 0 (min (plist-get view :maxoff)
+                             (+ (plist-get view :offset) delta)))))
+      (unless (eql want (plist-get view :offset))
+        (md-table-align--set-offset node want)
+        (md-table-align--point-into-view
+         ctx (md-table-align--viewport ctx want)))
+      t)))
 
 ;;;; Commands
 
@@ -522,9 +889,50 @@ Buffer text is not modified, so this works in read-only buffers."
 (defun md-table-align-clear ()
   "Remove all table alignment from the buffer."
   (interactive)
+  (setq md-table-align--metrics-cache nil)
   (md-table-align--clear-region (point-min) (point-max)))
 
+;;;###autoload
+(defun md-table-align-hscroll-left (&optional arg)
+  "Scroll the table at point ARG columns to the left.
+With point outside a table, or with `md-table-align-hscroll' off, does
+what \\[scroll-left] would have done, which is the binding this command
+takes over."
+  (interactive "P")
+  (unless (and md-table-align-hscroll
+               (md-table-align--scroll
+                (and arg (prefix-numeric-value arg)) 1))
+    (call-interactively #'scroll-left)))
+
+;;;###autoload
+(defun md-table-align-hscroll-right (&optional arg)
+  "Scroll the table at point ARG columns to the right.
+With point outside a table, or with `md-table-align-hscroll' off, does
+what \\[scroll-right] would have done, which is the binding this command
+takes over."
+  (interactive "P")
+  (unless (and md-table-align-hscroll
+               (md-table-align--scroll
+                (and arg (prefix-numeric-value arg)) -1))
+    (call-interactively #'scroll-right)))
+
+;;;###autoload
+(defun md-table-align-hscroll-reset ()
+  "Return the scrolled table to its left edge."
+  (interactive)
+  (md-table-align--reset-offset))
+
 ;;;; Modes
+
+(defvar-keymap md-table-align-mode-map
+  :doc "Keymap for `md-table-align-mode'.
+
+Only the horizontal scrolling commands are bound, and only over the
+bindings of the commands they stand in for.  `scroll-left' and
+`scroll-right' do nothing useful in a buffer whose lines wrap, so there
+is no behaviour being displaced."
+  "<remap> <scroll-left>" #'md-table-align-hscroll-left
+  "<remap> <scroll-right>" #'md-table-align-hscroll-right)
 
 ;;;###autoload
 (define-minor-mode md-table-align-mode
@@ -542,35 +950,42 @@ Requires a `markdown' tree-sitter parser in the buffer; see
             (setq md-table-align-mode nil)
             (message "md-table-align: no `markdown' tree-sitter parser available"))
         (jit-lock-register #'md-table-align--jit t)
-        ;; Window geometry is not something `jit-lock' watches, so fitting
+        ;; Window geometry is not something `jit-lock' watches, so clipping
         ;; needs its own triggers.  `window-state-change-functions' also fires
-        ;; on a change of selected window, which is what re-fits a table when
+        ;; on a change of selected window, which is what re-lays a table when
         ;; you move to a differently sized window.
         (add-hook 'window-configuration-change-hook #'md-table-align--refit nil t)
         (add-hook 'window-state-change-functions #'md-table-align--refit nil t)
+        ;; The viewport has to follow point, or cursor motion into
+        ;; scrolled-off text would land where nothing is rendered.
+        (add-hook 'post-command-hook #'md-table-align--follow-point nil t)
         ;; Text already fontified before we registered would otherwise never
         ;; reach our jit-lock handler.
         (md-table-align-buffer))
     (jit-lock-unregister #'md-table-align--jit)
     (remove-hook 'window-configuration-change-hook #'md-table-align--refit t)
     (remove-hook 'window-state-change-functions #'md-table-align--refit t)
-    (setq md-table-align--fitted-width nil)
+    (remove-hook 'post-command-hook #'md-table-align--follow-point t)
+    (setq md-table-align--layout-width nil
+          md-table-align--hscroll 0)
+    (when md-table-align--hscroll-table
+      (set-marker md-table-align--hscroll-table nil)
+      (setq md-table-align--hscroll-table nil))
     (md-table-align-clear)))
 
-(defvar md-table-align-mode)
-
 (defun md-table-align--refit (&rest _)
-  "Re-align when the window a table is fitted to has changed width.
+  "Re-align when the window a table is laid out against has changed width.
 `jit-lock' covers edits but not geometry: resizing a window does not
 invalidate fontification.  Clearing and asking `jit-lock' to refontify
 keeps the work lazy -- only tables that come back on screen are laid out
-again."
-  (when (and md-table-align-mode md-table-align-fit-to-window)
+again.  Any scroll offset survives, clamped to the new width by
+`md-table-align--viewport'."
+  (when (and md-table-align-mode md-table-align-hscroll)
     (let ((width (md-table-align--available-width)))
       ;; These hooks fire on every window operation; the width guard is what
       ;; stops that turning into a re-layout of every visible table.
-      (unless (or (null width) (eql width md-table-align--fitted-width))
-        (setq md-table-align--fitted-width width)
+      (unless (or (null width) (eql width md-table-align--layout-width))
+        (setq md-table-align--layout-width width)
         (md-table-align-clear)
         (jit-lock-refontify)))))
 
