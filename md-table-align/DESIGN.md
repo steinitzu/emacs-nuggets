@@ -421,6 +421,178 @@ overflow:
 - a table with more columns than can fit falls back to wrapping rather than
   producing a degenerate layout.
 
+## Horizontal scrolling (v4)
+
+v3 stopped wide tables wrapping by hiding text, and that trade was never
+settled — see [docs/seeing-elided-table-text.md](../docs/seeing-elided-table-text.md).
+It is now settled: **hiding text with no way to reach it is not acceptable.**
+Width capping is replaced by a horizontal **viewport** per table, scrolled with
+the same semantics a `truncate-lines` buffer already has.
+
+The table still never wraps — that v3 guarantee is kept — but the text that
+does not fit is now *scrolled to* rather than *lost*.
+
+### Why not wrap cells into taller rows
+
+The obvious alternative — reflowing each cell so a wide table becomes a tall
+one — was investigated first and rejected. It is mechanically possible; it is
+not worth it. Measured in a real TTY frame:
+
+| # | Question | Result |
+|---|----------|--------|
+| A | Does an injected `"\n"` break the line under `word-wrap`, not just `truncate-lines t`? | **Yes** — the v3 doc's open question, resolved |
+| B | Does `(space :align-to (N))` re-indent the continuation line? | **Yes**, to an absolute column |
+| C | Can `:align-to` move text *backwards*? | **No** — asked to align to 5 from column 20, text stayed at 20 |
+
+C is the constraint that decides it. Screen order must follow buffer order, so
+a proper wrapped row — screen order `c1L1 c2L1 c3L1 / c1L2 c2L2 c3L2` against
+buffer order `c1L1 c1L2 c2L1 c2L2 c3L1 c3L2` — is unreachable as soon as **two**
+cells wrap. Breaking cells in place instead yields a staircase, each break
+shoving every later cell down a line:
+
+```
+| alpha beta | first item
+              description | open
+                                      now |
+```
+
+A real wrapped row can be built, by hiding each over-long tail with `display`
+`""` and re-emitting copies of them row-major in one synthesized continuation
+string (verified: the row then occupies two screen lines and later cells stay
+on line 1). But that makes the package *re-emit* text rather than position it,
+and point inside a relocated tail collapses onto the overlay start — three
+distinct buffer positions all rendered at column 20. Editing and cursor motion
+inside a wrapped cell would go blind.
+
+Decisive, though, is that it does not solve the problem: a table with genuinely
+long cell text becomes a very tall table, which is not more readable than a
+scrollable one.
+
+### Mechanism
+
+Scrolling is expressed as an **offset in the aligned coordinate space**, not in
+buffer columns. Each table has a viewport `[offset, offset + window-width)`,
+and each row is laid out as:
+
+1. Everything left of `offset` in the aligned grid is one **contiguous buffer
+   prefix** — a *different* prefix on each row, since cell contents differ in
+   length. Hide it with a `display` `""` overlay.
+2. Every remaining pipe and cell start gets its existing stretch glyph, with
+   the target computed as `aligned-column - offset`.
+3. Everything right of the viewport is clipped the way v3 elides a tail —
+   otherwise the row still wraps.
+
+Step 1 is what makes step 2 sound. With the prefix rendered at zero width the
+remaining text lays out compactly, so every element sits *left* of its shifted
+target and each `:align-to` still pushes forward. That forward-only property is
+exactly the invariant v1 already depends on; nothing new is required of it.
+
+Getting this wrong is easy and was caught in probing: picking the clip point in
+*buffer* columns while the targets are in *aligned* columns leaves a different
+amount of each row visible, and the column grid collapses. Verified correct
+against the aligned rule at four offsets on a three-row table — every row
+agreed on every visible pipe column, matching the shifted grid exactly:
+
+```
+offset  0 -> (8 20 31 40) (8 20 31 40) (8 20 31 40)   agree: YES
+offset 10 -> (10 21 30)   (10 21 30)   (10 21 30)     agree: YES
+offset 20 -> (11 20)      (11 20)      (11 20)        agree: YES
+offset 31 -> (9)          (9)          (9)            agree: YES
+```
+
+Two properties fall out that native `hscroll` cannot offer, both verified:
+prose around the table **does not move** (only table rows are clipped), and the
+row stays on **one screen line** under `word-wrap`, with no `truncate-lines`
+anywhere.
+
+### Scroll semantics: mirror `truncate-lines`
+
+The model is the one Emacs users already have, so there is nothing new to
+learn. Concretely:
+
+- **Continuous and column-granular.** Not column-at-a-time: a cell wider than
+  the window must be readable to its end, and whole-column stepping would show
+  its first screenful and no more — which is v3's complaint again.
+- **The viewport follows point**, as `auto-hscroll-mode` does, honouring
+  `hscroll-margin` for edge proximity and `hscroll-step` for step size. Reusing
+  the built-in variables means an existing config carries over.
+- **`C-x <` / `C-x >`** (`scroll-left` / `scroll-right`) are remapped inside a
+  table. They do nothing useful in a wrapped buffer, so there is no behaviour
+  to displace.
+
+Point-following is not a refinement here, it is load-bearing. Text hidden by a
+`display` `""` overlay collapses point onto the overlay start, so a viewport
+that ignored point would make cursor motion inside scrolled-off text
+meaningless. Defining the viewport to contain point means point is never inside
+hidden text, and the problem cannot arise.
+
+It also **subsumes "reveal the cell at point"**, deferred in v3 — the cell at
+point is visible by construction, so that feature is dropped rather than
+implemented.
+
+### Scope of an offset
+
+One table at a time: the table containing point. Leaving a table resets its
+offset to zero.
+
+Per-table persistent offsets were considered and rejected. Keyed by buffer
+position they go stale on the first edit above the table, and the extra state
+buys little — coming back to a table you scrolled earlier is rare, and a table
+left scrolled is a table whose first columns are mysteriously missing.
+
+### Interaction with existing machinery
+
+- **jit-lock** re-lays a table as a unit already, and the offset is an input to
+  layout, so an edit re-renders at the current offset with no extra plumbing.
+- **Window resize** already re-fits via `window-configuration-change-hook` and
+  `window-state-change-functions`; the same handler clamps the offset when the
+  window widens enough to make it unnecessary.
+- **Point-following** needs `post-command-hook`, which v3 deliberately avoided.
+  It runs before redisplay, so an offset change is applied without flicker.
+  The handler must be cheap: it exits immediately unless point is in a table
+  and the offset actually needs to change.
+
+### Interface
+
+New:
+
+- `md-table-align-hscroll` — enable the viewport. Default `t`.
+- `md-table-align-hscroll-indicator` — whether to mark clipped edges. Default `t`.
+- `md-table-align-hscroll-table-at-point` / `-left` / `-right` — commands.
+
+Obsoleted rather than redefined, per the repo's live-reload rule — a stale
+value in a running session or a user's config must go inert, not be silently
+reinterpreted:
+
+- `md-table-align-fit-to-window` → `make-obsolete-variable`; fitting is gone.
+- `md-table-align-min-column-width` → obsolete with it; there is no cap to floor.
+
+`md-table-align-ellipsis` is kept and reused as the clipped-edge indicator. Its
+meaning — "text is present here but not shown" — is unchanged, so it does not
+need renaming.
+
+### Deferred: pin the first column
+
+Keeping column 1 fixed while later columns scroll past it is genuinely useful
+on a wide table, since a scrolled row otherwise loses its row label. Deferred
+to keep v4 reviewable. It needs no rework to add: the hidden span becomes a
+*middle* span rather than a leading prefix, which the overlay mechanism handles
+identically.
+
+### Testing
+
+The TTY frame makes all of this directly assertable, as with v3:
+
+- at every offset, all rows agree on the rendered column of each visible pipe,
+  and those columns equal the aligned grid shifted by the offset;
+- an over-wide table occupies exactly one screen line per row at every offset;
+- prose above and below the table renders at column 0 regardless of offset;
+- moving point into a scrolled-off cell brings it into view, and point never
+  renders inside a hidden span;
+- `buffer-string` is unchanged and `buffer-modified-p` is nil, as ever;
+- a table narrower than the window gets no clip overlays and ignores scrolling;
+- widening the window past the table's natural width clamps the offset to zero.
+
 ## Known limitations
 
 - The delimiter row is character-quantised, as above.
@@ -429,9 +601,11 @@ overflow:
 - A table visible in two differently-sized windows at once is fitted to one of
   them (see "Which window a table is fitted to").
 - Fitting hides text. It is readable via `C-h .` or a mouse hover, but it is
-  hidden, and there is no horizontal scrolling to bring it back. Whether that
-  trade is acceptable at all is **an open question**, not a settled one — see
-  [docs/seeing-elided-table-text.md](../docs/seeing-elided-table-text.md).
+  hidden, and there is no horizontal scrolling to bring it back. This is the
+  behaviour "Horizontal scrolling (v4)" above replaces — **designed, not yet
+  implemented**. Until it lands, this limitation stands as written; see
+  [docs/seeing-elided-table-text.md](../docs/seeing-elided-table-text.md) for
+  how the decision was reached.
 
 ## Validation against implementation
 
