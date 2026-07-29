@@ -1,113 +1,90 @@
-# Open question: you can't see all the text in a fitted table
+# Resolved: you can't see all the text in a fitted table
 
 **Raised:** 2026-07-28, right after `md-table-align-fit-to-window` landed.
-**Status:** open. Nothing has been decided or built beyond what is in
-`md-table-align/DESIGN.md` under "Fit to window (v3)".
+**Resolved:** 2026-07-28. Answer: **direction 2, horizontal scrolling.** Hiding
+text with no way to reach it is not acceptable, so width capping is replaced by
+a per-table horizontal viewport with `truncate-lines`-style scroll semantics.
+Designed in `md-table-align/DESIGN.md` under "Horizontal scrolling (v4)"; not
+yet implemented.
 
-## The problem
+## The problem, as it stood
 
-Fitting stops wide tables wrapping, and that part works. But it buys alignment
-by **hiding text**, and it is not clear that is a good trade. Reading a table
-where three columns end in `…` tells you the shape of the data and not the
-data. The two escape hatches that exist today are both poor:
+Fitting stopped wide tables wrapping, and that part worked. But it bought
+alignment by **hiding text**. Reading a table where three columns end in `…`
+tells you the shape of the data and not the data. The two escape hatches were
+both poor: `C-h .` reveals one cell out of context, and widening the window is
+exactly the thing you couldn't do.
 
-- `C-h .` (`display-local-help`) reveals one cell, as a message, out of context.
-- Widening the window reveals everything, but that is exactly the thing you
-  couldn't do — it's why the table was fitted.
+## The decision
 
-So the honest framing is: **v3 solved wrapping, and traded it for a new
-problem.** Whether that is a net win is undecided. It may be that fitting
-should not default to `t` until there is a real way to read the hidden text.
+The policy question was "is hiding text acceptable at all, or must every
+character stay reachable?" **Every character must stay reachable.**
 
-## What is already established — do not re-derive
+Direction 1 (wrap cells into taller rows) was investigated first, because it is
+the only option that hides nothing at all, and rejected — see below. Direction 2
+answers the complaint at a fraction of the cost and reuses v3's overlay
+machinery rather than replacing it. Direction 3 (reveal the cell at point) is
+**subsumed**: with the viewport following point, the cell at point is visible by
+construction, so it is dropped rather than deferred again. Direction 4 (shrink
+the face) remains untestable here and unneeded.
 
-All of this was measured in a real TTY frame during the session that built v3.
-`md-table-align/DESIGN.md` has the detail; this is the index.
+Scroll semantics mirror what a `truncate-lines` buffer already does — continuous
+and column-granular, viewport follows point, `hscroll-margin` and `hscroll-step`
+honoured, `C-x <` / `C-x >` remapped inside a table. Nothing new to learn.
+
+## Why direction 1 was rejected
+
+Not for the reason the original note guessed. The blocking unknown it named —
+whether injected newlines work under `word-wrap` — turned out **not to be the
+obstacle**.
+
+The obstacle is that `:align-to` cannot move text backwards, so screen order
+must follow buffer order. A proper wrapped row needs screen order
+`c1L1 c2L1 c3L1 / c1L2 c2L2 c3L2` against buffer order
+`c1L1 c1L2 c2L1 c2L2 c3L1 c3L2`, which diverge as soon as **two** cells wrap.
+Breaking cells in place gives a staircase, not a table.
+
+It *can* be built, by hiding each over-long tail and re-emitting copies
+row-major in a synthesized continuation string — verified working. But that
+turns the package into something that re-emits text rather than positioning it,
+and point inside a relocated tail collapses. Decisively, it does not even solve
+the problem: a table with long cell text becomes a very tall table, which is no
+more readable than a scrollable one.
+
+## What is established — do not re-derive
+
+All measured in a real TTY frame. The v3 rows are from the session that built
+fitting; the v4 rows from the session that chose scrolling.
 
 | Fact | Confidence |
 |:-----|:-----------|
 | Emacs has **no per-line or per-region wrapping control** — `truncate-lines` and `word-wrap` are buffer-level | Verified, 4 experiments |
 | An overlay `display` *string* does **not** escape wrapping; it is laid out like text | Verified |
 | Removing all break opportunities does not help — `word-wrap` falls back to char wrapping | Verified |
-| Overlays accept a `window` property, giving genuine **per-window rendering** | Verified (49- and 50-column windows showing one buffer rendered a row at 1 and 2 screen lines) |
+| Overlays accept a `window` property, giving genuine **per-window rendering** | Verified |
 | Eliding a row's tail with an overlay `display` keeps it to one screen line | Verified |
-| Point inside an elided span renders **collapsed onto the ellipsis** (char 45 → column 41) | Verified |
-| Under `truncate-lines t`, an injected `"\n"` — as `display` *or* `before-string` — creates a real visual line break | Verified, **but only under `truncate-lines t`**; never tested under `word-wrap` |
+| Point inside a span hidden by `display` renders **collapsed onto the overlay start** | Verified, twice |
+| An injected `"\n"` breaks the line under **`word-wrap`**, not only under `truncate-lines t` | **Verified** — the v3 open question, now closed |
+| `(space :align-to (N))` re-indents a continuation line to an absolute column | Verified |
+| **`:align-to` cannot move text backwards** (align-to 5 from column 20 → stays at 20) | Verified — this is why direction 1 fails |
+| A multi-line `display` string does occupy multiple screen lines | Verified |
+| Hiding a row prefix with `display` `""` pulls the remainder to screen column 0 | Verified |
+| Clipping table rows leaves surrounding **prose unmoved**, unlike native `hscroll` | Verified |
+| A clipped row stays on **one screen line** under `word-wrap` | Verified |
+| Scroll offsets must be computed in **aligned**, not buffer, coordinates | Verified — the buffer-column version visibly breaks the grid |
 | Scaling the table's face `:height` to fit the window | **Untested** — GUI-only, and this sandbox has no display |
 
-Note the environment constraint: there is no X/Wayland display and no `Xvfb`
-here, so anything GUI-only cannot be validated in this repo's harness. The TTY
-frame cannot scale font heights.
-
-## Candidate directions
-
-Roughly in order of how much of the problem they solve.
-
-### 1. Wrap cell content instead of eliding it
-
-Render an over-wide table as a *taller* table — each cell's text wrapped inside
-its column, rows spanning several screen lines. **Nothing is hidden at all**,
-which is the only option here that fully answers the complaint. It is what
-every non-Emacs Markdown renderer does.
-
-The mechanism plausibly exists: injected `"\n"` display properties do create
-visual line breaks. But that was verified under `truncate-lines t`, and fitting
-runs under `word-wrap`, so **step one is re-running that experiment under
-`visual-line-mode`**. Even if it holds, this is by far the largest option —
-multi-line row layout, continuation-line indentation to keep the column grid,
-and every existing alignment overlay needs to cope with rows that are no longer
-one line. Probably a v4 in its own right rather than an increment.
-
-### 2. Horizontal scrolling for tables
-
-Elide from the **left** as well as the right, driven by a command — so a table
-scrolls sideways within its window. Native `hscroll` cannot do this (it needs
-`truncate-lines`), but we own every overlay, so we can. All the text becomes
-reachable, one screenful at a time, and alignment is preserved throughout.
-
-Moderate size, and it composes with what exists rather than replacing it. This
-is the best effort-to-payoff ratio of the four.
-
-### 3. Reveal the cell at point
-
-Already designed and deliberately deferred — see "Deferred: reveal the cell at
-point" in `DESIGN.md`. The cell containing point is never elided, so moving
-through a table reveals cells as you go. Cheapest of the four, and it is what
-makes the feature tolerable for *editing* rather than just reading.
-
-Partial by construction: you see one cell at a time and never the whole row.
-Good complement to 2, not a substitute.
-
-### 4. Shrink the table's face to fit
-
-Scale the table region's `:height` by `window-width / table-width`. Nothing is
-hidden and nothing wraps. Rejected as a *general* answer because it becomes
-unreadable past roughly 0.7, and it is GUI-only — but as a **first resort for
-tables that only slightly overflow** it is strictly better than eliding, and it
-would fall back to 2 or 3 when the ratio gets too small.
-
-Blocked on being unable to test it here.
+Environment constraint, unchanged: no X/Wayland display and no `Xvfb`, so
+anything GUI-only cannot be validated in this repo's harness.
 
 ## Ruled out — don't revisit
 
 - **Turning wrapping off for tables only.** Not possible; see the table above.
 - **`truncate-lines t` buffer-wide, toggled by whether point is in a table.**
-  Works, but every prose paragraph in the buffer reflows on entering and
-  leaving a table. Too jarring.
-- **Inverting the default** — truncate buffer-wide and re-wrap prose by hand
-  with injected newlines. Mechanically possible, but it means reimplementing
-  `fill` against every edit and resize.
-
-## Suggested next step
-
-Decide the policy question before writing code: **is hiding text acceptable at
-all, or must every character stay reachable?**
-
-- If reachable-is-required → direction 2, with 3 folded in.
-- If hiding is acceptable and this is really about polish → direction 3 alone,
-  which is small and already designed.
-- If the answer is "the table should just be shorter and wider" → direction 1,
-  and budget for a real piece of work.
-
-Until that is settled, consider whether `md-table-align-fit-to-window` should
-default to `nil`.
+  Works, but every prose paragraph reflows on entering and leaving a table.
+- **Inverting the default** — truncate buffer-wide and re-wrap prose by hand.
+  Means reimplementing `fill` against every edit and resize.
+- **Wrapping cells into taller rows.** See above. The mechanism exists; the
+  layout does not follow, and the result would not be more readable.
+- **Whole-column scroll steps.** Cannot reach the tail of a cell wider than the
+  window, which reproduces the very problem this note exists about.
