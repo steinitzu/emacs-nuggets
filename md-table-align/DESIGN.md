@@ -593,19 +593,82 @@ The TTY frame makes all of this directly assertable, as with v3:
 - a table narrower than the window gets no clip overlays and ignores scrolling;
 - widening the window past the table's natural width clamps the offset to zero.
 
+### Validation against implementation (v4)
+
+48 tests pass in a real TTY frame; `make compile` is clean with
+`byte-compile-error-on-warn`. Rendered output was read back at several
+offsets, reconstructed from `posn-at-point` geometry, in a 40-column frame
+against a table needing 48:
+
+```
+=== offset 0 ===                        === scrolled 10 columns ===
+prose before the table                  prose before the table
+| Name  | Description…                  …Description                 | Status |
+|-------|-----------------------------… …----------------------------|--------|
+| alpha | first item description here…   …first item description here | open   |
+| beta  | second item description…       …second item description     | done   |
+prose after the table                   prose after the table
+```
+
+Held up as designed: rows stay on one screen line at every offset; all rows
+agree on every visible pipe column at every offset; the prose above and below
+renders at column 0 throughout; point moved into a clipped cell brings the
+viewport to it; `buffer-string` and `buffer-modified-p` are unaffected.
+
+#### Deviations
+
+**No `md-table-align-hscroll-table-at-point` command.** The interface section
+listed one without saying what it would do, and nothing turned out to need it:
+the viewport follows point on its own, and the explicit commands act on the
+table at point already. `md-table-align-hscroll-reset` was added instead, which
+is the operation that was actually missing.
+
+**The commands are named for the direction the *text* moves,** matching
+`scroll-left` and `scroll-right`, whose bindings they take over. Naming them
+for the viewport instead would have been clearer in isolation and inconsistent
+with the two commands a user is holding in their head at the time.
+
+**An explicit scroll drags point along with it.** Not in the design, and not
+optional: the viewport follows point, so scrolling away from point would simply
+be undone by the very next command. This mirrors the vertical case, where
+`scroll-up` also refuses to leave point off screen.
+
+**The clipped-edge indicators are budgeted, not drawn over the table.** They
+occupy space inside the viewport rather than covering the leftmost or rightmost
+character, so a column is never half-hidden behind one. The clamp on the offset
+is defined against the budget that applies *at* the rightmost offset, which
+makes it a fixed point: laying out at `maxoff` reproduces exactly that budget,
+and the table's right edge lands exactly on the viewport's.
+
+**There is a floor after all, though not the one v3 had.** A window with no
+room for even two characters of table is left to wrap rather than clipped to
+nothing. v3 gave up when its columns hit a minimum width; this gives up only
+when the viewport itself would be degenerate.
+
+**Table measurements are memoised against the buffer's modification tick.**
+Not anticipated, and needed: the viewport consults the grid on every command to
+decide whether point is still inside it, and re-measuring every cell that often
+made cursor motion visibly slow. Layout and point-following share the cache.
+
+**Clip overlays carry a private `md-table-align-clip` tag** in addition to the
+`md-table-align` one every overlay has, so that the one kind that takes text
+away can be told from the kinds that only move it.
+
 ## Known limitations
 
 - The delimiter row is character-quantised, as above.
 - `markdown-mode` (the MELPA package) is not supported — it has no tree-sitter
   parser. Use `markdown-ts-mode`, or create a `markdown` parser in the buffer.
-- A table visible in two differently-sized windows at once is fitted to one of
-  them (see "Which window a table is fitted to").
-- Fitting hides text. It is readable via `C-h .` or a mouse hover, but it is
-  hidden, and there is no horizontal scrolling to bring it back. This is the
-  behaviour "Horizontal scrolling (v4)" above replaces — **designed, not yet
-  implemented**. Until it lands, this limitation stands as written; see
-  [docs/seeing-elided-table-text.md](../docs/seeing-elided-table-text.md) for
-  how the decision was reached.
+- A table visible in two differently-sized windows at once is laid out for one
+  of them (see "Which window a table is fitted to").
+- Only one table holds a scroll offset at a time, and leaving it resets that
+  offset (see "Scope of an offset").
+- The first column is not pinned while the rest scrolls, so a scrolled row
+  loses its row label (see "Deferred: pin the first column").
+- Clipping still hides text at the viewport's edges — but every character is
+  now reachable by scrolling to it, which is what
+  [docs/seeing-elided-table-text.md](../docs/seeing-elided-table-text.md)
+  required. It also remains readable in place via `C-h .` or a mouse hover.
 
 ## Validation against implementation
 

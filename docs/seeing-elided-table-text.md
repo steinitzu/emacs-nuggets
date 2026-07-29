@@ -4,8 +4,8 @@
 **Resolved:** 2026-07-28. Answer: **direction 2, horizontal scrolling.** Hiding
 text with no way to reach it is not acceptable, so width capping is replaced by
 a per-table horizontal viewport with `truncate-lines`-style scroll semantics.
-Designed in `md-table-align/DESIGN.md` under "Horizontal scrolling (v4)"; not
-yet implemented.
+Designed and implemented; see `md-table-align/DESIGN.md` under "Horizontal
+scrolling (v4)", including what deviated on contact with the code.
 
 ## The problem, as it stood
 
