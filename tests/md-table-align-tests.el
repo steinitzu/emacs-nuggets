@@ -701,3 +701,171 @@ hit: there is always a viewport, however little of the table it holds."
 (provide 'md-table-align-tests)
 
 ;;; md-table-align-tests.el ends here
+
+;;;; Buffers that mark text read-only with a text property
+;;
+;; A chat or transcript UI locks down what it has already printed with a
+;; `read-only' text property rather than `buffer-read-only'.  That property
+;; rides along on `buffer-substring', and `string-pixel-width' measures by
+;; inserting into a work buffer -- where read-only text signals
+;; `text-read-only'.  Measurement is the foundation everything else stands on,
+;; so this took out alignment, clipping and scrolling together.
+
+(defmacro md-table-align-tests--with-read-only-text (text &rest body)
+  "Run BODY over TEXT with every character carrying a `read-only' property."
+  (declare (indent 1) (debug t))
+  `(md-table-align-tests--with-buffer ,text
+     (let ((inhibit-read-only t))
+       (put-text-property (point-min) (point-max) 'read-only t))
+     ;; Applying the property is itself a modification; the fixture's own
+     ;; setup must not be what a `buffer-modified-p' assertion sees.
+     (set-buffer-modified-p nil)
+     ,@body))
+
+(ert-deftest md-table-align-test-measures-read-only-text ()
+  "Measurement survives a `read-only' text property on the cell text.
+The narrowest statement of the bug: `string-pixel-width' signals on such
+a string, and every other failure here follows from that one."
+  (md-table-align-tests--with-read-only-text md-table-align-tests--simple
+    (goto-char (point-min))
+    (should (numberp (md-table-align--measure (line-beginning-position)
+                                              (line-end-position))))))
+
+(ert-deftest md-table-align-test-aligns-read-only-text ()
+  "Alignment applies to text carrying a `read-only' property."
+  (md-table-align-tests--with-read-only-text md-table-align-tests--simple
+    (md-table-align-tests--enable)
+    (dolist (row (md-table-align-tests--pipe-columns))
+      (should (equal row md-table-align-tests--simple-columns)))))
+
+(ert-deftest md-table-align-test-clips-read-only-text ()
+  "A wide table of read-only text is still clipped to one screen line each."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-read-only-text md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (should (md-table-align-tests--clips))
+      (should (equal (md-table-align-tests--screen-lines) '(1 1 1 1))))))
+
+(ert-deftest md-table-align-test-scrolls-read-only-text ()
+  "Point-following scrolls a table whose text is read-only."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-read-only-text md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (goto-char (point-min))
+      (should (search-forward "open" nil t))
+      (goto-char (match-beginning 0))
+      (should (md-table-align-tests--clipped-p (point)))
+      (md-table-align--follow-point)
+      (redisplay t)
+      (should-not (md-table-align-tests--clipped-p (point))))))
+
+(ert-deftest md-table-align-test-read-only-text-is-not-modified ()
+  "The property is stripped from the measured copy, never from the buffer."
+  (md-table-align-tests--with-read-only-text md-table-align-tests--simple
+    (md-table-align-tests--enable)
+    (should (get-text-property (point-min) 'read-only))
+    (should-not (buffer-modified-p))))
+
+;;;; Point-following must not uninstall itself
+;;
+;; Emacs removes a `post-command-hook' function that signals.  A failure
+;; anywhere in layout would therefore disable point-following for the rest of
+;; the session, in every buffer, rather than for the one command that failed.
+
+(ert-deftest md-table-align-test-follow-point-survives-an-error ()
+  "A signal from layout is caught, so the hook keeps its handler."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (md-table-align-tests--goto-table)
+      (let ((md-table-align-pixel-width-function
+             (lambda (_s) (signal 'text-read-only nil))))
+        (setq md-table-align--metrics-cache nil)
+        ;; Must not signal out to the command loop.
+        (md-table-align--follow-point))
+      (should (memq #'md-table-align--follow-point post-command-hook)))))
+
+(ert-deftest md-table-align-test-follow-point-recovers-after-an-error ()
+  "Once the cause is gone, scrolling works again without re-enabling."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (md-table-align-tests--goto-table)
+      (let ((md-table-align-pixel-width-function
+             (lambda (_s) (signal 'text-read-only nil))))
+        (setq md-table-align--metrics-cache nil)
+        (md-table-align--follow-point))
+      (setq md-table-align--metrics-cache nil)
+      (goto-char (point-min))
+      (should (search-forward "open" nil t))
+      (goto-char (match-beginning 0))
+      (md-table-align--follow-point)
+      (redisplay t)
+      (should-not (md-table-align-tests--clipped-p (point))))))
+
+;;;; Scrolling through the real command loop
+;;
+;; `md-table-align-tests--scroll' calls the command as a plain function, so
+;; `post-command-hook' never runs -- and point-following, which runs there, is
+;; exactly what can undo an explicit scroll.  These drive real key events.
+
+(defun md-table-align-tests--press (keys)
+  "Execute KEYS as real key events, then let redisplay settle."
+  (execute-kbd-macro (kbd keys))
+  (redisplay t))
+
+(ert-deftest md-table-align-test-scroll-key-survives-the-command-loop ()
+  "\\[scroll-left] shifts the grid and the shift is still there afterwards.
+
+Point-following runs after the command and must not undo it.  It will if
+the scroll leaves point on the viewport's edge, since that is inside
+`hscroll-margin' and asks to be scrolled back."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (md-table-align-tests--goto-table)
+      (should (equal (car (md-table-align-tests--visible-pipe-columns)) '(0 8)))
+      (md-table-align-tests--press "C-x <")
+      (should (> md-table-align--hscroll 0))
+      (should-not (equal (car (md-table-align-tests--visible-pipe-columns))
+                         '(0 8))))))
+
+(ert-deftest md-table-align-test-scroll-key-reaches-the-last-column ()
+  "Repeated \\[scroll-left] walks the viewport to the table's right edge."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (md-table-align-tests--goto-table)
+      (should (md-table-align-tests--clipped-p
+               (progn (goto-char (point-min))
+                      (search-forward "Status")
+                      (match-beginning 0))))
+      (md-table-align-tests--goto-table)
+      (dotimes (_ 6) (md-table-align-tests--press "C-x <"))
+      (goto-char (point-min))
+      (should (search-forward "Status" nil t))
+      (should-not (md-table-align-tests--clipped-p (match-beginning 0))))))
+
+(ert-deftest md-table-align-test-scroll-key-returns-to-the-left-edge ()
+  "\\[scroll-right] walks the viewport back, and the grid is as it started."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (md-table-align-tests--goto-table)
+      (let ((before (car (md-table-align-tests--visible-pipe-columns))))
+        (dotimes (_ 3) (md-table-align-tests--press "C-x <"))
+        (should (> md-table-align--hscroll 0))
+        (dotimes (_ 6) (md-table-align-tests--press "C-x >"))
+        (should (= md-table-align--hscroll 0))
+        (should (equal (car (md-table-align-tests--visible-pipe-columns))
+                       before))))))
+
+(ert-deftest md-table-align-test-scroll-key-scrolls-read-only-text ()
+  "The two fixes meet: explicit scrolling over `read-only' text."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-read-only-text md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (md-table-align-tests--goto-table)
+      (md-table-align-tests--press "C-x <")
+      (should (> md-table-align--hscroll 0))
+      (should (memq #'md-table-align--follow-point post-command-hook)))))
