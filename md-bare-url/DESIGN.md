@@ -206,6 +206,41 @@ Per repo convention, integration over mocks: real Emacs, real buffer, real
 the system, since a test suite must not actually open a browser. Everything
 inside that boundary is real.
 
+## Validation against implementation
+
+Checked after implementing, against a real Emacs 31.0.90 in a TTY frame.
+
+| Design claim | Verdict |
+|---|---|
+| The advice repairs bare URLs and nothing else | Holds — asserted per link shape in the suite |
+| A real `mailto:` can never match the regexp | Holds — pinned directly for addresses with `.`, `+` and a multi-label domain |
+| `RET` on a bare URL reaches `browse-url` | Holds — `RET` resolves to `push-button`, which dispatches to `browse-url` |
+| `font-lock-flush` heals an already-fontified buffer | Holds |
+| Switching the mode off restores upstream behaviour | Holds — destination reverts, advice removed |
+| `emacs-tools-reload` leaves no orphaned advice | Holds — after a reload with the mode on, exactly one filter is installed, not two; `unload-feature` leaves none |
+
+The suite was also mutation-checked: neutering
+`md-bare-url--double-scheme-regexp` fails exactly the five tests that assert
+the fix, and leaves the two upstream-bug tests and the non-interference tests
+green. That is the intended shape — the upstream tests describe markdown-ts-mode,
+not this package.
+
+### Deviations
+
+- **`md-bare-url-destination` is public**, where "Public interface" above named
+  only the mode. It is the single point where a mistake would silently corrupt
+  a real URL, so it is worth being able to test — and to call — directly. The
+  advice wrapper around it stays private.
+- **The `compile` target now discovers extension directories** the way the
+  loader does, instead of naming `md-table-align` explicitly. Outside this
+  package's scope, but adding the second extension is what made the hard-coding
+  a problem.
+- **`load-prefer-newer` is now set in the test driver.** Found the hard way:
+  the first mutation check came back green because `load` prefers a stale
+  `.elc` over newer source, so the suite was asserting on byte-compiled code
+  from before the mutation. Any test run after a `make compile` was exposed to
+  this, not just this package's.
+
 ## Deferred: face consistency
 
 A bare URL gets the plain `button` face; tagged links get `markdown-ts-link`
