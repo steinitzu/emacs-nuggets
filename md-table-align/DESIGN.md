@@ -654,6 +654,90 @@ made cursor motion visibly slow. Layout and point-following share the cache.
 `md-table-align` one every overlay has, so that the one kind that takes text
 away can be told from the kinds that only move it.
 
+## Read-only text and command-loop robustness (v4.1)
+
+Three defects found together while diagnosing "scrolling does nothing in this
+buffer". Only the first is about read-only text; the other two are what made it
+so hard to see, and the third is independent of read-only entirely.
+
+### Read-only is a text property, not just a buffer flag
+
+v1 claimed read-only support and tested it — but only via `buffer-read-only`.
+The other way a buffer is made read-only is a `read-only` **text property** over
+a region, which is what a chat or transcript UI uses to lock down what it has
+already printed while leaving an input area editable.
+
+That property is fatal here for a non-obvious reason. Measurement deliberately
+keeps text properties (see "Width measurement") because faces are the whole
+point of measuring rather than counting characters. `buffer-substring` therefore
+carries `read-only` into the measured string, and `string-pixel-width` measures
+by **inserting the string into a work buffer** — where read-only text signals
+`text-read-only`. Measurement is the foundation everything else stands on, so
+this took out alignment, clipping and scrolling in one go.
+
+The fix strips a small set of properties from the measured copy
+(`md-table-align--unmeasurable-properties`): `read-only` and the three insertion
+hooks. The distinction is *display* versus *modification* — `face`, `display`,
+`invisible` and `composition` are kept because they change how wide the text
+renders; properties that govern modification have no bearing on width and only
+misfire against a work buffer. The copy is what `buffer-substring` already
+returned, so the buffer is never touched.
+
+A whitelist was considered and rejected: the set of properties that legitimately
+affect rendered width is open-ended (anything a display engine or an input
+method might add), so enumerating what to *keep* would silently drop widths.
+The failure mode of a blacklist — a new modification-ish property appearing and
+signalling — is loud, and the same fix applies.
+
+### A `post-command-hook` that signals uninstalls itself
+
+Emacs responds to an error in `post-command-hook` by **removing the offending
+function from the hook**. Point-following runs there, so one signal disabled it
+for the rest of the session, in every buffer, leaving nothing behind but a
+single message that a busy buffer scrolls away in seconds. The observable
+symptom was a feature that worked in one buffer and was permanently dead in
+another, with no error in sight.
+
+`md-table-align--follow-point` now catches its own errors and reports once per
+buffer, latching on `md-table-align--follow-failed`. Degrading to "the table
+stopped following point" beats silently uninstalling the feature, and reporting
+once keeps a persistent fault from spamming the echo area on every keystroke.
+
+This is defence in depth rather than a fix for the above — with measurement
+repaired there is nothing left to signal — but the failure mode is bad enough,
+and cheap enough to close, to be worth closing regardless.
+
+### `hscroll-margin` made the explicit scroll commands no-ops
+
+Unrelated to read-only, and present since v4: `C-x <` and `C-x >` did nothing in
+any buffer.
+
+`md-table-align--point-into-view` parked point on the viewport's cut, exactly at
+`x = offset`. `md-table-align--desired-offset` then saw point within
+`hscroll-margin` (default 5) of the left edge on the very next command and
+scrolled back — and with the default `hscroll-step` of 0 "scroll back" means
+re-centre, which clamps to zero. Every press scrolled and was undone before
+redisplay.
+
+Point is now placed `hscroll-margin` *inside* the edge, via a
+`md-table-align--margin` helper shared with `desired-offset` so the two halves
+cannot drift apart again. The margin is applied only at an edge the viewport can
+actually scroll past: at offset zero there is nothing to the left to reveal, so
+pushing point off the first column would be gratuitous.
+
+### Why the tests missed all of this
+
+`md-table-align-tests--scroll` calls `md-table-align-hscroll-left` as a plain
+function. `post-command-hook` never ran, so every scrolling test asserted on a
+state the real command loop discarded a moment later. The suite was blind by
+construction to any interaction between a command and the hook.
+
+Tests added: a `read-only`-text-property fixture covering measurement,
+alignment, clipping and scrolling; two tests that point-following survives and
+recovers from a signal without leaving the hook; and four that drive `C-x <` /
+`C-x >` through `execute-kbd-macro`, so the command loop and its hooks are in
+the loop being tested.
+
 ## Known limitations
 
 - The delimiter row is character-quantised, as above.
@@ -678,7 +762,9 @@ is clean with `byte-compile-error-on-warn`.
 Held up as designed:
 
 - Overlay stretch glyphs align tables with buffer text byte-identical,
-  `buffer-modified-p` nil, and `buffer-read-only` set.
+  `buffer-modified-p` nil, and `buffer-read-only` set. (Read-only via a text
+  property did *not* hold up — see "Read-only text and command-loop
+  robustness".)
 - Tree-sitter discovery skips fenced code blocks and needs no fence scanning.
 - Delimiter rows re-render across the full inner width, matching the
   `|:------|----:|` output of `markdown-table-align`.
