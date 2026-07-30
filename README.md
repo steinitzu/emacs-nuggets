@@ -31,7 +31,10 @@ read-only buffer, and it dirties files you only meant to read.
 
 `md-table-align` aligns tables **as a display presentation**. Buffer text stays
 byte-identical, `buffer-modified-p` stays `nil`, and it works when the buffer is
-read-only — VC revision buffers, `magit` blobs, generated docs, archives.
+read-only — VC revision buffers, `magit` blobs, generated docs, archives. That
+covers both ways a buffer can be read-only: `buffer-read-only`, and a `read-only`
+text property over part of the text, as chat and transcript UIs use to lock down
+what they have already printed.
 
 Given a file containing:
 
