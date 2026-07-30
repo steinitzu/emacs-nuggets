@@ -738,9 +738,93 @@ recovers from a signal without leaving the hook; and four that drive `C-x <` /
 `C-x >` through `execute-kbd-macro`, so the command loop and its hooks are in
 the loop being tested.
 
+## Face remapping arriving after layout (v4.2)
+
+`md-table-align-mode` before `mixed-pitch-mode` produced a misaligned table;
+the other order was fine. The asymmetry is the bug.
+
+### Why order mattered
+
+Measurement was always right: `string-pixel-width` runs against the buffer, so
+`face-remapping-alist` is in force and the widths reflect what the text really
+renders as (see "Width measurement"). What was missing is *invalidation*.
+Layout stores pixel targets in `:align-to`, which are absolute numbers frozen at
+layout time. `mixed-pitch-mode` arriving afterwards remaps the buffer's `default`
+face, every glyph changes width, and those frozen targets no longer describe the
+grid the text now needs.
+
+Nothing noticed. `jit-lock` invalidates on buffer *text* changes and a face
+remapping is not one; the re-fit hooks watched window geometry only. Measured on
+a stand-in for a proportional font, the same buffer laid out as `(0 16 28)` when
+remapped first and `(0 9 16)` when remapped afterwards — and a command did not
+recover it, while a window resize and a manual `md-table-align-clear` +
+`md-table-align-buffer` both did.
+
+That last observation settles the mechanism: the existing clear-and-refontify
+path is already correct and already lazy. It needed a trigger, not a rewrite.
+
+### Generalising the re-fit guard
+
+`md-table-align--refit` compared the window width against
+`md-table-align--layout-width` and re-rendered on a change. Width is not the
+only input a layout depends on, so the scalar becomes a **layout key**:
+
+```elisp
+(cons (and md-table-align-hscroll width) face-remapping-alist)
+```
+
+Re-fit when the key changes. Window width still only participates when
+`md-table-align-hscroll` is on, exactly as before — with clipping off, width
+does not affect the grid and a resize should not cost a re-render. Face
+remapping always participates, because it always changes the grid.
+
+The variable is renamed `md-table-align--layout-key` rather than reinterpreted.
+A live session holding the old scalar in `--layout-width` would otherwise have
+it silently compared against a cons, which is the trap the repository
+conventions call out for `defcustom` and which applies just as well here.
+
+### Trigger: `post-command-hook`, not a variable watcher
+
+`add-variable-watcher` on `face-remapping-alist` was considered and rejected.
+Watchers are per-symbol and global, so every buffer in the session using face
+remapping — a great many — would call into this package. Worse,
+`mixed-pitch-mode` builds its remapping through repeated
+`face-remap-add-relative` calls, so a watcher fires many times per activation
+and needs debouncing on top.
+
+`post-command-hook` is already in use for point-following, is already
+buffer-local to buffers with the mode on, and is debounced by construction: one
+check per command, however many times the remapping was mutated inside it. The
+check is an `equal` against a usually-nil alist plus a `window-body-width` call.
+
+The cost is that a remapping installed outside the command loop — from a timer
+or a process filter — is picked up on the next command rather than instantly.
+For a font change that is imperceptible.
+
+The two per-command jobs are folded into one hook entry,
+`md-table-align--post-command`, so they share the single error guard added in
+v4.1 and run in a defined order: re-fit first, since point-following consults
+the metrics that re-fit invalidates. `md-table-align--follow-point` remains the
+unguarded body, which is also what the tests drive directly.
+
+### What this does not cover
+
+A change to the *underlying* faces rather than the buffer's remapping of them —
+loading a theme, `set-face-attribute` on `fixed-pitch`, a frame font change —
+also changes rendered widths and is not in the layout key. Catching it needs a
+measured fingerprint (the pixel width of a reference string) rather than a
+comparison of configuration, which costs a measurement per command instead of an
+`equal`. Deferred: it is a rare, deliberate, session-wide act, after which
+`md-table-align-clear` and `md-table-align-buffer` — or any edit — restore the
+grid. Recorded under "Known limitations".
+
 ## Known limitations
 
 - The delimiter row is character-quantised, as above.
+- Changing the underlying faces — loading a theme, `set-face-attribute` on
+  `fixed-pitch`, a frame font change — is not noticed, only the buffer's
+  `face-remapping-alist` is (see "Face remapping arriving after layout"). Any
+  edit, or `md-table-align-clear` then `md-table-align-buffer`, re-measures.
 - `markdown-mode` (the MELPA package) is not supported — it has no tree-sitter
   parser. Use `markdown-ts-mode`, or create a `markdown` parser in the buffer.
 - A table visible in two differently-sized windows at once is laid out for one
