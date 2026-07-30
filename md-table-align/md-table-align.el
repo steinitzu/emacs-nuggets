@@ -105,10 +105,14 @@ see `md-table-align-hscroll'."
 see `md-table-align-hscroll'."
  "0.2.0")
 
-(defvar-local md-table-align--layout-width nil
-  "Window text width, in pixels, the current layout was computed for.
-Nil when the buffer has not been laid out, or was laid out with no window
-to lay it out against.")
+(defvar-local md-table-align--layout-key nil
+  "What the current layout was computed against, besides the buffer text.
+See the function `md-table-align--layout-key'.  Nil when the buffer has
+not been laid out, or was laid out with no window to lay it out against.
+
+Renamed from `md-table-align--layout-width', which held a bare pixel
+width: a live session carrying the old scalar would otherwise have it
+compared against the cons this now holds, and silently never re-fit.")
 
 (defvar-local md-table-align--hscroll 0
   "Horizontal offset, in pixels, of the table currently scrolled.")
@@ -130,7 +134,7 @@ cannot silently hand its offset to whatever moves into its place.")
 (defvar-local md-table-align--follow-failed nil
   "Non-nil once point-following has signalled an error in this buffer.
 Latches so that the failure is reported once rather than on every
-command; see `md-table-align--follow-point'.")
+command; see `md-table-align--post-command'.")
 
 ;; Defined by the minor mode below, but consulted by the scrolling code above
 ;; it -- the hooks that drive scrolling must do nothing in buffers where the
@@ -715,7 +719,7 @@ that often would make simply moving the cursor crawl."
 
 (defun md-table-align--align-region (beg end)
   "Align every table overlapping the region BEG to END."
-  (setq md-table-align--layout-width (md-table-align--available-width))
+  (setq md-table-align--layout-key (md-table-align--layout-key))
   (dolist (node (md-table-align--tables beg end))
     (let ((tbeg (treesit-node-start node))
           (tend (treesit-node-end node)))
@@ -862,6 +866,35 @@ centring rather than creeping one step per command."
       (unless (eql want (plist-get view :offset))
         (md-table-align--set-offset node want)))))
 
+(defun md-table-align--post-command ()
+  "Per-command upkeep: re-fit a stale layout, then keep point in view.
+
+Re-fitting runs first, because point-following consults the very metrics
+a re-fit throws away.  It is also what notices a face remapping arriving
+after the table was laid out -- `mixed-pitch-mode' switched on after this
+mode, say.  `post-command-hook' is the natural place for that check: it
+is already buffer-local to buffers with the mode on, and it coalesces by
+construction, however many times `face-remapping-alist' was mutated
+inside the command.
+
+Errors are caught rather than allowed out.  Emacs responds to a signal in
+`post-command-hook' by removing the offending function from the hook --
+so a single failure anywhere in layout would silently uninstall all of
+this for the rest of the session, in every buffer, with nothing but one
+stale message to say so.  Degrading to \"the table stopped following
+point\" is a far better failure than that, and reporting once per buffer
+keeps a persistent problem from spamming the echo area on every
+keystroke."
+  (condition-case err
+      (progn
+        (md-table-align--refit)
+        (md-table-align--follow-point))
+    (error
+     (unless md-table-align--follow-failed
+       (setq md-table-align--follow-failed t)
+       (message "md-table-align: table upkeep disabled in %s (%S)"
+                (buffer-name) err)))))
+
 (defun md-table-align--follow-point ()
   "Keep point inside the viewport of the table it is in.
 
@@ -871,24 +904,8 @@ so a viewport that ignored point would make cursor motion through
 scrolled-off text meaningless.  Defining the viewport to contain point
 means point is never inside hidden text at all.
 
-Errors are caught rather than allowed out.  This runs from
-`post-command-hook', and Emacs responds to a signal there by removing the
-offending function from the hook -- so a single failure anywhere in
-layout would silently uninstall point-following for the rest of the
-session, in every buffer, with nothing but one stale message to say so.
-Degrading to \"the table stopped following point\" is a far better
-failure than that, and reporting once per buffer keeps a persistent
-problem from spamming the echo area on every keystroke."
-  (condition-case err
-      (md-table-align--follow-point-1)
-    (error
-     (unless md-table-align--follow-failed
-       (setq md-table-align--follow-failed t)
-       (message "md-table-align: table scrolling disabled in %s (%S)"
-                (buffer-name) err)))))
-
-(defun md-table-align--follow-point-1 ()
-  "Body of `md-table-align--follow-point', which handles its errors."
+Signals out on failure; `md-table-align--post-command' is the guarded
+entry point that `post-command-hook' actually holds."
   (when (and md-table-align-mode md-table-align-hscroll)
     (let ((node (md-table-align--table-at (point))))
       ;; Moving away from a scrolled table -- to another table, or out of
@@ -1035,15 +1052,15 @@ Requires a `markdown' tree-sitter parser in the buffer; see
         (add-hook 'window-state-change-functions #'md-table-align--refit nil t)
         ;; The viewport has to follow point, or cursor motion into
         ;; scrolled-off text would land where nothing is rendered.
-        (add-hook 'post-command-hook #'md-table-align--follow-point nil t)
+        (add-hook 'post-command-hook #'md-table-align--post-command nil t)
         ;; Text already fontified before we registered would otherwise never
         ;; reach our jit-lock handler.
         (md-table-align-buffer))
     (jit-lock-unregister #'md-table-align--jit)
     (remove-hook 'window-configuration-change-hook #'md-table-align--refit t)
     (remove-hook 'window-state-change-functions #'md-table-align--refit t)
-    (remove-hook 'post-command-hook #'md-table-align--follow-point t)
-    (setq md-table-align--layout-width nil
+    (remove-hook 'post-command-hook #'md-table-align--post-command t)
+    (setq md-table-align--layout-key nil
           md-table-align--follow-failed nil
           md-table-align--hscroll 0)
     (when md-table-align--hscroll-table
@@ -1051,19 +1068,33 @@ Requires a `markdown' tree-sitter parser in the buffer; see
       (setq md-table-align--hscroll-table nil))
     (md-table-align-clear)))
 
+(defun md-table-align--layout-key ()
+  "Return what a layout depends on besides the buffer text.
+Nil when no window shows the buffer, since there is nothing to lay out
+against.
+
+Window width participates only when `md-table-align-hscroll' is on: with
+clipping off, width does not enter the grid and a resize should not cost
+a re-render.  `face-remapping-alist' always participates -- `mixed-pitch-mode'
+and friends change what every glyph measures, and the pixel targets already
+written into `:align-to' are frozen at layout time."
+  (when-let* ((width (md-table-align--available-width)))
+    (cons (and md-table-align-hscroll width) face-remapping-alist)))
+
 (defun md-table-align--refit (&rest _)
-  "Re-align when the window a table is laid out against has changed width.
-`jit-lock' covers edits but not geometry: resizing a window does not
-invalidate fontification.  Clearing and asking `jit-lock' to refontify
-keeps the work lazy -- only tables that come back on screen are laid out
-again.  Any scroll offset survives, clamped to the new width by
-`md-table-align--viewport'."
-  (when (and md-table-align-mode md-table-align-hscroll)
-    (let ((width (md-table-align--available-width)))
-      ;; These hooks fire on every window operation; the width guard is what
-      ;; stops that turning into a re-layout of every visible table.
-      (unless (or (null width) (eql width md-table-align--layout-width))
-        (setq md-table-align--layout-width width)
+  "Re-align when something a table was laid out against has changed.
+`jit-lock' covers edits but neither geometry nor faces: resizing a window
+and remapping a face both leave fontification valid.  Clearing and asking
+`jit-lock' to refontify keeps the work lazy -- only tables that come back
+on screen are laid out again.  Any scroll offset survives, clamped to the
+new width by `md-table-align--viewport'."
+  (when md-table-align-mode
+    (let ((key (md-table-align--layout-key)))
+      ;; The callers fire on every window operation and every command; the
+      ;; key guard is what stops that turning into a re-layout of every
+      ;; visible table.
+      (unless (or (null key) (equal key md-table-align--layout-key))
+        (setq md-table-align--layout-key key)
         (md-table-align-clear)
         (jit-lock-refontify)))))
 
