@@ -92,6 +92,13 @@
             (push (cons (overlay-start ov) d) out))))
       (mapcar #'cdr (sort out :key #'car)))))
 
+(defun md-table-align-tests--own-overlays ()
+  "Return this package's overlays only.
+`markdown-ts-mode' puts overlays of its own on the buffer from
+`post-command-hook', so a bare `overlays-in' is not a stable count."
+  (seq-filter (lambda (ov) (overlay-get ov 'md-table-align))
+              (overlays-in (point-min) (point-max))))
+
 (defun md-table-align-tests--enable ()
   "Turn on `md-table-align-mode' and let redisplay settle."
   (md-table-align-mode 1)
@@ -966,14 +973,15 @@ pass whether or not anything was invalidated."
   (md-table-align-tests--with-pitch md-table-align-tests--simple
     (md-table-align-tests--enable)
     (let ((key md-table-align--layout-key)
-          (overlays (overlays-in (point-min) (point-max))))
+          (overlays (md-table-align-tests--own-overlays)))
+      (should overlays)
       (md-table-align-tests--press "C-n")
       (should (equal md-table-align--layout-key key))
       ;; The same overlay *objects*, not merely an equal-looking layout: a
       ;; re-fit deletes them and builds new ones.  Compared as a set, since
       ;; `overlays-in' does not promise an order and ties on `overlay-start'
       ;; make any sort of it unstable.
-      (let ((after (overlays-in (point-min) (point-max))))
+      (let ((after (md-table-align-tests--own-overlays)))
         (should (= (length after) (length overlays)))
         (dolist (ov overlays)
           (should (memq ov after)))))))

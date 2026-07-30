@@ -117,3 +117,90 @@ definitions are not stripped out from under live overlays."
 (provide 'emacs-tools-tests)
 
 ;;; emacs-tools-tests.el ends here
+
+;;;; Hook registrations must survive a reload
+;;
+;; `unload-feature' strips a feature's functions from every hook, because a
+;; hook left holding a void function signals in every buffer that runs it.
+;; Reloading puts the function straight back, so the strip is pure loss: it
+;; silently drops the `add-hook' calls in an init file, and new buffers stop
+;; getting the mode.
+
+(defvar emacs-tools-tests--sample-hook nil
+  "A hook variable for reload tests, named so `unload-feature' sweeps it.")
+
+(defmacro emacs-tools-tests--with-clean-hook (&rest body)
+  "Run BODY with `emacs-tools-tests--sample-hook' empty, and restore it."
+  (declare (indent 0) (debug t))
+  `(let ((global (default-value 'emacs-tools-tests--sample-hook)))
+     (unwind-protect
+         (progn (setq-default emacs-tools-tests--sample-hook nil) ,@body)
+       (setq-default emacs-tools-tests--sample-hook global))))
+
+(ert-deftest emacs-tools-test-unload-alone-strips-hooks ()
+  "The baseline the reload has to compensate for, so the tests below bite."
+  (emacs-tools-tests--with-clean-hook
+    (add-hook 'emacs-tools-tests--sample-hook #'md-table-align-mode)
+    (should (memq #'md-table-align-mode emacs-tools-tests--sample-hook))
+    (unwind-protect
+        (progn
+          (unload-feature 'md-table-align t)
+          (should-not (memq #'md-table-align-mode
+                            emacs-tools-tests--sample-hook)))
+      ;; Whatever the assertion did, put the feature back for everything else.
+      (load (locate-file "md-table-align" load-path '(".el")) nil t))))
+
+(ert-deftest emacs-tools-test-reload-keeps-global-hook-registrations ()
+  "A global `add-hook' from an init file survives the reload."
+  (emacs-tools-tests--with-clean-hook
+    (add-hook 'emacs-tools-tests--sample-hook #'md-table-align-mode)
+    (emacs-tools-reload 'md-table-align)
+    (should (memq #'md-table-align-mode emacs-tools-tests--sample-hook))))
+
+(ert-deftest emacs-tools-test-reload-preserves-hook-depth ()
+  "An appended registration comes back appended, not at the front."
+  (emacs-tools-tests--with-clean-hook
+    (add-hook 'emacs-tools-tests--sample-hook #'md-table-align-mode 90)
+    (add-hook 'emacs-tools-tests--sample-hook #'ignore)
+    (should (equal emacs-tools-tests--sample-hook
+                   '(ignore md-table-align-mode)))
+    (emacs-tools-reload 'md-table-align)
+    (should (equal emacs-tools-tests--sample-hook
+                   '(ignore md-table-align-mode)))))
+
+(ert-deftest emacs-tools-test-reload-keeps-buffer-local-hook-registrations ()
+  "A buffer-local registration survives, and stays local to its buffer."
+  (emacs-tools-tests--with-clean-hook
+    (md-table-align-tests--with-buffer md-table-align-tests--simple
+      (add-hook 'emacs-tools-tests--sample-hook #'md-table-align-mode nil t)
+      (should (memq #'md-table-align-mode emacs-tools-tests--sample-hook))
+      (emacs-tools-reload 'md-table-align)
+      (should (memq #'md-table-align-mode emacs-tools-tests--sample-hook))
+      (should (local-variable-p 'emacs-tools-tests--sample-hook))
+      (should-not (memq #'md-table-align-mode
+                        (default-value 'emacs-tools-tests--sample-hook))))))
+
+(ert-deftest emacs-tools-test-reload-does-not-duplicate-registrations ()
+  "Restoring is idempotent: nothing appears twice after several reloads."
+  (emacs-tools-tests--with-clean-hook
+    (add-hook 'emacs-tools-tests--sample-hook #'md-table-align-mode)
+    (emacs-tools-reload 'md-table-align)
+    (emacs-tools-reload 'md-table-align)
+    (should (equal emacs-tools-tests--sample-hook '(md-table-align-mode)))))
+
+(ert-deftest emacs-tools-test-reload-does-not-invent-registrations ()
+  "A hook the feature was never on stays empty."
+  (emacs-tools-tests--with-clean-hook
+    (emacs-tools-reload 'md-table-align)
+    (should-not emacs-tools-tests--sample-hook)))
+
+(ert-deftest emacs-tools-test-reload-restores-mode-hook-registration ()
+  "The documented setup -- the mode on `markdown-ts-mode-hook' -- survives."
+  (let ((present (memq #'md-table-align-mode markdown-ts-mode-hook)))
+    (unwind-protect
+        (progn
+          (add-hook 'markdown-ts-mode-hook #'md-table-align-mode)
+          (emacs-tools-reload 'md-table-align)
+          (should (memq #'md-table-align-mode markdown-ts-mode-hook)))
+      (unless present
+        (remove-hook 'markdown-ts-mode-hook #'md-table-align-mode)))))
