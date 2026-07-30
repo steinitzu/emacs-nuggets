@@ -127,6 +127,11 @@ cannot silently hand its offset to whatever moves into its place.")
 (defvar-local md-table-align--metrics-cache nil
   "Cons of (KEY . CONTEXT) memoising the most recent table measurement.")
 
+(defvar-local md-table-align--follow-failed nil
+  "Non-nil once point-following has signalled an error in this buffer.
+Latches so that the failure is reported once rather than on every
+command; see `md-table-align--follow-point'.")
+
 ;; Defined by the minor mode below, but consulted by the scrolling code above
 ;; it -- the hooks that drive scrolling must do nothing in buffers where the
 ;; mode was switched off.
@@ -146,13 +151,43 @@ to character columns."
       0
     (string-pixel-width string (current-buffer))))
 
+(defconst md-table-align--unmeasurable-properties
+  '(read-only nil
+    modification-hooks nil
+    insert-in-front-hooks nil
+    insert-behind-hooks nil)
+  "Text properties stripped before a string is handed to the width function.
+
+`string-pixel-width' measures by inserting the string into a work buffer,
+so any property that governs *modification* rather than display fires
+there.  `read-only' is the one that actually breaks: inserting read-only
+text into the work buffer and erasing it again signals `text-read-only',
+and the measurement -- and with it all alignment -- dies.  Buffers that
+mark regions read-only with a text property rather than
+`buffer-read-only' are the case in point; a chat or transcript UI locking
+down what it has already printed is the usual source.
+
+The insertion hooks are stripped for the same reason: they are arbitrary
+code, they have no bearing on how wide the text renders, and running them
+against a work buffer is meaningless at best.  Display-affecting
+properties -- `face', `display', `invisible', `composition' -- are
+deliberately kept, since they are the whole reason for measuring the
+propertized string.")
+
 (defun md-table-align--measure (beg end)
   "Return the rendered pixel width of the buffer text between BEG and END."
   (if (>= beg end)
       0
     ;; Deliberately keeps text properties: faces are what make this differ
-    ;; from a character count.
-    (funcall md-table-align-pixel-width-function (buffer-substring beg end))))
+    ;; from a character count.  All except the ones that would make the
+    ;; measurement itself fail -- see
+    ;; `md-table-align--unmeasurable-properties'.  `buffer-substring'
+    ;; returns a fresh string, so stripping in place cannot touch the
+    ;; buffer.
+    (let ((string (buffer-substring beg end)))
+      (remove-text-properties 0 (length string)
+                              md-table-align--unmeasurable-properties string)
+      (funcall md-table-align-pixel-width-function string))))
 
 (defun md-table-align--glyph-width (node string)
   "Return the pixel width of STRING as rendered inside table NODE.
@@ -747,6 +782,16 @@ gap up."
           ;; end of a ragged row.
           (and last (+ (plist-get last :x) (plist-get last :width)))))))
 
+(defun md-table-align--margin (view unit)
+  "Return `hscroll-margin' in pixels, capped to fit inside VIEW.
+A margin wider than the viewport would leave nowhere to stand.
+
+Shared by the two halves of point-following, which have to agree on it:
+`md-table-align--desired-offset' scrolls when point is within the margin
+of an edge, and `md-table-align--point-into-view' has to place point
+outside that band or the scroll it was called for is undone at once."
+  (min (* (max 0 hscroll-margin) unit) (/ (plist-get view :budget) 3)))
+
 (defun md-table-align--desired-offset (x view unit)
   "Return the offset of VIEW adjusted to keep grid column X in sight.
 
@@ -758,8 +803,7 @@ centring rather than creeping one step per command."
   (let* ((offset (plist-get view :offset))
          (budget (plist-get view :budget))
          (maxoff (plist-get view :maxoff))
-         ;; A margin wider than the viewport would leave nowhere to stand.
-         (margin (min (* (max 0 hscroll-margin) unit) (/ budget 3)))
+         (margin (md-table-align--margin view unit))
          (clamp (lambda (o) (max 0 (min maxoff (round o)))))
          (centre (lambda () (funcall clamp (- x (/ budget 2)))))
          (step (cond ((not (numberp hscroll-step)) nil)
@@ -825,7 +869,26 @@ This is `auto-hscroll-mode' for tables, and it is not a refinement: text
 hidden by a `display' overlay collapses point onto that overlay's start,
 so a viewport that ignored point would make cursor motion through
 scrolled-off text meaningless.  Defining the viewport to contain point
-means point is never inside hidden text at all."
+means point is never inside hidden text at all.
+
+Errors are caught rather than allowed out.  This runs from
+`post-command-hook', and Emacs responds to a signal there by removing the
+offending function from the hook -- so a single failure anywhere in
+layout would silently uninstall point-following for the rest of the
+session, in every buffer, with nothing but one stale message to say so.
+Degrading to \"the table stopped following point\" is a far better
+failure than that, and reporting once per buffer keeps a persistent
+problem from spamming the echo area on every keystroke."
+  (condition-case err
+      (md-table-align--follow-point-1)
+    (error
+     (unless md-table-align--follow-failed
+       (setq md-table-align--follow-failed t)
+       (message "md-table-align: table scrolling disabled in %s (%S)"
+                (buffer-name) err)))))
+
+(defun md-table-align--follow-point-1 ()
+  "Body of `md-table-align--follow-point', which handles its errors."
   (when (and md-table-align-mode md-table-align-hscroll)
     (let ((node (md-table-align--table-at (point))))
       ;; Moving away from a scrolled table -- to another table, or out of
@@ -842,12 +905,25 @@ means point is never inside hidden text at all."
   "Move point into VIEW when clipping under CTX has left it outside.
 Deliberately mirrors the vertical case: `scroll-up' drags point along
 rather than leaving it off screen, and an explicit horizontal scroll that
-left point behind would simply be undone by `md-table-align--follow-point'."
+left point behind would simply be undone by `md-table-align--follow-point'.
+
+Point is placed `hscroll-margin' *inside* the viewport's edge, not on it.
+On the edge, `md-table-align--follow-point' sees point within the margin
+on the very next command and scrolls straight back -- with the default
+`hscroll-step' of 0 that means re-centring, which clamps to zero.  The
+explicit scroll would undo itself and \\[scroll-left] would appear dead.
+
+The margin is applied only at an edge the viewport can actually scroll
+past: at offset zero there is nothing to the left to reveal, so pushing
+point off the first column would be gratuitous."
   (when-let* ((row (md-table-align--row-at ctx (point)))
               (offset (plist-get view :offset))
+              (margin (md-table-align--margin view (plist-get ctx :unit)))
+              (lo (+ offset (if (> offset 0) margin 0)))
+              (hi (- (+ offset (plist-get view :budget))
+                     (if (< offset (plist-get view :maxoff)) margin 0)))
               (visible (md-table-align--clip-steps
-                        (md-table-align--row-plan row ctx)
-                        offset (+ offset (plist-get view :budget)))))
+                        (md-table-align--row-plan row ctx) lo hi)))
     (let ((cut (plist-get (car visible) :beg))
           (cutr (plist-get (car (last visible)) :end)))
       (cond ((< (point) cut) (goto-char cut))
@@ -949,6 +1025,7 @@ Requires a `markdown' tree-sitter parser in the buffer; see
           (progn
             (setq md-table-align-mode nil)
             (message "md-table-align: no `markdown' tree-sitter parser available"))
+        (setq md-table-align--follow-failed nil)
         (jit-lock-register #'md-table-align--jit t)
         ;; Window geometry is not something `jit-lock' watches, so clipping
         ;; needs its own triggers.  `window-state-change-functions' also fires
@@ -967,6 +1044,7 @@ Requires a `markdown' tree-sitter parser in the buffer; see
     (remove-hook 'window-state-change-functions #'md-table-align--refit t)
     (remove-hook 'post-command-hook #'md-table-align--follow-point t)
     (setq md-table-align--layout-width nil
+          md-table-align--follow-failed nil
           md-table-align--hscroll 0)
     (when md-table-align--hscroll-table
       (set-marker md-table-align--hscroll-table nil)
