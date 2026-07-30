@@ -782,8 +782,8 @@ a string, and every other failure here follows from that one."
              (lambda (_s) (signal 'text-read-only nil))))
         (setq md-table-align--metrics-cache nil)
         ;; Must not signal out to the command loop.
-        (md-table-align--follow-point))
-      (should (memq #'md-table-align--follow-point post-command-hook)))))
+        (md-table-align--post-command))
+      (should (memq #'md-table-align--post-command post-command-hook)))))
 
 (ert-deftest md-table-align-test-follow-point-recovers-after-an-error ()
   "Once the cause is gone, scrolling works again without re-enabling."
@@ -794,7 +794,7 @@ a string, and every other failure here follows from that one."
       (let ((md-table-align-pixel-width-function
              (lambda (_s) (signal 'text-read-only nil))))
         (setq md-table-align--metrics-cache nil)
-        (md-table-align--follow-point))
+        (md-table-align--post-command))
       (setq md-table-align--metrics-cache nil)
       (goto-char (point-min))
       (should (search-forward "open" nil t))
@@ -868,4 +868,123 @@ the scroll leaves point on the viewport's edge, since that is inside
       (md-table-align-tests--goto-table)
       (md-table-align-tests--press "C-x <")
       (should (> md-table-align--hscroll 0))
-      (should (memq #'md-table-align--follow-point post-command-hook)))))
+      (should (memq #'md-table-align--post-command post-command-hook)))))
+
+;;;; Face remapping arriving after layout
+;;
+;; `mixed-pitch-mode' switched on *after* this mode used to leave a misaligned
+;; table: measurement was right, but `:align-to' targets are frozen at layout
+;; time and nothing invalidated them when every glyph changed width.
+;;
+;; A TTY renders every character one column wide, so a real proportional font
+;; cannot be exercised here.  The remapping is real -- `variable-pitch-mode',
+;; which is what `mixed-pitch-mode' does to the default face -- and so is
+;; everything downstream; only the font metrics are stood in for, through the
+;; documented `md-table-align-pixel-width-function' extension point rather than
+;; by stubbing anything internal.
+
+(defun md-table-align-tests--pitch-width (string)
+  "Measure STRING as a proportional font would, once a remapping is in force.
+Widths become content-dependent, so a stale grid shows up as rows
+disagreeing rather than merely shifting together."
+  (if (string-empty-p string)
+      0
+    (+ (string-pixel-width string (current-buffer))
+       (if face-remapping-alist
+           (seq-count (lambda (c) (memq c '(?a ?e ?i ?o ?u))) string)
+         0))))
+
+(defmacro md-table-align-tests--with-pitch (text &rest body)
+  "Run BODY over TEXT with remapping-sensitive width measurement."
+  (declare (indent 1) (debug t))
+  `(md-table-align-tests--with-buffer ,text
+     (setq-local md-table-align-pixel-width-function
+                 #'md-table-align-tests--pitch-width)
+     ,@body))
+
+(defun md-table-align-tests--data-rows ()
+  "Return the pipe columns of the header and body rows.
+The delimiter row is excluded: it is a run of dashes and character-quantised
+by design, so it is not expected to land on the pixel grid exactly."
+  (let ((rows (md-table-align-tests--pipe-columns)))
+    (cons (car rows) (cddr rows))))
+
+(ert-deftest md-table-align-test-remapping-first-is-the-reference ()
+  "Remapping before the mode gives a grid every row agrees on."
+  (md-table-align-tests--with-pitch md-table-align-tests--simple
+    (variable-pitch-mode 1)
+    (md-table-align-tests--enable)
+    (let ((rows (md-table-align-tests--data-rows)))
+      (dolist (row rows)
+        (should (equal row (car rows)))))))
+
+(ert-deftest md-table-align-test-remapping-after-layout-realigns ()
+  "The mode before the remapping ends up at the same grid as the reference.
+
+This is the ordering bug: `mixed-pitch-mode' switched on afterwards used
+to leave the table laid out for the old font."
+  (let (reference)
+    (md-table-align-tests--with-pitch md-table-align-tests--simple
+      (variable-pitch-mode 1)
+      (md-table-align-tests--enable)
+      (setq reference (md-table-align-tests--data-rows)))
+    (md-table-align-tests--with-pitch md-table-align-tests--simple
+      (md-table-align-tests--enable)
+      (variable-pitch-mode 1)
+      ;; What the command loop runs after `M-x variable-pitch-mode'.
+      (md-table-align--post-command)
+      (redisplay t)
+      (should (equal (md-table-align-tests--data-rows) reference)))))
+
+(ert-deftest md-table-align-test-remapping-after-layout-is-not-vacuous ()
+  "Without the re-fit the two orders genuinely disagree.
+Guards the test above: if the stand-in font made no difference, it would
+pass whether or not anything was invalidated."
+  (let (reference)
+    (md-table-align-tests--with-pitch md-table-align-tests--simple
+      (variable-pitch-mode 1)
+      (md-table-align-tests--enable)
+      (setq reference (md-table-align-tests--data-rows)))
+    (md-table-align-tests--with-pitch md-table-align-tests--simple
+      (md-table-align-tests--enable)
+      (variable-pitch-mode 1)
+      (redisplay t)
+      ;; No re-fit has run yet, so the layout is still the unremapped one.
+      (should-not (equal (md-table-align-tests--data-rows) reference)))))
+
+(ert-deftest md-table-align-test-remapping-realigns-through-the-command-loop ()
+  "A real command after the remapping is enough; no manual call needed."
+  (md-table-align-tests--with-pitch md-table-align-tests--simple
+    (md-table-align-tests--enable)
+    (let ((before (md-table-align-tests--data-rows)))
+      (variable-pitch-mode 1)
+      (md-table-align-tests--press "C-n")
+      (should-not (equal (md-table-align-tests--data-rows) before)))))
+
+(ert-deftest md-table-align-test-unchanged-remapping-does-not-refit ()
+  "The guard holds: a command that changes nothing re-lays out nothing."
+  (md-table-align-tests--with-pitch md-table-align-tests--simple
+    (md-table-align-tests--enable)
+    (let ((key md-table-align--layout-key)
+          (overlays (overlays-in (point-min) (point-max))))
+      (md-table-align-tests--press "C-n")
+      (should (equal md-table-align--layout-key key))
+      ;; The same overlay *objects*, not merely an equal-looking layout: a
+      ;; re-fit deletes them and builds new ones.  Compared as a set, since
+      ;; `overlays-in' does not promise an order and ties on `overlay-start'
+      ;; make any sort of it unstable.
+      (let ((after (overlays-in (point-min) (point-max))))
+        (should (= (length after) (length overlays)))
+        (dolist (ov overlays)
+          (should (memq ov after)))))))
+
+(ert-deftest md-table-align-test-remapping-refits-with-hscroll-off ()
+  "Alignment depends on faces whether or not clipping is enabled."
+  (let ((md-table-align-hscroll nil))
+    (md-table-align-tests--with-pitch md-table-align-tests--simple
+      (md-table-align-tests--enable)
+      (let ((before (md-table-align-tests--data-rows)))
+        (variable-pitch-mode 1)
+        (md-table-align--post-command)
+        (redisplay t)
+        (should-not (equal (md-table-align-tests--data-rows) before))))))
