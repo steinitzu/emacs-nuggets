@@ -199,6 +199,11 @@ width. That assumption is wrong under `mixed-pitch-mode`, where the table face
 inherits the remapped default's `:height` and renders wider per character than
 `frame-char-width` reports.
 
+The order the two modes are switched on does not matter. Turning on
+`mixed-pitch-mode`, `variable-pitch-mode` or `text-scale-adjust` after a table
+has been laid out re-measures it, so you can enable them in either order and
+from any hook.
+
 #### Limitations
 
 - The delimiter row (`|:---|---:|`) renders as a run of dash characters, so its
