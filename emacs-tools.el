@@ -257,6 +257,34 @@ Interactively, complete over this collection's loaded features."
     feature))
 
 ;;;###autoload
+(defun emacs-tools-reload-loader ()
+  "Reload this loader itself from source, returning the file loaded.
+
+`emacs-tools-reload' cannot do it, by design: `emacs-tools' is excluded
+from `emacs-tools-features' because `unload-feature' would unbind the
+very functions performing the unload.  Editing the loader therefore used
+to mean restarting Emacs, or remembering to `load-file' it by hand --
+easy to forget, and the symptom is a stale `emacs-tools-reload' silently
+doing the old thing.
+
+A plain `load' is not a compromise here, it is the correct tool.  The
+reasons `emacs-tools-reload' unloads before loading do not apply to this
+file: it defines no `defcustom' and no stateful `defvar' whose old value
+could survive or be reinterpreted, its functions are simply redefined,
+and its one top-level side effect -- `emacs-tools-setup-load-path' -- is
+idempotent.  Loading the `.el' path explicitly still bypasses a stale
+`.elc'.
+
+Nothing is unloaded, so no hook registration is disturbed."
+  (interactive)
+  (let ((source (expand-file-name "emacs-tools.el" emacs-tools-directory)))
+    (unless (file-readable-p source)
+      (user-error "No loader source at %s" source))
+    (load source nil t)
+    (message "Reloaded the emacs-tools loader")
+    source))
+
+;;;###autoload
 (defun emacs-tools-reload-all ()
   "Reload every loaded extension in this collection."
   (interactive)
