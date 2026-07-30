@@ -17,6 +17,10 @@
       make-backup-files nil
       auto-save-default nil
       confirm-kill-emacs nil
+      ;; `load' prefers a `.elc' over a newer `.el' by default, so a stale
+      ;; artefact left by `make compile' would be tested in place of the source
+      ;; -- silently, and the suite would pass while asserting on old code.
+      load-prefer-newer t
       ;; A debugger prompt in a TTY frame would hang the run forever.
       debug-on-error nil)
 
