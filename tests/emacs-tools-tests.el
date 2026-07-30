@@ -204,3 +204,51 @@ definitions are not stripped out from under live overlays."
           (should (memq #'md-table-align-mode markdown-ts-mode-hook)))
       (unless present
         (remove-hook 'markdown-ts-mode-hook #'md-table-align-mode)))))
+
+;;;; Reloading the loader itself
+;;
+;; `emacs-tools-reload' excludes `emacs-tools', since unloading it would remove
+;; the functions doing the unloading.  A plain `load' of its own source is both
+;; safe and sufficient here -- there is no `defcustom' or stateful `defvar' to
+;; reset, only functions to redefine.
+
+(ert-deftest emacs-tools-test-reload-loader-restores-a-clobbered-definition ()
+  "A redefined function is put back by reloading the loader."
+  (let ((original (symbol-function 'emacs-tools--hook-like-p)))
+    (unwind-protect
+        (progn
+          (fset 'emacs-tools--hook-like-p (lambda (&rest _) 'clobbered))
+          (should (eq (emacs-tools--hook-like-p 'x nil) 'clobbered))
+          (emacs-tools-reload-loader)
+          (should-not (eq (emacs-tools--hook-like-p 'foo-hook '(a)) 'clobbered))
+          (should (emacs-tools--hook-like-p 'foo-hook '(a))))
+      (unless (eq (symbol-function 'emacs-tools--hook-like-p) original)
+        (fset 'emacs-tools--hook-like-p original)))))
+
+(ert-deftest emacs-tools-test-reload-loader-does-not-grow-load-path ()
+  "Its top-level `load-path' setup is idempotent, so reloading is repeatable."
+  (emacs-tools-reload-loader)
+  (let ((before (length load-path)))
+    (emacs-tools-reload-loader)
+    (emacs-tools-reload-loader)
+    (should (= (length load-path) before))
+    (should (= (length load-path)
+               (length (delete-dups (copy-sequence load-path)))))))
+
+(ert-deftest emacs-tools-test-reload-loader-keeps-hook-registrations ()
+  "Nothing is unloaded, so hooks are not swept in the first place."
+  (emacs-tools-tests--with-clean-hook
+    (add-hook 'emacs-tools-tests--sample-hook #'md-table-align-mode)
+    (emacs-tools-reload-loader)
+    (should (memq #'md-table-align-mode emacs-tools-tests--sample-hook))))
+
+(ert-deftest emacs-tools-test-reload-loader-keeps-extensions-loaded ()
+  "Reloading the loader does not disturb the extensions it loaded."
+  (emacs-tools-reload-loader)
+  (should (featurep 'md-table-align))
+  (should (memq 'md-table-align (emacs-tools-loaded-features))))
+
+(ert-deftest emacs-tools-test-reload-loader-reports-missing-source ()
+  "A loader that cannot find itself says so rather than failing obscurely."
+  (let ((emacs-tools-directory (expand-file-name "no-such-dir/" temporary-file-directory)))
+    (should-error (emacs-tools-reload-loader) :type 'user-error)))
