@@ -210,6 +210,51 @@ inherits the remapped default's `:height` and renders wider per character than
 - A window with no room for even a couple of characters of table is left to
   wrap, on the grounds that clipping it to nothing would be worse.
 
+### md-bare-url — make plain URLs in Markdown actually open
+
+A URL written without link syntax does not open in a browser when you press
+`RET` on it, while a tagged `[link](url)` on the same line does:
+
+```markdown
+See https://example.com/foo for details.   <- RET does nothing useful
+See [the docs](https://example.com/foo).   <- RET opens a browser
+```
+
+There is no setting for this, and nothing is missing: `markdown-ts-mode`
+already buttonizes bare URLs, and `RET` and mouse clicks already reach that
+button. It is the destination that is wrong. Deciding whether a match came from
+its URL regexp or its email regexp, the mode asks `(eq uri-start 0)` of a
+*buffer position* — and buffer positions start at 1, so the test never succeeds
+and **every** bare URL is treated as an email address. A bare `https://` URL is
+handed to the mail composer instead of `browse-url`, or fails outright with
+`Symbol's value as variable is void: url-mail-command`.
+
+`md-bare-url` fixes the destination. Bare URLs then browse, and everything that
+already worked — tagged links, `<autolinks>`, and bare email addresses, which
+happen to come out right under the bug — is untouched.
+
+```elisp
+(require 'md-bare-url)
+(md-bare-url-mode 1)
+```
+
+`md-bare-url-mode` is global: it works by advising a function, and there is
+nothing buffer-local to switch on. There is nothing to customize.
+
+This is a shim against an upstream bug — still present in Emacs master as of
+July 2026 — and is meant to be deleted once that bug is fixed. It is written so
+that deletion stays cheap: rather than reimplementing bare-URL detection, it
+strips the bogus `mailto:` prefix only when what follows carries a URI scheme of
+its own, which nothing but the bug can produce. When upstream is fixed the
+advice simply stops matching. The test suite pins the bug itself, so it will say
+so.
+
+Without it, `M-x goto-address-mode` is a partial workaround: it gives you
+working `C-c RET` and `mouse-2`, but plain `RET` keeps hitting the broken
+button, since goto-address binds `RET` only in read-only buffers.
+
+See [md-bare-url/DESIGN.md](md-bare-url/DESIGN.md) for the full diagnosis.
+
 ## Development
 
 ```sh
@@ -244,7 +289,8 @@ unloading `emacs-tools` would remove the functions doing the unloading.
 
 Extensions can hook the unload by defining `FEATURE-unload-function`, which
 `unload-feature` calls before stripping definitions; `md-table-align` uses it
-to switch itself off everywhere so no overlay outlives its code.
+to switch itself off everywhere so no overlay outlives its code, and
+`md-bare-url` to make sure no advice outlives the function it names.
 
 Tests assert on what the redisplay engine actually drew — they read back rendered
 columns with `posn-at-point` — so they need a real frame. `make test` runs Emacs
@@ -255,5 +301,6 @@ under a pty to get a TTY frame; batch mode has no frame that lays text out.
 ```
 emacs-tools.el          collection loader; adds each extension to load-path
 md-table-align/         extension: display-only Markdown table alignment
+md-bare-url/            extension: make bare URLs in Markdown follow
 tests/                  test suite and TTY test runner
 ```
