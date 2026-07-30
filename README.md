@@ -274,8 +274,9 @@ make compile   # byte-compile, warnings are errors
 ### Reloading in a live session
 
 ```
-M-x emacs-tools-reload       ; one extension, completing over what is loaded
-M-x emacs-tools-reload-all   ; every loaded extension
+M-x emacs-tools-reload         ; one extension, completing over what is loaded
+M-x emacs-tools-reload-all     ; every loaded extension
+M-x emacs-tools-reload-loader  ; this loader itself, after editing emacs-tools.el
 ```
 
 Use these rather than `load-file` while iterating. `load` on its own does not
@@ -292,8 +293,18 @@ give you a clean slate:
 `emacs-tools-reload` unloads the feature first, which unbinds everything its
 file defined, then loads the `.el` path explicitly. Minor modes that are
 switched on are turned off beforehand and back on afterwards, so their buffers
-are rebuilt by the new code. The loader itself is deliberately not reloadable —
-unloading `emacs-tools` would remove the functions doing the unloading.
+are rebuilt by the new code. Hook registrations survive: `unload-feature`
+strips a feature's functions from every hook, which is right when a feature is
+going away for good and wrong when it is coming straight back, so they are
+recorded beforehand and put back — with their depth, so an appended entry stays
+appended.
+
+The loader cannot unload itself — that would remove the functions doing the
+unloading — so `emacs-tools-reload-loader` plainly `load`s `emacs-tools.el`
+instead. That is enough here: the file defines no `defcustom` and no stateful
+`defvar`, its functions are simply redefined, and its `load-path` setup is
+idempotent. Use it after editing `emacs-tools.el`, or a stale
+`emacs-tools-reload` will keep quietly doing the old thing.
 
 Extensions can hook the unload by defining `FEATURE-unload-function`, which
 `unload-feature` calls before stripping definitions; `md-table-align` uses it
