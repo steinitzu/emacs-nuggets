@@ -121,6 +121,93 @@ pass."
       (dolist (mode globals)
         (when (fboundp mode) (funcall mode arg))))))
 
+;; `unload-feature' sweeps the obarray for hook-like variables and removes
+;; every function the feature defined, then does the same over every buffer's
+;; buffer-local variables.  That is right when a feature is going away for
+;; good: a hook left holding a now-void function signals in every buffer that
+;; runs it.  It is wrong when the feature is coming straight back.  Hooks hold
+;; *symbols*, so a redefined function needs no attention at all -- only an
+;; unbound one would have been a problem, and after the reload it is bound
+;; again.  Left alone, reloading quietly drops the `add-hook' calls in a user's
+;; init file, and new buffers stop getting the mode.
+
+(defun emacs-tools--feature-functions (feature)
+  "Return the function symbols FEATURE's file defines.
+These are exactly what `unload-feature' strips from hooks."
+  (let (functions)
+    (dolist (entry (cdr (feature-symbols feature)) (nreverse functions))
+      (when (eq (car-safe entry) 'defun)
+        (push (cdr entry) functions)))))
+
+(defun emacs-tools--hook-like-p (symbol value)
+  "Non-nil when SYMBOL holding VALUE is a hook `unload-feature' would sweep.
+Mirrors its rule: a list-valued variable whose name ends in `-hook' or
+`-hooks', or one of the abnormal hooks it knows by name."
+  (or (and (consp value)
+           (string-match-p "-hooks?\\'" (symbol-name symbol)))
+      (memq symbol unload-feature-special-hooks)))
+
+(defun emacs-tools--hook-depth (hook function local)
+  "Return the depth FUNCTION was added to HOOK with, or 0.
+LOCAL non-nil reads the buffer-local table.  `add-hook' keeps depths in
+an uninterned symbol on HOOK's `hook--depth-alist' property; reading it
+back is what keeps a restored `add-hook' from silently reordering a hook
+whose entries were given an explicit depth -- an appended entry, most
+commonly."
+  (or (when-let* ((sym (get hook 'hook--depth-alist))
+                  ((boundp sym)))
+        (alist-get function (if local (symbol-value sym) (default-value sym))))
+      0))
+
+(defun emacs-tools--hook-registrations (functions)
+  "Return where FUNCTIONS sit on hooks, as a list of (HOOK FN BUFFER DEPTH).
+BUFFER is nil for a global registration.  The sweep mirrors
+`unload-feature''s, so that whatever it is about to strip can be put back."
+  (let (found)
+    (mapatoms
+     (lambda (sym)
+       (when (boundp sym)
+         (let ((value (ignore-errors (default-value sym))))
+           (when (and (listp value) (emacs-tools--hook-like-p sym value))
+             (dolist (func functions)
+               (when (memq func value)
+                 (push (list sym func nil
+                             (emacs-tools--hook-depth sym func nil))
+                       found))))))))
+    (dolist (buffer (buffer-list))
+      (with-current-buffer buffer
+        (dolist (entry (buffer-local-variables))
+          (when (consp entry)
+            (let ((sym (car entry))
+                  (value (cdr entry)))
+              (when (and (listp value) (emacs-tools--hook-like-p sym value))
+                (dolist (func functions)
+                  (when (memq func value)
+                    (push (list sym func buffer
+                                (emacs-tools--hook-depth sym func t))
+                          found)))))))))
+    (nreverse found)))
+
+(defun emacs-tools--restore-hooks (registrations)
+  "Re-add every one of REGISTRATIONS no longer in place.
+Returns how many were restored.  Anything still present is left alone,
+so a registration the reloaded file re-established itself is not
+duplicated, and a buffer killed in the meantime is skipped."
+  (let ((restored 0))
+    (dolist (entry registrations restored)
+      (let ((hook (nth 0 entry))
+            (func (nth 1 entry))
+            (buffer (nth 2 entry))
+            (depth (nth 3 entry)))
+        (when (or (null buffer) (buffer-live-p buffer))
+          (with-current-buffer (or buffer (current-buffer))
+            (let ((value (if buffer
+                             (and (local-variable-p hook) (symbol-value hook))
+                           (and (boundp hook) (default-value hook)))))
+              (unless (and (listp value) (memq func value))
+                (add-hook hook func depth (and buffer t))
+                (setq restored (1+ restored))))))))))
+
 ;;;###autoload
 (defun emacs-tools-reload (feature)
   "Reload FEATURE from source, discarding state a plain `load' would keep.
@@ -147,16 +234,26 @@ Interactively, complete over this collection's loaded features."
          (source (or (locate-file (symbol-name feature) load-path '(".el"))
                      (user-error "No .el source on `load-path' for %s" feature))))
     (emacs-tools--set-modes records nil)
-    (when (featurep feature)
-      ;; Forced: nothing here is depended on by other packages, and a
-      ;; dependency check would only get in the way while iterating.
-      (unload-feature feature t))
-    (load source nil t)
-    (emacs-tools--set-modes records t)
-    (message "Reloaded %s (%d buffer%s restored)"
-             feature
-             (length (cdr records))
-             (if (= 1 (length (cdr records))) "" "s"))
+    ;; Snapshot after the modes are off, so the hooks a mode installs for
+    ;; itself are already gone and only genuine registrations -- an init
+    ;; file's `add-hook' -- are captured.  Switching the modes back on
+    ;; reinstates their own.
+    (let ((hooks (emacs-tools--hook-registrations
+                  (emacs-tools--feature-functions feature)))
+          (restored 0))
+      (when (featurep feature)
+        ;; Forced: nothing here is depended on by other packages, and a
+        ;; dependency check would only get in the way while iterating.
+        (unload-feature feature t))
+      (load source nil t)
+      (setq restored (emacs-tools--restore-hooks hooks))
+      (emacs-tools--set-modes records t)
+      (message "Reloaded %s (%d buffer%s, %d hook%s restored)"
+               feature
+               (length (cdr records))
+               (if (= 1 (length (cdr records))) "" "s")
+               restored
+               (if (= 1 restored) "" "s")))
     feature))
 
 ;;;###autoload
