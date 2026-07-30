@@ -38,12 +38,15 @@ driven through a pty.
 | 2 | Can idle-vs-busy be detected? | **Yes.** `tpgid` from `/proc/PID/stat` equals the shell's own `pgrp` at the prompt, differs while a foreground job runs, and returns on `C-c`. A `&` background job correctly reads as **idle**. |
 | 3 | Can the running command be named? | **Yes.** The shell's child whose `pgrp` matches `tpgid` is the foreground job; `/proc/CHILD/comm` gave `sleep`, and `/proc/CHILD/cwd` is available too. |
 | 4 | Does `vterm-buffer-name-string` track the title live? | **Yes.** Buffer renamed from `…: /home/…/emacs-tools` to `…: /etc` on `cd`. A second terminal claiming the same title became `…<2>` — Emacs handles collisions. |
+| 5 | Do 1–3 survive a **nested shell** (`sudo -i`, `ssh`, plain `bash`)? | **Only with the descendant walk below.** Reading the pty leader alone, a nested shell makes the terminal read permanently busy and freezes its cwd at the outer shell's. |
 
-Experiment 1 also produced the finding that decides the whole mechanism:
-**vterm's own `default-directory` stayed at `/usr/` the entire time.** vterm
-tracks directories only when the shell emits the OSC sequences from its
-shell-side integration snippet, which was not installed. `/proc` needed no
-cooperation at all.
+Experiment 1 also produced the finding that shapes the mechanism: **vterm's own
+`default-directory` stayed at `/usr/` the entire time**, because that Emacs ran a
+shell with no `vterm_prompt_end` snippet in its rc. `/proc` needed no
+cooperation at all. Experiment 5 is the sharper version of the same point — the
+snippet lives in *one* rc file, so a `sudo -i`, an `ssh`, a container, or a
+`bash --norc` inside the terminal is unreachable by it even on a machine where
+it is installed.
 
 Experiment 4 has a matching caveat: the title is owned by the shell. In the
 default bash setup the title escape is embedded in `PS1`, so it is re-set at
@@ -54,30 +57,66 @@ guaranteed, and never authoritative.
 ## Mechanism
 
 `/proc` is the source of truth for directory, busy state, and running command.
-For each terminal buffer, from `(process-id vterm--process)`:
+The question it answers is asked not of the pty leader but of the terminal's
+**current shell**, which experiment 5 shows are not the same process.
+
+### Finding the current shell
+
+From the pty leader `(process-id vterm--process)`, read `tpgid` — the process
+group that owns the terminal. Then walk the descendant tree from the leader
+towards that group, and take the **deepest process on the path whose `comm` is a
+shell** (`bash`, `zsh`, `sh`, `dash`, `fish`), defaulting to the leader.
+
+The walk stops descending once it reaches the foreground group, which is what
+keeps it honest in both directions: a nested `bash` is followed, but `make`
+spawning `cc` is not — `cc` is inside the foreground group, so the walk never
+looks at it and the answer stays the shell that launched `make`.
+
+Depth is capped (32) so a pathological process tree cannot hang redisplay.
+
+### The three facts
+
+Of that shell's pid:
 
 - **cwd** — resolve the `/proc/PID/cwd` symlink.
-- **busy** — parse `/proc/PID/stat` (fields taken *after* the last `)`, since a
-  process name may contain spaces and parens): `pgrp` is index 2, `tpgid` is
-  index 5. Idle ⇔ `tpgid == pgrp`.
-- **running command** — read `/proc/PID/task/PID/children`, keep those whose
-  `pgrp` equals `tpgid`, and read their `comm`. A pipeline puts several
-  processes in the group; join their names with `|`.
+- **busy** — parse `/proc/PID/stat`, taking fields *after* the last `)` since a
+  process name may contain spaces and parens: `pgrp` is index 2, `tpgid` is
+  index 5. Idle ⇔ the shell's own `pgrp` equals the leader's `tpgid`, i.e. the
+  shell is itself the foreground group.
+- **running command** — the processes whose `pgrp` is that group, by `comm`. A
+  pipeline puts several there; join their names with `|`.
 
-Three to four small file reads per terminal, performed **on demand** — when the
+A handful of small file reads per terminal, performed **on demand** — when the
 switcher opens, the dashboard refreshes, or a command searches for a match.
 Nothing polls in the background.
 
-`default-directory` is used only as a fallback: when the buffer is remote
-(TRAMP), where `/proc` describes the local `ssh` client rather than the remote
-shell, and on non-Linux platforms. The probe lives behind a single function so
-that a macOS implementation (`lsof`/`ps`) is a drop-in.
+### Relationship to vterm's shell-side integration
 
-### Consequence: for a vterm buffer, never trust `default-directory`
+`vterm_prompt_end` in a shell rc emits `OSC 51;A user@host:pwd` at every prompt,
+and vterm's `vterm--set-directory` turns that into `default-directory` — a TRAMP
+path when the host is not local. Where it is installed it is authoritative and
+it reaches somewhere `/proc` cannot: a shell on the far side of an `ssh`, whose
+cwd is not a local path at all.
 
-Anywhere the code asks "what directory am I in", a vterm buffer must answer with
-its probed cwd. Experiment 1 shows `default-directory` is stale. This applies to
-the project-scoping in the switcher just as much as to matching.
+It also gives *only* the directory. Busy state and the running command — half of
+what this extension needs — have no OSC equivalent, so `/proc` is required
+regardless. Hence:
+
+> **Remote `default-directory` wins; otherwise `/proc`.** If a buffer's
+> `default-directory` is remote, trust it and mark the terminal's busy state
+> unknown. Otherwise use the walk above, which is correct whether or not the
+> snippet is installed, and stays correct through a nested shell where the
+> snippet is not loaded (experiment 5).
+
+The probe lives behind a single function so a macOS implementation
+(`lsof`/`ps`) is a drop-in.
+
+### Consequence: for a local vterm buffer, never trust `default-directory`
+
+Anywhere the code asks "what directory am I in", a local vterm buffer must
+answer with its probed cwd — including the project-scoping in the switcher, not
+just matching. Even with the snippet installed, `default-directory` is stale
+inside any shell that did not load it (experiment 5).
 
 ### Zero persistent state
 
@@ -223,6 +262,10 @@ What gets tested against real terminals:
 - **Probe** — start a terminal, `cd`, assert the probed cwd follows; run a
   foreground job, assert busy and the command name; `C-c`, assert idle; `&` a
   job, assert still idle.
+- **Nested shells** — run `bash --norc` inside a terminal, `cd`, and assert the
+  probed cwd and idle state follow the *inner* shell (experiment 5); assert a
+  non-shell child (`make`-like: a foreground process spawning its own children)
+  does **not** move the answer off the outer shell.
 - **Matching** — terminals in a known layout of directories; assert exact beats
   ancestor, ancestor stops at the project root, MRU breaks ties, and that
   `termdex-here` takes a busy match where `termdex-here-idle` spawns instead.
