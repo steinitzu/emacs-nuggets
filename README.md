@@ -320,8 +320,14 @@ For terminals you do not create yourself, add a predicate instead:
 ```elisp
 (add-to-list 'termdex-exclude-functions
              (lambda (buffer)
-               (buffer-local-value 'agent-session-terminal-workdir buffer)))
+               (with-current-buffer buffer
+                 (bound-and-true-p some-package-session-terminal-p))))
 ```
+
+Use `bound-and-true-p`, not `buffer-local-value`: a predicate that signals takes
+every termdex command down with it, since they all begin by listing terminals.
+If the package defining that variable is autoloaded, it is void until something
+first loads it — which is exactly the state a fresh Emacs is in.
 
 Excluded terminals keep working normally — they are only left out of matching
 and switching. `C-u M-x termdex-list` shows them, and a command run from inside
