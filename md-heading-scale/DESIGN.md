@@ -282,4 +282,52 @@ remappings rather than two.
 
 ## Validation against implementation
 
-_Filled in after implementing._
+Checked after implementing, against real Emacs 31.0.90 in a TTY frame under a
+pty — the whole suite, plus the mutation checks below.
+
+| Design claim | Verdict |
+|---|---|
+| One relative `:height` remapping per scaled level, on `markdown-ts-heading-N` | Holds |
+| A multiplier of 1 installs nothing at all | Holds — levels 5 and 6 are absent from `face-remapping-alist` under the defaults |
+| A short list leaves the remaining levels alone | Holds |
+| Switching off restores `face-remapping-alist` `equal`-identically | Holds |
+| A remapping from elsewhere (`text-scale`, `mixed-pitch`) survives untouched | Holds — asserted against a `default` remapping made before and checked after |
+| Scaling is buffer-local | Holds |
+| Changing the values re-applies live, without stacking the old cookie under the new | Holds |
+| Relative heights multiply, so `text-scale` composes | Holds — `merge-face-attribute` gives 300 for 1.5 then 2.0 over 100 |
+| Setext headings need no remapping of their own | Holds — `markdown-ts-setext-heading` specifies no `:height` and inherits `markdown-ts-heading-1` |
+| A reload leaves exactly one set of remappings | Holds |
+| `unload-feature` leaves no buffer scaled | Holds |
+
+The suite was mutation-checked. Each of these fails exactly the tests that
+describe it, and nothing else:
+
+| Mutation | Caught by |
+|---|---|
+| Multiplier not floated | `integers-are-accepted` |
+| Multiplier-of-1 guard removed | `a-multiplier-of-one-installs-nothing`, and three more |
+| `--apply` does not clear first | `refresh-takes-up-a-changed-value` |
+| Switching off does not clear | `switching-off-restores-exactly`, `leaves-foreign-remappings-alone`, `reload-…`, `unloading-…` |
+
+### Deviations
+
+- **Multipliers are floated on the way in.** Not in the design, and a real
+  hazard rather than tidiness: `:height` is relative only when it is a float.
+  An integer is an absolute size in units of 1/10 pt, so a perfectly reasonable
+  `(setopt md-heading-scale-values '(2 1.5 …))` would have rendered level-1
+  headings at 0.2pt instead of doubling them. `md-heading-scale--factor` returns
+  `(float factor)`, and a test pins it.
+- **`md-heading-scale-max-level` is public**, where the interface table lists
+  only the mode, the refresh command and the two options. It is a constant of
+  the markup rather than a knob — six levels is CommonMark — but it is worth
+  being able to read, and the tests do.
+- **The graphical test has not been run.** The machine this was written on has
+  no display, so `headings-render-taller` skipped every time. Its failure modes
+  are conservative — no display, or a frame that reports no measurable line
+  height, both skip rather than fail — but it has never gone green, and the
+  first run on a machine with a display is what will confirm it.
+- **A pre-existing flake was observed, not fixed:**
+  `termdex-follows-a-nested-shell` fails intermittently (roughly one run in
+  three), reporting `bash` where it expects `sleep`. `termdex-tests--busy`
+  returns as soon as the terminal is busy, which the nested shell briefly is
+  before it has spawned the job. Unrelated to this package, and left alone.
