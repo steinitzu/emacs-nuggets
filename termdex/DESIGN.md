@@ -74,6 +74,25 @@ looks at it and the answer stays the shell that launched `make`.
 
 Depth is capped (32) so a pathological process tree cannot hang redisplay.
 
+**Being named `bash` is not enough** (added during implementation). A shell
+script's process is also called `bash` — that is what a `#!` line runs — and so
+is `bash -c`. Descending into one would report a running script as an idle
+prompt for as long as it ran, which is exactly backwards, and would make
+`termdex-here-idle` walk you into a busy terminal. The extra test is the command
+line: an interactive shell is invoked with options only, while a script or a
+command string means a non-option argument, or `-c`.
+
+### Known limitation: blocking builtins read as idle
+
+A shell blocked in a *builtin* — `read`, `wait`, `select` — forks nothing, so
+its process group still owns the terminal and it reads as idle. There is no
+process to see, and short of shell-side integration there is nothing to detect.
+Accepted: the case is rare, and the failure is mild (`termdex-here-idle` walks
+you into a shell waiting on `read` rather than opening a new one).
+
+This surfaced from a test written on the assumption that `read answer` would
+make a terminal busy. It does not.
+
 ### The three facts
 
 Of that shell's pid:
@@ -211,11 +230,14 @@ A `tabulated-list-mode` buffer, one row per terminal:
 
 | Column | Content |
 |--------|---------|
-| Dir | project-relative where possible, else abbreviated |
-| State | idle / busy |
+| Directory | abbreviated (`~/…`) |
+| State | idle / busy / remote |
 | Process | foreground command, blank when idle |
-| Title | the terminal's title, when it is not just a restatement of the cwd |
 | Buffer | buffer name |
+
+*(Deviation: a separate Title column was dropped during implementation. The
+buffer name **is** the title wherever the shell sets one, so the column would
+have restated its neighbour in every row.)*
 
 Keys: `RET` switch, `o` other window, `k` kill (confirming when busy), `+` new
 terminal in that row's directory, `g` refresh. Auto-refresh runs on a timer
@@ -280,6 +302,18 @@ timeout (never a fixed `sleep-for` — the probes above needed ~1–2s for a she
 to settle, and a fixed wait is a flaky test), and teardown that kills terminal
 buffers with `kill-buffer-query-functions` bound to nil, since a live process
 otherwise prompts.
+
+Two things learned writing them, both about testing *negatives*:
+
+- Waiting out the full timeout to prove nothing happened made a single test 15
+  of the suite's 19 seconds. Negative assertions get one shell round trip
+  instead — the same wait the positive tests show is comfortably enough.
+- `bash -c 'sleep 60'` tests nothing: bash execs a lone command in place, so no
+  bash process remains to be mistaken for an interactive one. It needs a second
+  command (`bash -c 'sleep 60; :'`) before there is anything to get wrong.
+
+Final state: 21 termdex tests, all against real terminals, ~8s for the whole
+collection's suite.
 
 ## Reload notes
 
