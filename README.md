@@ -263,6 +263,77 @@ button, since goto-address binds `RET` only in read-only buffers.
 
 See [md-bare-url/DESIGN.md](md-bare-url/DESIGN.md) for the full diagnosis.
 
+### md-heading-scale — size headings by their level
+
+`markdown-mode` has `markdown-header-scaling`, which renders a level-1 heading
+large and each level below it a little smaller. `markdown-ts-mode` has no
+equivalent — a heading there is told apart only by counting `#` characters.
+
+`md-heading-scale` adds it, and it is a small thing to add: `markdown-ts-mode`
+already applies a distinct face per level, `markdown-ts-heading-1` through
+`markdown-ts-heading-6`, and then defines all six identically. This package
+gives those faces a height.
+
+```elisp
+(require 'md-heading-scale)
+(add-hook 'markdown-ts-mode-hook #'md-heading-scale-mode)
+```
+
+or turn it on everywhere:
+
+```elisp
+(global-md-heading-scale-mode 1)
+```
+
+| Command | What it does |
+|---------|--------------|
+| `md-heading-scale-mode` | Buffer-local minor mode; scales this buffer's headings. |
+| `global-md-heading-scale-mode` | Enables the above in `md-heading-scale-modes`. |
+| `md-heading-scale-refresh` | Re-apply after a plain `setq` of the values below. |
+
+| Option | Default | Description |
+|:-------|:--------|:------------|
+| `md-heading-scale-values` | `(2.0 1.7 1.4 1.1 1.0 1.0)` | Height multipliers for levels 1–6. |
+| `md-heading-scale-modes` | `(markdown-ts-mode)` | Modes `global-md-heading-scale-mode` activates in. |
+
+The defaults are the ones `markdown-mode` ships, so coming from there your
+headings look like they did. Set the values with `setopt` (or Customize) and
+every buffer with the mode on takes them up immediately.
+
+A multiplier of `1` means *leave that level completely alone* — it is not
+scaled to 1.0, it is not touched at all. The list may also be short:
+`(setopt md-heading-scale-values '(1.6))` enlarges level 1 and nothing else.
+
+#### What it does not do
+
+Sizes are **multipliers**, not fixed sizes, and they are applied as a
+buffer-local face remapping rather than by editing the faces:
+
+- `text-scale-adjust`, `mixed-pitch-mode` and a `:height` of your own on the
+  `markdown-ts-heading-N` faces all still work, with the ratios between levels
+  preserved.
+- Switching the mode off restores exactly what was there before. Nothing is
+  written over your face customizations, and no other package's remapping is
+  disturbed.
+- One buffer can be scaled while another is not.
+
+Setext headings (underlined with `===`) follow level 1, since
+`markdown-ts-setext-heading` inherits `markdown-ts-heading-1`.
+
+#### Limitations
+
+- **The `#` markers grow with their heading.** `markdown-ts-mode` applies the
+  heading face across the whole heading, markers included, and the delimiter
+  face it puts on top specifies no height of its own. If large markers bother
+  you, `markdown-ts-hide-markup` hides them altogether. The same applies to the
+  `======` under a setext heading.
+- Nothing is visible on a terminal frame — `:height` needs a graphical display.
+- This is for `markdown-ts-mode`. The MELPA `markdown-mode` has its own
+  `markdown-header-scaling` already.
+
+See [md-heading-scale/DESIGN.md](md-heading-scale/DESIGN.md) for why remapping
+is used rather than `markdown-mode`'s global `set-face-attribute`.
+
 ### termdex — reach the right terminal, out of many
 
 With a handful of `vterm` buffers open, `C-x b` stops helping: buffer names say
@@ -397,8 +468,9 @@ idempotent. Use it after editing `emacs-tools.el`, or a stale
 
 Extensions can hook the unload by defining `FEATURE-unload-function`, which
 `unload-feature` calls before stripping definitions; `md-table-align` uses it
-to switch itself off everywhere so no overlay outlives its code, and
-`md-bare-url` to make sure no advice outlives the function it names.
+to switch itself off everywhere so no overlay outlives its code, `md-bare-url`
+to make sure no advice outlives the function it names, and `md-heading-scale`
+so no buffer is left scaled by a remapping nothing can now remove.
 
 Tests assert on what the redisplay engine actually drew — they read back rendered
 columns with `posn-at-point` — so they need a real frame. `make test` runs Emacs
@@ -410,6 +482,7 @@ under a pty to get a TTY frame; batch mode has no frame that lays text out.
 emacs-tools.el          collection loader; adds each extension to load-path
 md-table-align/         extension: display-only Markdown table alignment
 md-bare-url/            extension: make bare URLs in Markdown follow
+md-heading-scale/       extension: size Markdown headings by their level
 termdex/                extension: directory-aware handling for many vterms
 tests/                  test suite and TTY test runner
 ```
