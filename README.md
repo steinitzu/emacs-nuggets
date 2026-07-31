@@ -263,13 +263,71 @@ button, since goto-address binds `RET` only in read-only buffers.
 
 See [md-bare-url/DESIGN.md](md-bare-url/DESIGN.md) for the full diagnosis.
 
+### termdex — reach the right terminal, out of many
+
+With a handful of `vterm` buffers open, `C-x b` stops helping: buffer names say
+nothing about where each terminal is or what it is doing.
+
+`termdex` treats a terminal as belonging to **wherever it is now**. `cd`
+somewhere else and it is a terminal of that directory — it is not tied to the
+project it was born in, the way `projectile-run-vterm` and friends tie it.
+
+```elisp
+(require 'termdex)
+(keymap-global-set "C-c t"   #'termdex-here)
+(keymap-global-set "C-c T"   #'termdex-here-idle)
+(keymap-global-set "C-c C-t" #'termdex-new)
+(keymap-global-set "C-c b"   #'termdex-switch)
+(keymap-global-set "C-c B"   #'termdex-switch-project)
+```
+
+| Command | What it does |
+|---------|--------------|
+| `termdex-here` | Go to a terminal for this directory, or make one. Reuses one already here, else the nearest one in a parent directory up to the project root, most recently used first. A busy terminal still counts — this is "take me to the terminal for here", whatever it is doing. |
+| `termdex-here-idle` | The same, but something running disqualifies a terminal, so you always arrive at a prompt. |
+| `termdex-new` | Always a new terminal. |
+| `termdex-switch` | Pick from every terminal, annotated with directory and what it is running. |
+| `termdex-switch-project` | The same, restricted to this project. |
+| `termdex-list` | A dashboard: every terminal, its directory, whether it is busy, and what it is running. `RET` switch, `o` other window, `k` kill, `+` new terminal there, `g` refresh. |
+
+`termdex-switch` toggles the way `C-x b` does: `RET` takes you to the most
+recent *other* terminal, and pressing it again brings you back.
+
+Reusing a terminal from a parent directory sends it a `cd` so it follows you
+down — set `termdex-cd-on-ancestor-match` to nil to leave it where it stands.
+Either way a **busy** terminal is never typed into: it has no prompt to read the
+line, which would instead go to whatever is running.
+
+Terminals termdex creates are named after the title their shell reports, and
+follow it as it changes (`termdex-buffer-name-string`). Terminals started any
+other way are left alone.
+
+#### Requirements
+
+[`vterm`](https://github.com/akermu/emacs-libvterm), and Linux: a terminal's
+directory, busy state, and running command are read from `/proc`. That needs no
+cooperation from your shell — no rc snippet — and it keeps working inside a
+`sudo -i`, an `ssh`, or any other shell started within a terminal, where
+`default-directory` silently stops moving. Where you *do* have vterm's
+shell-side integration and a genuinely remote directory, that is used instead,
+since `/proc` can only see the local `ssh` client.
+
+See [termdex/DESIGN.md](termdex/DESIGN.md) for how a terminal's current shell is
+identified, and for what it cannot see (a shell blocked in a builtin such as
+`read` looks idle).
+
 ## Development
 
 ```sh
-make deps      # build the tree-sitter grammars the tests need
+make deps      # build the tree-sitter grammars and install vterm for the tests
 make test      # run the test suite
 make compile   # byte-compile, warnings are errors
 ```
+
+`make deps` also installs `vterm` into `.test-env/elpa`, since termdex's tests
+drive real terminals. It compiles a C module, so it needs cmake, a compiler and
+libvterm's headers; without them the build is skipped and the termdex tests skip
+themselves rather than failing the run.
 
 ### Reloading in a live session
 
@@ -321,5 +379,6 @@ under a pty to get a TTY frame; batch mode has no frame that lays text out.
 emacs-tools.el          collection loader; adds each extension to load-path
 md-table-align/         extension: display-only Markdown table alignment
 md-bare-url/            extension: make bare URLs in Markdown follow
+termdex/                extension: directory-aware handling for many vterms
 tests/                  test suite and TTY test runner
 ```
