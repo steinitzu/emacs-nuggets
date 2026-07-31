@@ -2,6 +2,7 @@ EMACS ?= emacs
 ROOT  := $(CURDIR)
 TESTENV := $(ROOT)/.test-env
 GRAMMARS := $(TESTENV)/tree-sitter
+ELPA := $(TESTENV)/elpa
 
 # Extension directories, discovered the same way the loader discovers them:
 # every subdirectory holding Lisp, minus the ones that ship nothing.  Keep this
@@ -27,10 +28,19 @@ test: deps
 ## use.  Batch mode cannot answer that prompt, so the tests need them built up
 ## front.  The recipes come from `markdown-ts-mode' rather than being repeated
 ## here, so the test environment tracks the commit Emacs pins.
-deps: $(GRAMMARS)/libtree-sitter-markdown.so
+## Also install vterm, which termdex's tests drive for real.  It builds a C
+## module, so it is a `make deps' job rather than something a test can do.  If
+## the build is impossible here, the termdex tests skip rather than fail, so
+## this recipe must not stop the run.
+deps: $(GRAMMARS)/libtree-sitter-markdown.so $(ELPA)/.vterm-stamp
 
 $(GRAMMARS)/libtree-sitter-markdown.so:
 	@EMACS_TOOLS_GRAMMAR_DIR=$(GRAMMARS) $(EMACS) --batch -l tests/install-grammars.el
+
+$(ELPA)/.vterm-stamp:
+	@EMACS_TOOLS_ELPA_DIR=$(ELPA) $(EMACS) --batch -l tests/install-vterm.el \
+	  && mkdir -p $(ELPA) && touch $@ \
+	  || echo "WARNING: vterm unavailable -- termdex tests will skip" >&2
 
 ## Byte-compile everything, treating warnings as failures.
 ##

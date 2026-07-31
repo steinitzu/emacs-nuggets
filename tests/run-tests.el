@@ -34,6 +34,14 @@
 (setq treesit-extra-load-path
       (list (expand-file-name ".test-env/tree-sitter" md-table-align-tests--root)))
 
+;; Third-party packages the suite drives for real -- currently just `vterm',
+;; which termdex needs.  Kept in the test environment rather than taken from
+;; the user's own package directory, so a run neither depends on nor disturbs
+;; what they have installed.  Tests that need one skip when it is absent.
+(require 'package)
+(setq package-user-dir (expand-file-name ".test-env/elpa" md-table-align-tests--root))
+(package-initialize)
+
 ;; Load extensions the way an end user does -- through the collection loader --
 ;; so `make test' also exercises the install path.
 (add-to-list 'load-path md-table-align-tests--root)

@@ -1,0 +1,463 @@
+;;; termdex-tests.el --- Tests for termdex -*- lexical-binding: t; -*-
+
+;;; Commentary:
+
+;; Driven against real vterms running real shells: a terminal is started, text
+;; is typed into it, and the assertions are about what /proc then says.  There
+;; is nothing to usefully mock here -- the whole package is a claim about what
+;; a process tree looks like, and only a real one can refute it.
+;;
+;; The suite skips itself when vterm is not installed (`make deps' builds it),
+;; so the rest of the collection's tests still run.
+;;
+;; Nothing waits a fixed number of seconds.  A shell takes as long as it takes
+;; to reach its prompt, and a fixed wait is a test that fails on a loaded
+;; machine; every wait here polls for the condition it actually needs.
+
+;;; Code:
+
+(require 'ert)
+(require 'termdex)
+
+(defconst termdex-tests--available (require 'vterm nil t)
+  "Whether vterm could be loaded at all.")
+
+(defconst termdex-tests--timeout 15
+  "Seconds to wait for a shell to do something before giving up.")
+
+
+;;;; Helpers
+
+(defun termdex-tests--wait (predicate)
+  "Poll PREDICATE until it returns non-nil, or the timeout expires.
+Returns what PREDICATE returned, so a failing wait fails the assertion
+that asked for it rather than silently continuing."
+  (let ((deadline (time-add nil termdex-tests--timeout))
+        (result nil))
+    (while (and (not result) (time-less-p nil deadline))
+      (setq result (funcall predicate))
+      (unless result (accept-process-output nil 0.05)))
+    result))
+
+(defun termdex-tests--directory-is (buffer directory)
+  "Wait until BUFFER's terminal reports being in DIRECTORY."
+  (let ((want (termdex--canonical directory)))
+    (termdex-tests--wait
+     (lambda () (equal (termdex-terminal-directory (termdex--probe buffer)) want)))))
+
+(defun termdex-tests--settle (buffer)
+  "Give BUFFER's shell a chance to act on anything sent to it.
+
+For asserting that something did *not* happen.  Waiting out the full
+timeout to prove a negative would make the suite mostly sleep, so this
+waits a shell round trip instead -- long enough that the same wait is
+comfortably sufficient when the thing is supposed to happen, which the
+positive tests demonstrate it is."
+  (let ((deadline (time-add nil 2)))
+    (while (time-less-p nil deadline)
+      (accept-process-output (buffer-local-value 'vterm--process buffer) 0.05))))
+
+(defun termdex-tests--busy (buffer)
+  "Wait until BUFFER's terminal is busy, and return what it is running."
+  (termdex-tests--wait
+   (lambda () (let ((terminal (termdex--probe buffer)))
+                (and (termdex-terminal-busy terminal)
+                     (or (termdex-terminal-command terminal) t))))))
+
+(defun termdex-tests--idle (buffer)
+  "Wait until BUFFER's terminal is idle."
+  (termdex-tests--wait
+   (lambda () (not (termdex-terminal-busy (termdex--probe buffer))))))
+
+(defun termdex-tests--type (buffer string)
+  "Type STRING into BUFFER's terminal."
+  (with-current-buffer buffer (vterm-send-string string)))
+
+(defun termdex-tests--terminal (directory)
+  "Start a terminal in DIRECTORY and wait for its shell to settle there."
+  (let* ((default-directory (file-name-as-directory directory))
+         (buffer (save-window-excursion
+                   (vterm (generate-new-buffer-name "*termdex-test*")))))
+    (should (termdex-tests--directory-is buffer directory))
+    (should (termdex-tests--idle buffer))
+    buffer))
+
+(defmacro termdex-tests--with-project (root &rest body)
+  "Bind ROOT to a fresh temporary project directory and run BODY.
+The directory holds a .git, so `project-current' finds a root there and
+ancestor matching is switched on -- without one, only exact matches
+count and half of these tests would be testing nothing."
+  (declare (indent 1) (debug (symbolp body)))
+  `(let ((,root (file-name-as-directory (make-temp-file "termdex-" t))))
+     (unwind-protect
+         (progn (make-directory (expand-file-name ".git" ,root) t)
+                ,@body)
+       (delete-directory ,root t))))
+
+(defmacro termdex-tests--with-terminals (&rest body)
+  "Run BODY, then kill every buffer it created and stop any dashboard timer.
+A live process makes `kill-buffer' ask for confirmation, which would
+hang a batch run, so the query functions are suppressed."
+  (declare (indent 0) (debug t))
+  `(let ((before (buffer-list)))
+     (unwind-protect (progn ,@body)
+       (termdex--list-stop-timer)
+       (dolist (buffer (buffer-list))
+         (unless (memq buffer before)
+           (when (buffer-live-p buffer)
+             (let ((kill-buffer-query-functions nil))
+               (kill-buffer buffer))))))))
+
+(defmacro termdex-tests--deftest (name &rest body)
+  "Define test NAME, skipped when vterm is unavailable."
+  (declare (indent 1) (debug (symbolp body)))
+  `(ert-deftest ,name ()
+     (skip-unless termdex-tests--available)
+     (termdex-tests--with-terminals ,@body)))
+
+
+;;;; Probing: where a terminal is, and whether it is busy
+
+(termdex-tests--deftest termdex-cwd-follows-a-cd ()
+  "A `cd' typed into a terminal moves the terminal."
+  (termdex-tests--with-project root
+    (let ((child (expand-file-name "child" root))
+          (buffer nil))
+      (make-directory child)
+      (setq buffer (termdex-tests--terminal root))
+      (termdex-tests--type buffer (format "cd %s\n" child))
+      (should (termdex-tests--directory-is buffer child)))))
+
+(termdex-tests--deftest termdex-cwd-is-not-default-directory ()
+  "The probe does not rely on `default-directory', which goes stale.
+Without vterm's shell-side integration it never moves at all; this is
+the reason the package reads /proc rather than believing the buffer."
+  (termdex-tests--with-project root
+    (let ((child (expand-file-name "child" root))
+          (buffer nil))
+      (make-directory child)
+      (setq buffer (termdex-tests--terminal root))
+      (termdex-tests--type buffer (format "cd %s\n" child))
+      (should (termdex-tests--directory-is buffer child))
+      ;; The probe found the new directory; whatever `default-directory'
+      ;; says, `termdex-current-directory' must agree with the probe.
+      (with-current-buffer buffer
+        (should (equal (termdex-current-directory) (termdex--canonical child)))))))
+
+(termdex-tests--deftest termdex-reports-a-running-command ()
+  "A foreground job makes the terminal busy, by name, until it is stopped."
+  (termdex-tests--with-project root
+    (let ((buffer (termdex-tests--terminal root)))
+      (termdex-tests--type buffer "sleep 60\n")
+      (should (equal (termdex-tests--busy buffer) "sleep"))
+      (termdex-tests--type buffer "\C-c")
+      (should (termdex-tests--idle buffer)))))
+
+(termdex-tests--deftest termdex-background-job-is-idle ()
+  "A backgrounded job leaves the terminal idle: there is still a prompt."
+  (termdex-tests--with-project root
+    (let ((buffer (termdex-tests--terminal root)))
+      (termdex-tests--type buffer "sleep 60 &\n")
+      ;; Give the job time to exist before concluding anything from its
+      ;; absence, or this passes for the wrong reason.
+      (should (termdex-tests--wait
+               (lambda () (termdex--children
+                           (termdex--current-shell
+                            (process-id (buffer-local-value 'vterm--process buffer)))))))
+      (should (termdex-tests--idle buffer)))))
+
+
+;;;; Probing through a nested shell
+
+(termdex-tests--deftest termdex-follows-a-nested-shell ()
+  "A shell started inside a terminal becomes the terminal's shell.
+Read from the pty leader alone, the terminal would freeze at ROOT and
+report itself busy for as long as the nested shell lived."
+  (termdex-tests--with-project root
+    (let ((child (expand-file-name "child" root))
+          (buffer nil))
+      (make-directory child)
+      (setq buffer (termdex-tests--terminal root))
+      (termdex-tests--type buffer "bash --norc\n")
+      ;; At the nested prompt: idle, despite the leader having a child.
+      (should (termdex-tests--idle buffer))
+      (termdex-tests--type buffer (format "cd %s\n" child))
+      (should (termdex-tests--directory-is buffer child))
+      ;; And a job inside the nested shell is still seen as a job.
+      (termdex-tests--type buffer "sleep 60\n")
+      (should (equal (termdex-tests--busy buffer) "sleep"))
+      ;; The directory is still the nested shell's while that job runs.
+      (should (equal (termdex-terminal-directory (termdex--probe buffer))
+                     (termdex--canonical child))))))
+
+(termdex-tests--deftest termdex-does-not-follow-a-shell-script ()
+  "`bash -c' is not a shell to type at, though it is called bash.
+Following it would report a running script as an idle prompt, since a
+`bash -c' waiting on its own child sits in the foreground group exactly
+as an interactive shell at a prompt does.
+
+The trailing `:' matters: bash execs a lone command in place, so
+`bash -c \\='sleep 60\\='' leaves no bash process at all and would test
+nothing."
+  (termdex-tests--with-project root
+    (let ((buffer (termdex-tests--terminal root)))
+      (termdex-tests--type buffer "bash -c 'sleep 60; :'\n")
+      (should (termdex-tests--busy buffer))
+      (should (equal (termdex-terminal-command (termdex--probe buffer)) "bash")))))
+
+(ert-deftest termdex-interactive-shell-p-reads-command-lines ()
+  "Options mean an interactive shell; an argument or -c means a script."
+  (skip-unless termdex-tests--available)
+  (cl-letf* ((cmdlines '((1 . ("bash"))
+                         (2 . ("bash" "--norc"))
+                         (3 . ("-bash"))
+                         (4 . ("bash" "-i"))
+                         (5 . ("bash" "./deploy.sh"))
+                         (6 . ("bash" "-c" "sleep 60"))
+                         (7 . ("sh" "-ec" "make"))))
+             ((symbol-function 'termdex--comm)
+              (lambda (pid) (string-remove-prefix "-" (car (alist-get pid cmdlines)))))
+             ((symbol-function 'termdex--cmdline)
+              (lambda (pid) (alist-get pid cmdlines))))
+    (should (termdex--interactive-shell-p 1))
+    (should (termdex--interactive-shell-p 2))
+    (should (termdex--interactive-shell-p 3))
+    (should (termdex--interactive-shell-p 4))
+    (should-not (termdex--interactive-shell-p 5))
+    (should-not (termdex--interactive-shell-p 6))
+    (should-not (termdex--interactive-shell-p 7))))
+
+
+;;;; Matching
+
+(termdex-tests--deftest termdex-match-prefers-the-deepest-directory ()
+  "An exact match beats a parent, and a nearer parent beats a further one."
+  (termdex-tests--with-project root
+    (let* ((a (expand-file-name "a/" root))
+           (b (expand-file-name "a/b/" root)))
+      (make-directory b t)
+      (let ((root-term (termdex-tests--terminal root))
+            (a-term (termdex-tests--terminal a))
+            (b-term (termdex-tests--terminal b)))
+        (should (eq (termdex-terminal-buffer (termdex--match (termdex--canonical b)))
+                    b-term))
+        (should (eq (termdex-terminal-buffer (termdex--match (termdex--canonical a)))
+                    a-term))
+        (should (eq (termdex-terminal-buffer (termdex--match (termdex--canonical root)))
+                    root-term))))))
+
+(termdex-tests--deftest termdex-match-does-not-climb-past-the-project-root ()
+  "A terminal outside the project is not a match, however near it is."
+  (termdex-tests--with-project outer
+    (let* ((inner (expand-file-name "inner/" outer)))
+      (make-directory (expand-file-name ".git" inner) t)
+      (let ((outer-term (termdex-tests--terminal outer)))
+        ;; `outer' is the parent of `inner' on disk, but `inner' is its own
+        ;; project, so the search must stop before reaching that terminal.
+        (should-not (termdex--match (termdex--canonical inner)))
+        (should (eq (termdex-terminal-buffer (termdex--match (termdex--canonical outer)))
+                    outer-term))))))
+
+(termdex-tests--deftest termdex-match-breaks-ties-by-recency ()
+  "Two terminals in one directory: the most recently used wins."
+  (termdex-tests--with-project root
+    (let ((first (termdex-tests--terminal root))
+          (second (termdex-tests--terminal root)))
+      (should (eq (termdex-terminal-buffer (termdex--match (termdex--canonical root)))
+                  second))
+      ;; Visiting the older one makes it the most recent.
+      (with-current-buffer first (buffer-list))
+      (switch-to-buffer first)
+      (should (eq (termdex-terminal-buffer (termdex--match (termdex--canonical root)))
+                  first)))))
+
+(termdex-tests--deftest termdex-idle-search-skips-a-busy-terminal ()
+  "`termdex-here' takes a busy match; `termdex-here-idle' does not."
+  (termdex-tests--with-project root
+    (let ((buffer (termdex-tests--terminal root))
+          (directory (termdex--canonical root)))
+      (termdex-tests--type buffer "sleep 60\n")
+      (should (termdex-tests--busy buffer))
+      (should (eq (termdex-terminal-buffer (termdex--match directory)) buffer))
+      (should-not (termdex--match directory t)))))
+
+
+;;;; Reaching a terminal
+
+(termdex-tests--deftest termdex-here-reuses-and-follows-you-down ()
+  "Reusing a parent's terminal sends it a `cd', when that is switched on."
+  (termdex-tests--with-project root
+    (let* ((child (expand-file-name "child/" root))
+           (buffer nil))
+      (make-directory child t)
+      (setq buffer (termdex-tests--terminal root))
+      (let ((termdex-cd-on-ancestor-match t)
+            (default-directory child))
+        (with-temp-buffer
+          (setq default-directory child)
+          (save-window-excursion (termdex-here))))
+      (should (termdex-tests--directory-is buffer child)))))
+
+(termdex-tests--deftest termdex-here-leaves-a-terminal-alone-when-told-to ()
+  "With `termdex-cd-on-ancestor-match' off, the terminal stays where it is."
+  (termdex-tests--with-project root
+    (let* ((child (expand-file-name "child/" root))
+           (buffer nil))
+      (make-directory child t)
+      (setq buffer (termdex-tests--terminal root))
+      (let ((termdex-cd-on-ancestor-match nil))
+        (with-temp-buffer
+          (setq default-directory child)
+          (save-window-excursion (termdex-here))))
+      (termdex-tests--settle buffer)
+      (should (equal (termdex-terminal-directory (termdex--probe buffer))
+                     (termdex--canonical root))))))
+
+(termdex-tests--deftest termdex-never-types-into-a-busy-terminal ()
+  "A busy terminal is reused as it stands: the `cd' would go to the job.
+
+`cat' stands in for any program that reads: it is a real process, so the
+terminal is genuinely busy, and anything typed at the terminal lands in
+its output file.  That file staying empty is the assertion -- a `cd'
+sent here would have been swallowed by the job with no other trace."
+  (termdex-tests--with-project root
+    (let* ((child (expand-file-name "child/" root))
+           (swallowed (expand-file-name "swallowed" root))
+           (buffer nil))
+      (make-directory child t)
+      (setq buffer (termdex-tests--terminal root))
+      (termdex-tests--type buffer (format "cat > %s\n" swallowed))
+      (should (equal (termdex-tests--busy buffer) "cat"))
+      (let ((termdex-cd-on-ancestor-match t))
+        (with-temp-buffer
+          (setq default-directory child)
+          (save-window-excursion (termdex-here))))
+      (termdex-tests--settle buffer)
+      (should (termdex-terminal-busy (termdex--probe buffer)))
+      ;; End the job so `cat' flushes whatever it was given, then look.
+      (termdex-tests--type buffer "\C-d")
+      (should (termdex-tests--idle buffer))
+      (should (equal 0 (file-attribute-size (file-attributes swallowed)))))))
+
+(termdex-tests--deftest termdex-new-always-makes-a-terminal ()
+  "`termdex-new' ignores a perfectly good match."
+  (termdex-tests--with-project root
+    (let ((existing (termdex-tests--terminal root))
+          (created nil))
+      (with-temp-buffer
+        (setq default-directory root)
+        (setq created (save-window-excursion (termdex-new))))
+      (should-not (eq created existing))
+      (should (termdex-tests--directory-is created root)))))
+
+
+;;;; Switching
+
+(defvar termdex-tests--offered nil
+  "Candidates and default from the last stubbed `completing-read'.")
+
+(defmacro termdex-tests--with-stubbed-read (&rest body)
+  "Run BODY with `completing-read' answering with its own default.
+The completion UI is not what is under test here; which candidate is put
+in front of you is."
+  (declare (indent 0) (debug t))
+  `(cl-letf (((symbol-function 'completing-read)
+              (lambda (_prompt collection &optional _p _r _i _h default &rest _)
+                (setq termdex-tests--offered
+                      (list :candidates (all-completions "" collection)
+                            :default default))
+                default)))
+     ,@body))
+
+(termdex-tests--deftest termdex-switch-offers-the-most-recent-other-terminal ()
+  "The default is the terminal you would most likely want, and you are not
+offered the one you are already in."
+  (termdex-tests--with-project root
+    (let ((first (termdex-tests--terminal root))
+          (second (termdex-tests--terminal root)))
+      (switch-to-buffer second)
+      (termdex-tests--with-stubbed-read
+        (save-window-excursion (termdex-switch)))
+      (should (equal (plist-get termdex-tests--offered :default) (buffer-name first)))
+      (should-not (member (buffer-name second)
+                          (plist-get termdex-tests--offered :candidates))))))
+
+(termdex-tests--deftest termdex-switch-toggles-between-two-terminals ()
+  "Repeated `RET' goes back and forth, as \\[switch-to-buffer] does."
+  (termdex-tests--with-project root
+    (let ((first (termdex-tests--terminal root))
+          (second (termdex-tests--terminal root)))
+      (switch-to-buffer second)
+      ;; No `save-window-excursion' here: restoring the window configuration
+      ;; would undo the very switch being asserted on, and with it the
+      ;; most-recently-used order the toggle is made of.
+      (termdex-tests--with-stubbed-read
+        (should (eq (termdex-switch) first))
+        (should (eq (termdex-switch) second))
+        (should (eq (termdex-switch) first))))))
+
+(termdex-tests--deftest termdex-switch-project-restricts-to-the-project ()
+  "A terminal outside the project is not offered."
+  (termdex-tests--with-project root
+    (termdex-tests--with-project elsewhere
+      (let ((inside (termdex-tests--terminal root))
+            (outside (termdex-tests--terminal elsewhere)))
+        (with-temp-buffer
+          (setq default-directory root)
+          (termdex-tests--with-stubbed-read
+            (save-window-excursion (termdex-switch-project))))
+        (let ((candidates (plist-get termdex-tests--offered :candidates)))
+          (should (member (buffer-name inside) candidates))
+          (should-not (member (buffer-name outside) candidates)))))))
+
+
+;;;; Dashboard
+
+(termdex-tests--deftest termdex-list-shows-every-terminal-and-its-state ()
+  "The dashboard lists terminals with their directory and what they run."
+  (termdex-tests--with-project root
+    (let ((idle (termdex-tests--terminal root))
+          (busy (termdex-tests--terminal root)))
+      (termdex-tests--type busy "sleep 60\n")
+      (should (termdex-tests--busy busy))
+      (save-window-excursion (termdex-list))
+      (with-current-buffer termdex-list-buffer-name
+        (let ((rows tabulated-list-entries))
+          (should (assq idle rows))
+          (should (assq busy rows))
+          (should (equal (aref (cadr (assq busy rows)) 1) "busy"))
+          (should (equal (aref (cadr (assq busy rows)) 2) "sleep"))
+          (should (equal (aref (cadr (assq idle rows)) 1) "idle")))))))
+
+(termdex-tests--deftest termdex-list-kills-a-terminal ()
+  "`k' on an idle terminal kills it without asking."
+  (termdex-tests--with-project root
+    (let ((buffer (termdex-tests--terminal root)))
+      (save-window-excursion (termdex-list))
+      (with-current-buffer termdex-list-buffer-name
+        (goto-char (point-min))
+        (while (and (not (eq (tabulated-list-get-id) buffer)) (not (eobp)))
+          (forward-line 1))
+        (should (eq (tabulated-list-get-id) buffer))
+        (termdex-list-kill))
+      (should-not (buffer-live-p buffer)))))
+
+
+;;;; Naming
+
+(termdex-tests--deftest termdex-names-a-terminal-after-its-title ()
+  "A terminal termdex made follows the title its shell reports.
+The default bash setup puts the title escape in PS1, so it is re-sent at
+every prompt and the name tracks a `cd' by itself."
+  (termdex-tests--with-project root
+    (let ((termdex-buffer-name-string "*term %s*")
+          (buffer nil))
+      (with-temp-buffer
+        (setq default-directory root)
+        (setq buffer (save-window-excursion (termdex-new))))
+      (with-current-buffer buffer
+        (vterm-send-string "PS1='$ '; printf '\\033]0;chosen-title\\007'\n"))
+      (should (termdex-tests--wait
+               (lambda () (equal (buffer-name buffer) "*term chosen-title*")))))))
+
+;;; termdex-tests.el ends here
