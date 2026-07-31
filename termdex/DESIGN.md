@@ -196,6 +196,35 @@ Exact matches never need a `cd`. The `cd` goes through `vterm-send-string` and
 so lands in shell history; that is accepted rather than worked around, since
 suppressing it depends on shell-specific settings (`HISTCONTROL=ignorespace`).
 
+### Terminals termdex should leave alone
+
+Added after first use. A terminal someone else drives — a coding agent's session
+terminal, a build console, a REPL that lives in its own window — sits in your
+project directory and is a perfectly ordinary vterm, so every rule above matches
+it. `termdex-here` then walks you into it looking for a shell prompt, which is
+not what anyone wanted.
+
+Two ways to say so, because there are two situations:
+
+- `termdex-exclude`, a buffer-local variable, for a terminal whose creator can
+  mark it. One `setq-local` and termdex needs to know nothing about the package
+  that set it.
+- `termdex-exclude-functions`, a list of predicates on a buffer, for terminals
+  you do not create yourself. This keeps knowledge of other packages in the
+  user's configuration rather than in termdex.
+
+**Exclusion applies to candidacy, not to sensing.** `termdex--vterm-buffer-p`
+asks whether a buffer is a terminal at all and `termdex--candidate-p` whether
+termdex may send you to one; only the second consults the exclusions. An
+excluded terminal is still probed for its directory, so `termdex-here` run from
+*inside* one starts from where that terminal actually is. Folding exclusion into
+the first predicate instead would have fallen back to `default-directory` — the
+one value that is reliably wrong (experiment 1).
+
+`termdex-list` takes a prefix argument to show excluded terminals too, since the
+dashboard's job is an overview of everything rather than of what termdex will
+send you to.
+
 ### Switching: `termdex-switch` and `termdex-switch-project`
 
 A `completing-read` over terminal buffers, annotated with cwd, busy state, and

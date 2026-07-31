@@ -302,6 +302,31 @@ Terminals termdex creates are named after the title their shell reports, and
 follow it as it changes (`termdex-buffer-name-string`). Terminals started any
 other way are left alone.
 
+#### Excluding terminals someone else drives
+
+A coding agent's session terminal, a build console, a REPL in its own window —
+these are ordinary vterms in your project directory, so every rule above matches
+them, and `termdex-here` will happily walk you into one looking for a shell
+prompt.
+
+Whatever creates such a terminal can mark it with one line:
+
+```elisp
+(setq-local termdex-exclude t)
+```
+
+For terminals you do not create yourself, add a predicate instead:
+
+```elisp
+(add-to-list 'termdex-exclude-functions
+             (lambda (buffer)
+               (buffer-local-value 'agent-session-terminal-workdir buffer)))
+```
+
+Excluded terminals keep working normally — they are only left out of matching
+and switching. `C-u M-x termdex-list` shows them, and a command run from inside
+one still starts from that terminal's directory.
+
 #### Requirements
 
 [`vterm`](https://github.com/akermu/emacs-libvterm), and Linux: a terminal's

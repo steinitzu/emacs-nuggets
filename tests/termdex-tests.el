@@ -351,6 +351,74 @@ sent here would have been swallowed by the job with no other trace."
       (should (termdex-tests--directory-is created root)))))
 
 
+;;;; Excluded terminals
+;;
+;; A terminal someone else drives -- a coding agent's session, say -- is in
+;; your project directory and is a perfectly good vterm, so every rule above
+;; matches it.  Walking into one looking for a shell prompt is not what you
+;; wanted.
+
+(termdex-tests--deftest termdex-excluded-terminal-is-not-a-match ()
+  "An excluded terminal is not matched, switched to, or listed."
+  (termdex-tests--with-project root
+    (let ((excluded (termdex-tests--terminal root)))
+      (with-current-buffer excluded (setq-local termdex-exclude t))
+      (should-not (termdex--match (termdex--canonical root)))
+      (should-not (seq-find (lambda (terminal)
+                              (eq (termdex-terminal-buffer terminal) excluded))
+                            (termdex-terminals)))
+      ;; And a new one is made rather than the excluded one being reused.
+      (let ((reached (with-temp-buffer
+                       (setq default-directory root)
+                       (save-window-excursion (termdex-here)))))
+        (should-not (eq reached excluded))))))
+
+(termdex-tests--deftest termdex-exclusion-can-come-from-a-predicate ()
+  "`termdex-exclude-functions' excludes terminals you did not create."
+  (termdex-tests--with-project root
+    (let* ((excluded (termdex-tests--terminal root))
+           (termdex-exclude-functions
+            (list (lambda (buffer) (eq buffer excluded)))))
+      (should-not (termdex--match (termdex--canonical root)))
+      (should (termdex--vterm-buffer-p excluded))
+      (should-not (termdex--candidate-p excluded)))))
+
+(termdex-tests--deftest termdex-excluded-terminal-still-knows-where-it-is ()
+  "A command run from inside an excluded terminal starts from its directory.
+
+Excluding it from the search must not make it invisible to the probe:
+`default-directory' in a vterm does not follow a `cd', so falling back
+to it would spawn the new terminal in the wrong place."
+  (termdex-tests--with-project root
+    (let ((child (expand-file-name "child/" root))
+          (excluded nil))
+      (make-directory child t)
+      (setq excluded (termdex-tests--terminal root))
+      (with-current-buffer excluded (setq-local termdex-exclude t))
+      (termdex-tests--type excluded (format "cd %s\n" child))
+      (should (termdex-tests--directory-is excluded child))
+      (with-current-buffer excluded
+        (should (equal (termdex-current-directory) (termdex--canonical child)))
+        (let ((created (save-window-excursion (termdex-here))))
+          (should-not (eq created excluded))
+          (should (termdex-tests--directory-is created child)))))))
+
+(termdex-tests--deftest termdex-list-can-show-excluded-terminals ()
+  "The dashboard hides excluded terminals, and shows them on request."
+  (termdex-tests--with-project root
+    (let ((excluded (termdex-tests--terminal root)))
+      (with-current-buffer excluded (setq-local termdex-exclude t))
+      (save-window-excursion (termdex-list))
+      (with-current-buffer termdex-list-buffer-name
+        (should-not (assq excluded tabulated-list-entries)))
+      (save-window-excursion (termdex-list t))
+      (with-current-buffer termdex-list-buffer-name
+        (should (assq excluded tabulated-list-entries))
+        ;; The refresh timer must not quietly revert to hiding it.
+        (termdex--list-tick)
+        (should (assq excluded tabulated-list-entries))))))
+
+
 ;;;; Switching
 
 (defvar termdex-tests--offered nil

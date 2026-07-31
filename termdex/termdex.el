@@ -87,6 +87,31 @@ Terminals started any other way are never renamed."
   :type '(choice (const :tag "Leave vterm's naming alone" nil)
                  (string :tag "Format string")))
 
+(defvar-local termdex-exclude nil
+  "Non-nil to keep this terminal out of termdex's commands.
+
+Set buffer-locally, by whatever created the terminal.  A terminal
+someone else drives -- an agent session, a build console, a REPL that
+lives in a window of its own -- is a terminal you want to reach the way
+its owner intends, not by walking into it looking for a shell prompt.
+
+Excluded terminals are still terminals: one is left out of matching and
+switching, but its own directory is still read from it, so a command run
+from inside it starts from the right place.")
+
+(defcustom termdex-exclude-functions nil
+  "Predicates deciding which terminals termdex leaves alone.
+
+Each is called with a buffer and may return non-nil to exclude it, as an
+alternative to `termdex-exclude' for terminals you do not create
+yourself.  For instance, to leave a coding agent's session terminals
+alone:
+
+  (add-to-list \\='termdex-exclude-functions
+               (lambda (buffer)
+                 (buffer-local-value \\='my-agent-session-p buffer)))"
+  :type '(repeat function))
+
 (defcustom termdex-list-refresh-seconds 2
   "How often the `termdex-list' dashboard re-probes, in seconds.
 
@@ -288,13 +313,38 @@ cooperation from the shell."
          :busy (and commands t)
          :command (when commands (string-join commands "|")))))))
 
-(defun termdex-terminals ()
+(defun termdex--excluded-p (buffer)
+  "Non-nil when BUFFER is a terminal termdex should leave alone.
+See `termdex-exclude' and `termdex-exclude-functions'."
+  (or (buffer-local-value 'termdex-exclude buffer)
+      (seq-some (lambda (predicate) (funcall predicate buffer))
+                termdex-exclude-functions)))
+
+(defun termdex--candidate-p (buffer)
+  "Non-nil when BUFFER is a terminal termdex may send you to.
+
+Deliberately not the same question as `termdex--vterm-buffer-p'.  That
+one asks whether a buffer is a terminal at all, and an excluded terminal
+still is one: its directory is read from it like any other, so running a
+command from inside one starts where it actually is rather than falling
+back to a `default-directory' that never moved."
+  (and (termdex--vterm-buffer-p buffer)
+       (not (termdex--excluded-p buffer))))
+
+(defun termdex-terminals (&optional include-excluded)
   "Return every live terminal, most recently used first.
+
+Terminals excluded by `termdex-exclude' or `termdex-exclude-functions'
+are left out unless INCLUDE-EXCLUDED is non-nil.
 
 The order is `buffer-list''s, which Emacs already maintains as
 most-recently-used.  Nothing here is cached: this is the whole of
 termdex's state, and it is rebuilt every time it is asked for."
-  (mapcar #'termdex--probe (seq-filter #'termdex--vterm-buffer-p (buffer-list))))
+  (mapcar #'termdex--probe
+          (seq-filter (if include-excluded
+                          #'termdex--vterm-buffer-p
+                        #'termdex--candidate-p)
+                      (buffer-list))))
 
 (defun termdex-terminal-name (terminal)
   "Return the buffer name of TERMINAL."
@@ -575,6 +625,11 @@ The only state termdex keeps, and the only thing
         tabulated-list-padding 1)
   (tabulated-list-init-header))
 
+(defvar-local termdex--list-include-excluded nil
+  "Whether this dashboard was asked to show excluded terminals too.
+Kept buffer-locally so the refresh timer redraws what was asked for
+rather than reverting to the default on its first tick.")
+
 (defun termdex--list-entries ()
   "Return `tabulated-list-entries' for every terminal."
   (mapcar
@@ -588,7 +643,7 @@ The only state termdex keeps, and the only thing
                            (t "idle"))
                      (or (termdex-terminal-command terminal) "")
                      (termdex-terminal-name terminal)))))
-   (termdex-terminals)))
+   (termdex-terminals termdex--list-include-excluded)))
 
 (defun termdex-list-refresh ()
   "Re-probe every terminal and redraw the dashboard."
@@ -662,13 +717,19 @@ buffer is gone."
     (termdex--create directory)))
 
 ;;;###autoload
-(defun termdex-list ()
-  "Show a dashboard of every live terminal."
-  (interactive)
+(defun termdex-list (&optional include-excluded)
+  "Show a dashboard of every live terminal.
+
+With a prefix argument, INCLUDE-EXCLUDED, also list the terminals
+`termdex-exclude' and `termdex-exclude-functions' keep out of the other
+commands -- an overview of everything, rather than of what termdex will
+send you to."
+  (interactive "P")
   (let ((buffer (get-buffer-create termdex-list-buffer-name)))
     (with-current-buffer buffer
       (unless (derived-mode-p 'termdex-list-mode)
         (termdex-list-mode))
+      (setq termdex--list-include-excluded (and include-excluded t))
       (termdex-list-refresh))
     (termdex--list-start-timer)
     (pop-to-buffer buffer)))
