@@ -170,9 +170,15 @@ back.
 | `md-heading-scale-values` | Multipliers for levels 1–6. |
 | `md-heading-scale-modes` | Modes the globalized mode activates in. |
 
-`md-heading-scale-values` defaults to `(2.0 1.7 1.4 1.1 1.0 1.0)` — the values
-`markdown-header-scaling-values` ships, so switching from `markdown-mode` looks
-like what it looked like before.
+`md-heading-scale-values` defaults to `(1.6 1.4 1.25 1.1 1.0 1.0)`. The first
+default was `markdown-mode`'s own `(2.0 1.7 1.4 1.1 1.0 1.0)`, on the reasoning
+that someone arriving from `markdown-header-scaling` should see what they saw
+before; in use it read as too big, so the ramp was pulled in. Parity is one
+`setopt` away and the README says so.
+
+What the defaults must be, as opposed to what they happen to be, is what the
+tests pin: six values, never growing as the level goes down, ending at body
+size. The numbers themselves are taste.
 
 Two rules make the list forgiving, and both are deliberate:
 

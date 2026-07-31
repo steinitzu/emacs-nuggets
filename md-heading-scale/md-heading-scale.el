@@ -50,7 +50,7 @@
 Fixed at six by CommonMark, not by `markdown-ts-mode', which defines
 exactly that many heading faces.")
 
-(defcustom md-heading-scale-values '(2.0 1.7 1.4 1.1 1.0 1.0)
+(defcustom md-heading-scale-values '(1.6 1.4 1.25 1.1 1.0 1.0)
   "Height multipliers for headings of level 1 through 6.
 
 Each value multiplies the height the heading would otherwise have, so
@@ -62,8 +62,9 @@ A value of 1 leaves that level completely alone -- no remapping is
 installed for it at all.  Levels past the end of the list are not scaled
 either, so \\='(1.6) means \"enlarge level 1, leave the rest\".
 
-The default is the same list `markdown-mode' uses for
-`markdown-header-scaling-values'.
+The default ramp is gentler than `markdown-mode' uses for
+`markdown-header-scaling-values', which is \\='(2.0 1.7 1.4 1.1 1.0 1.0)
+-- set it to that for what `markdown-header-scaling' looks like.
 
 Changing this re-applies it in every buffer where the mode is on."
   :type '(repeat (number :tag "Multiplier"))

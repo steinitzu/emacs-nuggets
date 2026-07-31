@@ -293,12 +293,18 @@ or turn it on everywhere:
 
 | Option | Default | Description |
 |:-------|:--------|:------------|
-| `md-heading-scale-values` | `(2.0 1.7 1.4 1.1 1.0 1.0)` | Height multipliers for levels 1–6. |
+| `md-heading-scale-values` | `(1.6 1.4 1.25 1.1 1.0 1.0)` | Height multipliers for levels 1–6. |
 | `md-heading-scale-modes` | `(markdown-ts-mode)` | Modes `global-md-heading-scale-mode` activates in. |
 
-The defaults are the ones `markdown-mode` ships, so coming from there your
-headings look like they did. Set the values with `setopt` (or Customize) and
-every buffer with the mode on takes them up immediately.
+The default ramp is a little gentler than `markdown-mode`'s, whose level 1 is
+twice body size. For exactly what `markdown-header-scaling` looks like:
+
+```elisp
+(setopt md-heading-scale-values '(2.0 1.7 1.4 1.1 1.0 1.0))
+```
+
+Set the values with `setopt` (or Customize) and every buffer with the mode on
+takes them up immediately.
 
 A multiplier of `1` means *leave that level completely alone* — it is not
 scaled to 1.0, it is not touched at all. The list may also be short:

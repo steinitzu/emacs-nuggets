@@ -290,11 +290,22 @@ out of it."
                     :height h1 (merge-face-attribute :height 1.5 100))
                    300))))))
 
-(ert-deftest md-heading-scale-tests-default-values-match-markdown-mode ()
-  "The defaults are the ones `markdown-header-scaling-values' ships.
-Coming from `markdown-mode', headings should look like they did."
-  (should (equal md-heading-scale-values '(2.0 1.7 1.4 1.1 1.0 1.0)))
-  (should (= (length md-heading-scale-values) md-heading-scale-max-level)))
+(ert-deftest md-heading-scale-tests-defaults-are-a-gentle-descending-ramp ()
+  "The defaults cover every level, never grow downwards, and end unscaled.
+The exact numbers are a matter of taste and may be tuned; these are the
+properties that make any such list sane -- a level that renders larger
+than the one above it would be worse than no scaling at all."
+  (should (= (length md-heading-scale-values) md-heading-scale-max-level))
+  (let ((previous nil))
+    (dolist (value md-heading-scale-values)
+      (should (>= value 1.0))
+      (when previous
+        (should (<= value previous)))
+      (setq previous value)))
+  ;; Level 6 is body size: the ramp has somewhere to land.
+  (should (= (car (last md-heading-scale-values)) 1.0))
+  ;; And deliberately gentler than `markdown-mode', whose level 1 is 2.0.
+  (should (< (car md-heading-scale-values) 2.0)))
 
 ;;;; Layer 4: rendered pixels, where a display can be had
 
