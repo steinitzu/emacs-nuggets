@@ -332,8 +332,8 @@ describe it, and nothing else:
   are conservative — no display, or a frame that reports no measurable line
   height, both skip rather than fail — but it has never gone green, and the
   first run on a machine with a display is what will confirm it.
-- **A pre-existing flake was observed, not fixed:**
-  `termdex-follows-a-nested-shell` fails intermittently (roughly one run in
-  three), reporting `bash` where it expects `sleep`. `termdex-tests--busy`
-  returns as soon as the terminal is busy, which the nested shell briefly is
-  before it has spawned the job. Unrelated to this package, and left alone.
+- **A pre-existing flake was observed while running the suite**, and has since
+  been fixed separately: `termdex-follows-a-nested-shell` failed about one run
+  in three, reporting `bash` where it expected `sleep`. The cause turned out to
+  be an `execve` window in /proc rather than anything about termdex; see the
+  testing section of [termdex/DESIGN.md](../termdex/DESIGN.md).
