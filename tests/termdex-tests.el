@@ -57,12 +57,35 @@ positive tests demonstrate it is."
     (while (time-less-p nil deadline)
       (accept-process-output (buffer-local-value 'vterm--process buffer) 0.05))))
 
-(defun termdex-tests--busy (buffer)
-  "Wait until BUFFER's terminal is busy, and return what it is running."
-  (termdex-tests--wait
-   (lambda () (let ((terminal (termdex--probe buffer)))
-                (and (termdex-terminal-busy terminal)
-                     (or (termdex-terminal-command terminal) t))))))
+(defun termdex-tests--busy (buffer &optional command)
+  "Wait until BUFFER's terminal is busy, and return what it is running.
+
+With COMMAND, wait until that is what it is running, rather than
+settling for the first busy reading.  This is not impatience, it is a
+race in /proc: `execve' installs the new program's argument vector
+before it updates the process name, so for a moment a shell that is
+starting `sleep 60' reads as command line \"sleep 60\" under the name
+\"bash\".  `termdex--interactive-shell-p' sees a non-option argument and
+correctly declines to call that a shell you could type at, so the probe
+falls back to the shell above it and reports the child by the only name
+/proc will give: \"bash\".  Measured directly, the window opens on
+roughly one exec in a thousand -- and this suite polls hard enough to
+have landed in it about one run in three.
+
+Nothing can close that window from outside the kernel, and it shuts by
+itself in microseconds, so the fix belongs here: wait for the command
+the shell was told to run.  On timeout the last reading is returned
+rather than nil, so an assertion that fails for a real reason still says
+what it saw."
+  (let ((last nil))
+    (or (termdex-tests--wait
+         (lambda ()
+           (let ((terminal (termdex--probe buffer)))
+             (when (termdex-terminal-busy terminal)
+               (setq last (or (termdex-terminal-command terminal) t))
+               (unless (and command (not (equal last command)))
+                 last)))))
+        last)))
 
 (defun termdex-tests--idle (buffer)
   "Wait until BUFFER's terminal is idle."
@@ -149,7 +172,7 @@ the reason the package reads /proc rather than believing the buffer."
   (termdex-tests--with-project root
     (let ((buffer (termdex-tests--terminal root)))
       (termdex-tests--type buffer "sleep 60\n")
-      (should (equal (termdex-tests--busy buffer) "sleep"))
+      (should (equal (termdex-tests--busy buffer "sleep") "sleep"))
       (termdex-tests--type buffer "\C-c")
       (should (termdex-tests--idle buffer)))))
 
@@ -185,7 +208,7 @@ report itself busy for as long as the nested shell lived."
       (should (termdex-tests--directory-is buffer child))
       ;; And a job inside the nested shell is still seen as a job.
       (termdex-tests--type buffer "sleep 60\n")
-      (should (equal (termdex-tests--busy buffer) "sleep"))
+      (should (equal (termdex-tests--busy buffer "sleep") "sleep"))
       ;; The directory is still the nested shell's while that job runs.
       (should (equal (termdex-terminal-directory (termdex--probe buffer))
                      (termdex--canonical child))))))
@@ -327,7 +350,7 @@ sent here would have been swallowed by the job with no other trace."
       (make-directory child t)
       (setq buffer (termdex-tests--terminal root))
       (termdex-tests--type buffer (format "cat > %s\n" swallowed))
-      (should (equal (termdex-tests--busy buffer) "cat"))
+      (should (equal (termdex-tests--busy buffer "cat") "cat"))
       (let ((termdex-cd-on-ancestor-match t))
         (with-temp-buffer
           (setq default-directory child)

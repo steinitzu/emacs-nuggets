@@ -341,6 +341,33 @@ Two things learned writing them, both about testing *negatives*:
   bash process remains to be mistaken for an interactive one. It needs a second
   command (`bash -c 'sleep 60; :'`) before there is anything to get wrong.
 
+### A running command can briefly be named after the shell
+
+Found later, chasing a test that failed about one run in three with `bash`
+where it expected `sleep`.
+
+`execve` installs the new program's argument vector **before** it updates the
+process name, so /proc reports the two inconsistently for a moment: command
+line `sleep 60`, name `bash`. Measured directly — forking and sampling
+`/proc/PID/comm` against `/proc/PID/cmdline` caught the window on 5 of 4000
+execs, and a probe polling as hard as the tests do lands in it far more often
+than that.
+
+Inside that window the probe does something defensible and wrong-looking:
+`termdex--interactive-shell-p` sees the non-option argument `60` and declines to
+call the child a shell you could type at — which is the right call for
+`bash -c`, and here means the answer falls back to the shell above, whose child
+/proc will only name `bash`. So `termdex-list` can, for a few microseconds,
+show a terminal as running `bash`.
+
+Nothing outside the kernel can close that window, and no user can see it: the
+next refresh is correct. Reading both files "at once" is not available, and
+re-reading to confirm would slow every probe to fix an artefact nobody
+perceives. So the probe is left alone and the **tests** wait for the command
+they asked for rather than the first busy reading — `termdex-tests--busy` takes
+an optional expected command, and returns the last thing it saw if that never
+arrives, so a genuine wrong answer still fails and still says what it was.
+
 Final state: 21 termdex tests, all against real terminals, ~8s for the whole
 collection's suite.
 
