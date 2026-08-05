@@ -877,6 +877,245 @@ the scroll leaves point on the viewport's edge, since that is inside
       (should (> md-table-align--hscroll 0))
       (should (memq #'md-table-align--post-command post-command-hook)))))
 
+;;;; Vertical records view
+;;
+;; `md-table-align-toggle-vertical' renders a table as psql's `\x' expanded
+;; display: one `label: value' line per cell, one record block per data row.
+;; The values are real buffer text; the labels and record separators are
+;; overlay strings.  Rendered, the fixture below reads:
+;;
+;;     before                    <- row 0
+;;     -[ row 1 ]---
+;;     a:   value1               <- values at column 5: widest label
+;;     bee: v2                      "bee:" is 4 wide, plus one space
+;;     c:   value3
+;;     -[ row 2 ]---
+;;     a:   v4
+;;     bee: value5
+;;     c:   v6
+;;     after                     <- row 9
+;;
+;; so the header and delimiter lines contribute no screen lines at all.
+
+(defconst md-table-align-tests--vertical
+  "before
+| a | bee | c |
+|---|-----|---|
+| value1 | v2 | value3 |
+| v4 | value5 | v6 |
+after
+")
+
+(defconst md-table-align-tests--vertical-value-column 5)
+
+;; Toggled back, the fixture's grid: column widths 6, 6 and 6, so pipes at
+;; 0, 9, 18 and 27 on every row.
+(defconst md-table-align-tests--vertical-grid '(0 9 18 27))
+
+(defun md-table-align-tests--row (pos)
+  "Return the screen row at which buffer position POS is rendered."
+  (let ((posn (posn-at-point pos)))
+    (should posn)
+    (cdr (posn-col-row posn))))
+
+(defun md-table-align-tests--row-of (string)
+  "Return the rendered screen row of the first occurrence of STRING."
+  (save-excursion
+    (goto-char (point-min))
+    (should (search-forward string nil t))
+    (md-table-align-tests--row (match-beginning 0))))
+
+(defun md-table-align-tests--toggle-vertical ()
+  "Toggle the first table vertical and let redisplay settle."
+  (md-table-align-tests--goto-table)
+  (md-table-align-toggle-vertical)
+  (redisplay t))
+
+(ert-deftest md-table-align-test-vertical-stacks-fields-on-aligned-lines ()
+  "Each value renders on its own screen line, at the common value column."
+  (md-table-align-tests--with-buffer md-table-align-tests--vertical
+    (md-table-align-tests--enable)
+    (md-table-align-tests--toggle-vertical)
+    (let ((base (md-table-align-tests--row-of "value1")))
+      (dolist (value '("value1" "v2" "value3" "v4" "value5" "v6"))
+        (should (= (md-table-align-tests--column-of value)
+                   md-table-align-tests--vertical-value-column)))
+      ;; Consecutive lines within a record; the next record one further on,
+      ;; past its separator line.
+      (should (= (md-table-align-tests--row-of "v2") (+ base 1)))
+      (should (= (md-table-align-tests--row-of "value3") (+ base 2)))
+      (should (= (md-table-align-tests--row-of "v4") (+ base 4))))))
+
+(ert-deftest md-table-align-test-vertical-data-row-occupies-fields-plus-separator ()
+  "A three-column row renders as four screen lines: separator plus fields."
+  (md-table-align-tests--with-buffer md-table-align-tests--vertical
+    (md-table-align-tests--enable)
+    (md-table-align-tests--toggle-vertical)
+    (goto-char (point-min))
+    (should (search-forward "value1" nil t))
+    (should (= (count-screen-lines (line-beginning-position)
+                                   (line-end-position))
+               4))))
+
+(ert-deftest md-table-align-test-vertical-hides-header-and-delimiter ()
+  "The header and delimiter lines contribute no screen lines.
+Ten buffer lines of which two are hidden and each data row grows by
+three: `after' lands nine rows under `before'."
+  (md-table-align-tests--with-buffer md-table-align-tests--vertical
+    (md-table-align-tests--enable)
+    (md-table-align-tests--toggle-vertical)
+    (let ((base (md-table-align-tests--row-of "before")))
+      (should (= (md-table-align-tests--row-of "value1") (+ base 2)))
+      (should (= (md-table-align-tests--row-of "after") (+ base 9))))))
+
+(ert-deftest md-table-align-test-vertical-does-not-modify-buffer-text ()
+  "The vertical view is a rendering; the text is byte-identical."
+  (md-table-align-tests--with-buffer md-table-align-tests--vertical
+    (let ((before (buffer-substring-no-properties (point-min) (point-max))))
+      (md-table-align-tests--enable)
+      (md-table-align-tests--toggle-vertical)
+      (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                     before))
+      (should-not (buffer-modified-p)))))
+
+(ert-deftest md-table-align-test-vertical-toggles-back-to-the-grid ()
+  "Toggling twice restores the horizontal grid exactly."
+  (md-table-align-tests--with-buffer md-table-align-tests--vertical
+    (md-table-align-tests--enable)
+    (md-table-align-tests--toggle-vertical)
+    (should-not (equal (car (md-table-align-tests--pipe-columns))
+                       md-table-align-tests--vertical-grid))
+    (md-table-align-tests--toggle-vertical)
+    (let ((rows (md-table-align-tests--pipe-columns)))
+      (should (= (length rows) 4))
+      (dolist (row rows)
+        (should (equal row md-table-align-tests--vertical-grid))))))
+
+(ert-deftest md-table-align-test-vertical-survives-an-edit ()
+  "jit-lock re-layout after an edit keeps the table vertical."
+  (md-table-align-tests--with-buffer md-table-align-tests--vertical
+    (md-table-align-tests--enable)
+    (md-table-align-tests--toggle-vertical)
+    (goto-char (point-min))
+    (should (search-forward "v2" nil t))
+    (insert "-longer")
+    (redisplay t)
+    (should (= (md-table-align-tests--column-of "v2-longer")
+               md-table-align-tests--vertical-value-column))
+    (should (= (md-table-align-tests--row-of "v2-longer")
+               (1+ (md-table-align-tests--row-of "value1"))))))
+
+(ert-deftest md-table-align-test-vertical-is-per-table ()
+  "Toggling one table leaves the other on its horizontal grid."
+  (md-table-align-tests--with-buffer "| a | b |
+|---|---|
+| x | y |
+
+| c | d |
+|---|---|
+| p | q |
+"
+    (md-table-align-tests--enable)
+    (md-table-align-tests--toggle-vertical)
+    ;; First table vertical: labels \"a:\" and \"b:\", values at column 3.
+    (should (= (md-table-align-tests--column-of "x") 3))
+    (should (= (md-table-align-tests--row-of "y")
+               (1+ (md-table-align-tests--row-of "x"))))
+    ;; Second table untouched, on its own grid.
+    (save-excursion
+      (goto-char (point-min))
+      (should (search-forward "| c" nil t))
+      (let ((start (match-beginning 0)))
+        (dotimes (line 3)
+          (goto-char start)
+          (forward-line line)
+          (let ((eol (line-end-position))
+                (cols nil))
+            (while (search-forward "|" eol t)
+              (push (md-table-align-tests--column (1- (point))) cols))
+            (should (equal (nreverse cols) '(0 4 8)))))))))
+
+(ert-deftest md-table-align-test-vertical-works-over-read-only-text ()
+  "The toggle is display-only, so a `read-only' text property is no bar."
+  (md-table-align-tests--with-read-only-text md-table-align-tests--vertical
+    (md-table-align-tests--enable)
+    (md-table-align-tests--toggle-vertical)
+    (should (= (md-table-align-tests--column-of "value1")
+               md-table-align-tests--vertical-value-column))
+    (should (= (md-table-align-tests--row-of "v2")
+               (1+ (md-table-align-tests--row-of "value1"))))
+    (should-not (buffer-modified-p))))
+
+(ert-deftest md-table-align-test-vertical-labels-carry-the-label-face ()
+  "The synthesized labels render in `md-table-align-vertical-label'."
+  (md-table-align-tests--with-buffer md-table-align-tests--vertical
+    (md-table-align-tests--enable)
+    (md-table-align-tests--toggle-vertical)
+    (let ((label
+           (catch 'found
+             (dolist (ov (md-table-align-tests--own-overlays))
+               (let ((d (overlay-get ov 'before-string)))
+                 (when (and (stringp d) (string-search "bee:" d))
+                   (throw 'found d)))))))
+      (should label)
+      (should (eq (get-text-property (string-search "bee:" label) 'face label)
+                  'md-table-align-vertical-label)))))
+
+(ert-deftest md-table-align-test-vertical-record-separators-are-rendered ()
+  "Each record block sits under a separator built from the record format."
+  (md-table-align-tests--with-buffer md-table-align-tests--vertical
+    (md-table-align-tests--enable)
+    (md-table-align-tests--toggle-vertical)
+    (let ((seps (seq-filter
+                 (lambda (d) (and (stringp d) (string-search "-[ row " d)))
+                 (mapcar (lambda (ov) (overlay-get ov 'before-string))
+                         (md-table-align-tests--own-overlays)))))
+      (should (= (length seps) 2))
+      (should (seq-some (lambda (d) (string-search "-[ row 1 ]---" d)) seps))
+      (should (seq-some (lambda (d) (string-search "-[ row 2 ]---" d)) seps)))))
+
+(ert-deftest md-table-align-test-vertical-table-has-no-viewport ()
+  "A wide table toggled vertical is neither clipped nor scrollable."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (should (md-table-align-tests--clips))
+      (md-table-align-tests--toggle-vertical)
+      (should-not (md-table-align-tests--clips))
+      ;; The scroll key falls through to `scroll-left' instead of scrolling
+      ;; a viewport that no longer exists.
+      (md-table-align-tests--goto-table)
+      (md-table-align-tests--press "C-x <")
+      (should (= md-table-align--hscroll 0)))))
+
+(ert-deftest md-table-align-test-vertical-survives-the-command-loop ()
+  "Cursor motion through a vertical table leaves the upkeep hook healthy."
+  (md-table-align-tests--with-buffer md-table-align-tests--vertical
+    (md-table-align-tests--enable)
+    (md-table-align-tests--toggle-vertical)
+    (goto-char (point-min))
+    (dotimes (_ 5) (md-table-align-tests--press "C-n"))
+    (should (memq #'md-table-align--post-command post-command-hook))
+    (should-not md-table-align--follow-failed)
+    (should (= (md-table-align-tests--column-of "value1")
+               md-table-align-tests--vertical-value-column))))
+
+(ert-deftest md-table-align-test-vertical-toggle-outside-a-table-errors ()
+  "With point on prose there is nothing to toggle."
+  (md-table-align-tests--with-buffer md-table-align-tests--vertical
+    (md-table-align-tests--enable)
+    (goto-char (point-min))
+    (should-error (md-table-align-toggle-vertical) :type 'user-error)))
+
+(ert-deftest md-table-align-test-vertical-toggle-enables-the-mode ()
+  "Toggling in a buffer without the mode switches it on first."
+  (md-table-align-tests--with-buffer md-table-align-tests--vertical
+    (should-not md-table-align-mode)
+    (md-table-align-tests--toggle-vertical)
+    (should md-table-align-mode)
+    (should (= (md-table-align-tests--column-of "value1")
+               md-table-align-tests--vertical-value-column))))
+
 ;;;; Face remapping arriving after layout
 ;;
 ;; `mixed-pitch-mode' switched on *after* this mode used to leave a misaligned
