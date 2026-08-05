@@ -1,7 +1,7 @@
 ;;; md-table-align.el --- Display-only alignment of Markdown tables -*- lexical-binding: t; -*-
 
 ;; Author: Steinthor Palsson
-;; Version: 0.2.0
+;; Version: 0.3.0
 ;; Package-Requires: ((emacs "31.1"))
 ;; Keywords: markdown, faces, convenience
 
@@ -24,6 +24,10 @@
 ;; than left to wrap, and that viewport scrolls the way a `truncate-lines'
 ;; buffer already does: it follows point, and \\[scroll-left] and
 ;; \\[scroll-right] move it by hand.  See `md-table-align-hscroll'.
+;;
+;; `md-table-align-toggle-vertical' flips the table at point into psql's
+;; `\x'-style expanded display -- one `label: value' line per cell, one record
+;; block per row -- and back.  Also a rendering, not an edit.
 ;;
 ;; Usage:
 ;;
@@ -93,6 +97,19 @@ The indicator occupies space inside the viewport, so turning this off
 gives the table itself slightly more room."
   :type 'boolean)
 
+(defcustom md-table-align-vertical-record-format "-[ row %d ]---"
+  "Format for the separator line above each record of a vertical table.
+`%d' is the record's 1-based number.  See `md-table-align-toggle-vertical'."
+  :type 'string)
+
+(defface md-table-align-vertical-label
+  '((t :inherit bold))
+  "Face for the column labels of a table rendered vertically.")
+
+(defface md-table-align-vertical-record
+  '((t :inherit shadow))
+  "Face for the record separator lines of a table rendered vertically.")
+
 (make-obsolete-variable
  'md-table-align-fit-to-window
  "wide tables are now clipped and scrolled rather than elided in place;
@@ -127,6 +144,14 @@ first columns are inexplicably missing.
 
 A marker rather than a plain position, so that editing above the table
 cannot silently hand its offset to whatever moves into its place.")
+
+(defvar-local md-table-align--vertical-tables nil
+  "Markers at the starts of the tables currently rendered vertically.
+Consulted the way the hscroll marker is: a table whose start equals a
+marker position is laid out vertically.  Unlike the hscroll offset this
+state is meant to persist while point is elsewhere -- a table you flipped
+stays flipped -- which is why it is a list and leaving a table resets
+nothing.")
 
 (defvar-local md-table-align--metrics-cache nil
   "Cons of (KEY . CONTEXT) memoising the most recent table measurement.")
@@ -697,13 +722,134 @@ that often would make simply moving the cursor crawl."
         ctx))))
 
 (defun md-table-align--layout-table (node)
-  "Align the table at NODE by placing overlays."
+  "Align the table at NODE by placing overlays.
+A table toggled vertical is rendered as records instead; one with no
+data rows to make records of falls back to the horizontal layout."
   (when-let* ((ctx (md-table-align--metrics node)))
-    (let ((ctx (plist-put (copy-sequence ctx)
-                          :view (md-table-align--viewport
-                                 ctx (md-table-align--offset-of node)))))
-      (dolist (row (plist-get ctx :rows))
-        (md-table-align--layout-row row ctx)))))
+    (unless (and (md-table-align--vertical-p node)
+                 (md-table-align--layout-vertical ctx))
+      (let ((ctx (plist-put (copy-sequence ctx)
+                            :view (md-table-align--viewport
+                                   ctx (md-table-align--offset-of node)))))
+        (dolist (row (plist-get ctx :rows))
+          (md-table-align--layout-row row ctx))))))
+
+;;;; Vertical records view
+;;
+;; A table toggled vertical renders as psql's `\x' expanded display: each data
+;; row becomes a block of `label: value' lines under a record separator.  The
+;; values are already in buffer order, so they stay real, visible buffer text;
+;; only the labels -- which repeat once per record, something buffer text
+;; cannot do -- are synthesized, in the overlay strings that hide the pipes.
+
+(defun md-table-align--vertical-p (node)
+  "Return non-nil when the table at NODE is toggled vertical."
+  (let ((beg (treesit-node-start node)))
+    (seq-some (lambda (m) (eql (marker-position m) beg))
+              md-table-align--vertical-tables)))
+
+(defun md-table-align--vertical-labels (ctx)
+  "Return a vector of label strings for the columns of the table under CTX.
+Labels are the header cells' text under `md-table-align-vertical-label',
+suffixed with a colon.  A column the header does not name -- ragged
+tables -- falls back to its 1-based number."
+  (let* ((header (seq-find (lambda (r) (not (plist-get r :delimiter)))
+                           (plist-get ctx :rows)))
+         (cells (plist-get header :cells))
+         (n (length (plist-get ctx :widths)))
+         (labels (make-vector n nil)))
+    (dotimes (j n)
+      (let* ((cell (nth j cells))
+             (text (if (and cell (< (plist-get cell :beg) (plist-get cell :end)))
+                       (buffer-substring-no-properties
+                        (plist-get cell :beg) (plist-get cell :end))
+                     (number-to-string (1+ j)))))
+        (aset labels j (propertize (concat text ":")
+                                   'face 'md-table-align-vertical-label))))
+    labels))
+
+(defun md-table-align--inject (from to string)
+  "Render STRING in place of the buffer text between FROM and TO.
+
+Not `md-table-align--replace': a `display' *string* does not process the
+`display' properties of its own text, so a stretch glyph inside one is
+inert.  An overlay's `before-string' does process them -- it is what
+every `md-table-align--pad' stretch already rides on -- so the region is
+hidden with `display' \"\" and STRING rides in front of it."
+  (let ((ov (make-overlay from to)))
+    (overlay-put ov 'md-table-align t)
+    (overlay-put ov 'evaporate t)
+    (overlay-put ov 'display "")
+    (overlay-put ov 'before-string string)
+    ov))
+
+(defun md-table-align--layout-vertical-row (row index ctx labels value-x)
+  "Place overlays rendering ROW as vertical record number INDEX.
+CTX is the table's layout context, LABELS the vector from
+`md-table-align--vertical-labels' and VALUE-X the pixel column values
+start at.
+
+Each span from one cell's content end to the next cell's content start
+-- never empty, since it holds at least the pipe -- is replaced by a
+newline, a stretch to the table's indent, the label, and a stretch to
+VALUE-X.  The values between those spans are left alone."
+  (let* ((pipes (plist-get row :pipes))
+         (indent (plist-get ctx :indent))
+         (eol (save-excursion (goto-char (car pipes)) (line-end-position)))
+         (prev (car pipes))
+         (j 0))
+    (dolist (cell (plist-get row :cells))
+      (when-let* ((open (nth j pipes)))
+        (let ((beg (if cell (plist-get cell :beg) (1+ open)))
+              (end (if cell (plist-get cell :end) (1+ open))))
+          (md-table-align--inject
+           prev beg
+           (concat (if (= j 0)
+                       (concat
+                        (propertize
+                         (format md-table-align-vertical-record-format index)
+                         'face 'md-table-align-vertical-record)
+                        "\n")
+                     "\n")
+                   (if (> indent 0) (md-table-align--stretch indent) "")
+                   (aref labels j)
+                   (md-table-align--stretch value-x)))
+          (setq prev end)))
+      (setq j (1+ j)))
+    ;; The closing pipe and any trailing whitespace end no label line.
+    (md-table-align--replace prev eol "")))
+
+(defun md-table-align--layout-vertical (ctx)
+  "Place overlays rendering the table under CTX as vertical records.
+Returns non-nil when the layout was applied; nil -- no data rows to make
+records of -- asks the caller to lay the table out horizontally instead."
+  (let* ((rows (seq-remove (lambda (r) (plist-get r :delimiter))
+                           (plist-get ctx :rows)))
+         (data (cdr rows)))
+    (when data
+      (let ((labels (md-table-align--vertical-labels ctx))
+            (unit (plist-get ctx :unit))
+            (indent (plist-get ctx :indent)))
+        ;; The header lives on as the labels and the delimiter row's alignment
+        ;; markers mean nothing vertically, so both lines -- newlines included,
+        ;; or they would remain as blanks -- render as nothing.
+        (md-table-align--replace
+         (save-excursion (goto-char (car (plist-get (car rows) :pipes)))
+                         (line-beginning-position))
+         (save-excursion (goto-char (car (plist-get (car data) :pipes)))
+                         (line-beginning-position))
+         "")
+        (let ((value-x (+ indent unit
+                          (seq-reduce
+                           (lambda (acc label)
+                             (max acc (funcall md-table-align-pixel-width-function
+                                               label)))
+                           (append labels nil) 0)))
+              (i 0))
+          (dolist (row data)
+            (setq i (1+ i))
+            (md-table-align--layout-vertical-row row i ctx labels value-x))))
+      t)))
 
 ;;;; Discovery
 
@@ -915,7 +1061,8 @@ entry point that `post-command-hook' actually holds."
                    (eql (marker-position md-table-align--hscroll-table)
                         (treesit-node-start node)))
         (md-table-align--reset-offset))
-      (when node
+      ;; A vertical table has no viewport for point to leave.
+      (when (and node (not (md-table-align--vertical-p node)))
         (md-table-align--scroll-into-view node)))))
 
 (defun md-table-align--point-into-view (ctx view)
@@ -949,8 +1096,11 @@ point off the first column would be gratuitous."
 (defun md-table-align--scroll (columns sign)
   "Scroll the table at point by COLUMNS in direction SIGN.
 COLUMNS nil means a viewport-ful less the two columns of context
-`scroll-left' keeps.  Returns non-nil when a table was scrolled."
+`scroll-left' keeps.  Returns non-nil when a table was scrolled.
+A vertical table has nothing to scroll, so the key falls through to the
+command it displaced, as it does outside a table."
   (when-let* ((node (md-table-align--table-at (point)))
+              ((not (md-table-align--vertical-p node)))
               (ctx (md-table-align--metrics node))
               (view (md-table-align--viewport
                      ctx (md-table-align--offset-of node))))
@@ -1010,6 +1160,45 @@ takes over."
     (call-interactively #'scroll-right)))
 
 ;;;###autoload
+(defun md-table-align-toggle-vertical ()
+  "Toggle the table at point between horizontal and vertical display.
+
+Vertical is psql's `\\x' expanded display: each data row renders as a
+block of `label: value' lines under a record separator, with the labels
+taken from the header row.  Like everything else here it is a rendering,
+not an edit -- buffer text is untouched, so it works in read-only
+buffers, and toggling back is just a re-render.
+
+Enables `md-table-align-mode' when it is not already on: toggling a
+table implies wanting the machinery that maintains it."
+  (interactive)
+  (unless (md-table-align--parser)
+    (user-error "No `markdown' tree-sitter parser in this buffer"))
+  (let ((node (md-table-align--table-at (point))))
+    (unless node
+      (user-error "No table at point"))
+    (unless md-table-align-mode
+      (md-table-align-mode 1))
+    (let* ((beg (treesit-node-start node))
+           (existing (seq-find (lambda (m) (eql (marker-position m) beg))
+                               md-table-align--vertical-tables)))
+      (if existing
+          (progn
+            (set-marker existing nil)
+            (setq md-table-align--vertical-tables
+                  (delq existing md-table-align--vertical-tables)))
+        ;; A viewport offset is meaningless on a vertical table, and holding
+        ;; it silently would bring the table back scrolled -- the missing
+        ;; first columns the offset-reset rule exists to prevent.
+        (when (and md-table-align--hscroll-table
+                   (eql (marker-position md-table-align--hscroll-table) beg))
+          (setq md-table-align--hscroll 0)
+          (set-marker md-table-align--hscroll-table nil)
+          (setq md-table-align--hscroll-table nil))
+        (push (copy-marker beg) md-table-align--vertical-tables))
+      (md-table-align--relayout node))))
+
+;;;###autoload
 (defun md-table-align-hscroll-reset ()
   "Return the scrolled table to its left edge."
   (interactive)
@@ -1066,6 +1255,9 @@ Requires a `markdown' tree-sitter parser in the buffer; see
     (when md-table-align--hscroll-table
       (set-marker md-table-align--hscroll-table nil)
       (setq md-table-align--hscroll-table nil))
+    (dolist (marker md-table-align--vertical-tables)
+      (set-marker marker nil))
+    (setq md-table-align--vertical-tables nil)
     (md-table-align-clear)))
 
 (defun md-table-align--layout-key ()
