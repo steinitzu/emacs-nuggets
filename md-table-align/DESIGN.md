@@ -818,6 +818,161 @@ comparison of configuration, which costs a measurement per command instead of an
 `md-table-align-clear` and `md-table-align-buffer` — or any edit — restore the
 grid. Recorded under "Known limitations".
 
+## Vertical records view (v5)
+
+A toggle, per table, between the normal horizontal layout and a vertical one
+modelled on psql's `\x` expanded display: each data row becomes a block of
+`label: value` lines under a record separator, with the labels taken from the
+header row, rendered bold, and the values aligned to a common column:
+
+```
+-[ row 1 ]---
+a: value1
+b: Value2
+c: value3
+-[ row 2 ]---
+a: value4
+b: value5
+c: value6
+```
+
+Wide tables are the obvious beneficiary — a vertical record is never wider
+than its longest single value — but the toggle is a reading preference, not a
+fitting rule, so it is a command rather than anything automatic.
+
+### Display-only, like everything else here
+
+A textual transformation was rejected without much contest: it fails in the
+read-only transcript buffers this package exists to serve, it dirties files,
+and the vertical form is no longer a Markdown table, so toggling back needs a
+bespoke parser for a format nothing else understands. The vertical view is a
+*rendering* of the same buffer text, produced by the same overlay machinery,
+and toggling back merely re-lays the table out horizontally.
+
+### Feasibility
+
+The insight that makes this cheap: a vertical layout does not reorder buffer
+text. Reading the buffer left to right, row by row, already visits the values
+in exactly the order the vertical view presents them. Only the labels appear
+out of buffer order — repeated once per record — and labels are *synthesized*
+strings, not buffer text. So the values stay real, visible buffer text (point
+motion, isearch and editing keep working in them), and everything injected is
+overlay strings, which v1 already established never dirty a buffer.
+
+Three primitives carry the layout. Two were verified in earlier rounds; the
+third was probed in a real TTY frame before this design was committed:
+
+| # | Question | Result |
+|---|----------|--------|
+| 1 | Does an injected `"\n"` in an overlay string create a real visual line break? | Yes — v3/v4, under both `truncate-lines` and `word-wrap` |
+| 2 | Does `display ""` over a *multi-line* region (newlines included) remove those screen lines entirely? | **Yes** — header + delimiter rows collapsed to zero screen lines |
+| 3 | Does a stretch glyph *after* an injected `"\n"` align the following text to an absolute column? | **Yes** — three values on three screen rows, all rendered at the target column |
+
+The probe rendered a three-column row as one separator line plus three
+`label: value` lines — `count-screen-lines` reported 4 for the one buffer
+line — with surrounding prose unmoved.
+
+### Mechanism
+
+For a table toggled vertical, layout places:
+
+1. **One hiding overlay** over the header row and delimiter row, from the
+   header's line start to the first data row's line start, newlines included
+   (primitive 2). The header text lives on as the labels; the delimiter row's
+   alignment markers are meaningless vertically and vanish with it.
+2. **Per cell, one `display` overlay** covering the span from the previous
+   cell's content end to this cell's content start — the region holding the
+   pipe and its padding, never empty since it contains at least the pipe. The
+   display string is `"\n"` + a stretch to the table's indent + the bold label
+   + a stretch to the value column (primitive 3). For a row's first cell the
+   string opens with the record separator line instead of the bare newline.
+3. **A `display ""` overlay** over the closing pipe and trailing whitespace.
+
+The value column is the indent plus the widest label plus one space, measured
+in pixels with the same width function as everything else, so the v2 lessons
+(face remapping, CJK, proportional fonts) carry over unchanged. Labels come
+from the header cells' buffer text, re-propertized with the label face; a
+column with no header cell — ragged tables — falls back to its 1-based column
+number.
+
+Cells that are empty or absent get their label line like any other, with
+nothing after the colon: the spans between pipes still exist, so the overlay
+placement is identical.
+
+A long value wraps at the window edge like prose. That is correct rather than
+tolerated: a vertical record is a paragraph-shaped thing, its continuation
+lines are ordinary visual wrapping, and no column grid exists to destroy —
+which is why none of the viewport machinery applies.
+
+### Per-table state
+
+`md-table-align--vertical-tables` holds one marker per toggled table, at the
+table's start. Layout consults it exactly the way the hscroll offset consults
+its marker: a `pipe_table` node whose start equals a marker position is laid
+out vertically. Markers survive edits elsewhere in the buffer, and jit-lock
+re-layout — which re-runs on every edit inside the table — reapplies the
+vertical layout with no extra plumbing, the same way it reapplies an offset.
+
+Unlike the hscroll offset, vertical state is *meant* to persist while point is
+elsewhere — a table you flipped stays flipped — which is why it is a list
+rather than a single marker, and why leaving the table resets nothing.
+
+### Interaction with the horizontal machinery
+
+- **The viewport does not apply.** A vertical table has no column grid to
+  clip or scroll; `md-table-align--layout-table` branches before any viewport
+  is computed. Point-following and the explicit scroll commands skip vertical
+  tables, so `C-x <` falls through to `scroll-left` as it does outside a
+  table.
+- **Toggling a scrolled table to vertical drops its offset.** The offset is
+  meaningless in the vertical layout, and holding it silently would make the
+  table come back scrolled — the "mysteriously missing first columns" problem
+  the offset-reset rule exists to prevent.
+- **Re-fit triggers carry over.** The layout key already invalidates on face
+  remapping; the value column is measured, so it re-lands correctly. Window
+  width does not participate for vertical tables any more than it did with
+  hscroll off.
+- **The toggle enables the mode if needed.** Toggling implies wanting the
+  display machinery; failing with "enable the mode first" would be pedantry.
+  With no parser it refuses the way the mode does.
+
+### Interface
+
+- `md-table-align-toggle-vertical` — command; toggles the table at point.
+  No default binding.
+- `md-table-align-vertical-record-format` — separator format, default
+  `"-[ row %d ]---"`, `%d` the 1-based record number.
+- Faces: `md-table-align-vertical-label` (inherits `bold`) and
+  `md-table-align-vertical-record` (inherits `shadow`).
+
+### Testing
+
+All e2e in the TTY frame, as ever:
+
+- after toggling, each value renders on its own screen row, all at the value
+  column, and a data row's buffer line occupies columns + 1 screen lines;
+- the header and delimiter rows occupy no screen lines;
+- `buffer-string` is unchanged and `buffer-modified-p` nil; the same holds
+  over `read-only` text properties;
+- toggling back restores the horizontal grid exactly;
+- an edit inside a vertical table re-renders it still vertical;
+- the toggle is per-table: the other table's grid is untouched;
+- a wide table toggled vertical in a narrow frame gets no clip overlays and
+  no offset;
+- label strings carry the label face;
+- cursor motion through a vertical table driven by real key events leaves the
+  `post-command-hook` machinery installed and unlatched.
+
+### Known limitations (v5)
+
+- A stale marker — the table it named was deleted and a *different* table's
+  start later lands on exactly that position — would flip the newcomer
+  vertical. The same class of staleness the hscroll marker accepts, with the
+  same answer: toggling it back costs one command.
+- Point inside the hidden header or delimiter row renders at the record
+  separator, where the collapse put it. Values — the text one actually moves
+  through — are unaffected.
+
 ## Known limitations
 
 - The delimiter row is character-quantised, as above.
