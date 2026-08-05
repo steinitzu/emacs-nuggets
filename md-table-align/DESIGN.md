@@ -866,11 +866,27 @@ third was probed in a real TTY frame before this design was committed:
 |---|----------|--------|
 | 1 | Does an injected `"\n"` in an overlay string create a real visual line break? | Yes — v3/v4, under both `truncate-lines` and `word-wrap` |
 | 2 | Does `display ""` over a *multi-line* region (newlines included) remove those screen lines entirely? | **Yes** — header + delimiter rows collapsed to zero screen lines |
-| 3 | Does a stretch glyph *after* an injected `"\n"` align the following text to an absolute column? | **Yes** — three values on three screen rows, all rendered at the target column |
+| 3 | Is a stretch glyph embedded in an overlay string honored? | **Only in a `before-string`.** Inside a `display` string it is silently inert — see below |
 
 The probe rendered a three-column row as one separator line plus three
 `label: value` lines — `count-screen-lines` reported 4 for the one buffer
 line — with surrounding prose unmoved.
+
+Primitive 3 took three probes to get right, and the first gave a wrong
+answer worth recording (see "Instruments matter" under v2 for the pattern).
+The initial probe embedded the stretch in a `display` string, asked for
+column 3, and saw the text land on column 3 — but 3 was also the *natural*
+width of "label plus one space", so the probe could not distinguish a working
+stretch from an ignored one, and it was ignored: Emacs does not process the
+`display` properties of text inside a `display` string. The e2e tests, whose
+fixture has labels of different lengths, caught it immediately. A second
+probe with a target nothing lands on naturally confirmed every variant inert
+(`:align-to` in both forms, `:width`, with and without a preceding newline).
+A `before-string`'s text *does* get its `display` properties processed — it
+is what every `md-table-align--pad` stretch already rides on — and a third
+probe confirmed the full injection works there, including alongside a
+`display ""` on the same overlay. When probing a layout primitive, pick a
+target that nothing reaches naturally.
 
 ### Mechanism
 
@@ -880,12 +896,15 @@ For a table toggled vertical, layout places:
    header's line start to the first data row's line start, newlines included
    (primitive 2). The header text lives on as the labels; the delimiter row's
    alignment markers are meaningless vertically and vanish with it.
-2. **Per cell, one `display` overlay** covering the span from the previous
-   cell's content end to this cell's content start — the region holding the
-   pipe and its padding, never empty since it contains at least the pipe. The
-   display string is `"\n"` + a stretch to the table's indent + the bold label
-   + a stretch to the value column (primitive 3). For a row's first cell the
-   string opens with the record separator line instead of the bare newline.
+2. **Per cell, one overlay** covering the span from the previous cell's
+   content end to this cell's content start — the region holding the pipe and
+   its padding, never empty since it contains at least the pipe. Its
+   `display` is `""`, hiding the span, and its `before-string` carries the
+   injection: `"\n"` + a stretch to the table's indent + the bold label + a
+   stretch to the value column (primitive 3 — the string must be a
+   `before-string`, since a `display` string's own `display` properties are
+   inert). For a row's first cell the string opens with the record separator
+   line instead of the bare newline.
 3. **A `display ""` overlay** over the closing pipe and trailing whitespace.
 
 The value column is the indent plus the widest label plus one space, measured
@@ -972,6 +991,33 @@ All e2e in the TTY frame, as ever:
 - Point inside the hidden header or delimiter row renders at the record
   separator, where the collapse put it. Values — the text one actually moves
   through — are unaffected.
+
+### Validation against implementation (v5)
+
+14 tests added; 143 pass in the TTY frame; `make compile` is clean with
+`byte-compile-error-on-warn`. Geometry read back from `posn-at-point` against
+a three-column, two-row fixture: every value renders on its own screen row at
+the common value column; a data row's buffer line occupies four screen lines;
+the header and delimiter rows occupy none, so the prose below the table lands
+nine rows under the prose above it; toggling back restores the horizontal
+grid exactly; an edit re-renders the table still vertical; the second table
+in the buffer keeps its grid; everything holds over `read-only` text
+properties with the buffer unmodified throughout.
+
+#### Deviations
+
+**The injection rides a `before-string`, not a `display` string.** The design
+as first committed had each cell's span replaced by a `display` string
+carrying the newline, label and stretches. That mechanism does not exist:
+Emacs ignores `display` properties on text inside a `display` string, so the
+stretches were inert and the labels simply abutted their values. The span is
+hidden with `display ""` and the injection moved to a `before-string` on the
+same overlay, whose text does get its `display` properties processed. The
+feasibility section records how the initial probe missed this. One helper,
+`md-table-align--inject`, encapsulates the pairing.
+
+Everything else — the per-table markers, the viewport guards, the toggle
+command's offset handling, faces and record format — held up as designed.
 
 ## Known limitations
 
