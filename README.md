@@ -292,6 +292,43 @@ button, since goto-address binds `RET` only in read-only buffers.
 
 See [md-bare-url/DESIGN.md](md-bare-url/DESIGN.md) for the full diagnosis.
 
+### md-file-anchor — follow line and heading anchors on file links
+
+A Markdown link to a file with a line anchor, the kind every forge generates —
+
+```markdown
+[builder.py:392–400](../src/builder.py#L392-L400)
+```
+
+— does not open `builder.py` in `markdown-ts-mode`. It opens an empty buffer
+for a file literally named `builder.py#L392-L400`: the link dispatch has cases
+for in-buffer `#fragments`, `mailto:` and URI schemes, but everything else is
+handed to `find-file` whole, fragment included.
+
+`md-file-anchor` supplies the missing case. With the mode on, `RET` or a click
+on such a link opens the file, jumps to the first anchored line, and briefly
+highlights the whole range — the confirmation GitHub gives you. All the forge
+anchor shapes work: `#L392`, GitHub's `#L392-L400`, GitLab's `#L392-400`, and
+column-carrying permalinks like `#L392C5-L400C10` (columns are ignored). An
+anchor that is not a line reference is a heading slug: `[notes](notes.md#slug)`
+opens the file and jumps to the heading, resolved by `markdown-ts-mode`'s own
+fragment machinery.
+
+```elisp
+(require 'md-file-anchor)
+(md-file-anchor-mode 1)
+```
+
+`md-file-anchor-mode` is global: it works by advising a function, and there is
+nothing buffer-local to switch on. There is nothing to customize.
+
+Everything else is untouched: links with a URI scheme keep browsing (a URL's
+`#fragment` stays with the URL), in-buffer `#heading` links keep jumping, plain
+file links keep opening, and a file whose name really does contain a `#` — if
+it exists on disk under that name — still opens verbatim.
+
+See [md-file-anchor/DESIGN.md](md-file-anchor/DESIGN.md) for the details.
+
 ### md-heading-scale — size headings by their level
 
 `markdown-mode` has `markdown-header-scaling`, which renders a level-1 heading
@@ -517,6 +554,7 @@ under a pty to get a TTY frame; batch mode has no frame that lays text out.
 emacs-tools.el          collection loader; adds each extension to load-path
 md-table-align/         extension: display-only Markdown table alignment
 md-bare-url/            extension: make bare URLs in Markdown follow
+md-file-anchor/         extension: follow line/heading anchors on file links
 md-heading-scale/       extension: size Markdown headings by their level
 termdex/                extension: directory-aware handling for many vterms
 tests/                  test suite and TTY test runner

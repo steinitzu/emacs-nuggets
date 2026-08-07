@@ -197,6 +197,28 @@ overlay's bounds.
   `md-file-anchor-line-range` pinned on their edges (first-`#` split,
   column anchors, reversed ranges, non-line anchors).
 
+## Validation against implementation
+
+Checked after implementing, against a real Emacs 31.0.90 in a TTY frame
+(the full suite) plus batch-mode smoke runs during development.
+
+| Design claim | Verdict |
+|---|---|
+| Upstream hands the fragment-bearing string to `find-file` whole | Holds — pinned by the canary test, mode off |
+| `RET` on `target.py#L392-L400` lands on line 392 | Holds — and the pulse overlay spans exactly bol 392 to eol 400 |
+| All four forge anchor shapes parse; near misses are slugs | Holds — pinned per shape in the grammar test |
+| Heading anchors resolve through upstream's own resolver | Holds — `notes.md#deferred-decisions` lands on the heading |
+| Existing-file guard keeps literal-`#` filenames working | Holds — a real `weird#L5.md` opens verbatim |
+| Scheme'd URLs, in-buffer fragments and plain file links untouched | Holds — asserted per shape, mode on |
+| Mark is pushed before the jump | Holds — `(goto-char (mark t))` returns to the pre-jump line |
+| `font-lock-flush` heals already-fontified buffers both ways | Holds — enable heals, disable reverts, advice fully removed |
+
+### Deviations
+
+None of substance. `md-file-anchor-split` on a URL without `#` returns
+`(URL . nil)` — the design left that case unstated since the advice never
+produces it; the function documents it for direct callers.
+
 ## Known limitations
 
 - Ties to the same private upstream function as md-bare-url,
