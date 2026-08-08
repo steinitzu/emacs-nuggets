@@ -19,6 +19,7 @@
 ;;   `termdex-switch'        completing-read over every terminal
 ;;   `termdex-switch-project'  ... restricted to this project
 ;;   `termdex-list'          a dashboard of all of them
+;;   `termdex-indicator-mode'  a terminal count in the mode line
 ;;
 ;; Three facts about a terminal make all of that work: where it is, whether it
 ;; is busy, and what it is running.  All three come from /proc, asked of the
@@ -734,12 +735,68 @@ send you to."
     (termdex--list-start-timer)
     (pop-to-buffer buffer)))
 
+;;;; Mode-line indicator
+
+(defcustom termdex-indicator-glyph ">_"
+  "Glyph shown before the terminal count in the mode line.
+The default is plain ASCII so it renders in any font and any TTY.
+With a Nerd Font installed, a terminal icon glyph works here too."
+  :type 'string)
+
+(defvar-keymap termdex-indicator-map
+  :doc "Keymap on the mode-line indicator."
+  "<mode-line> <mouse-1>" #'termdex-list)
+
+(defun termdex--indicator ()
+  "Return the mode-line indicator string, or nil with no terminals.
+
+Runs at every mode-line redisplay of every window, so it may count
+terminals -- major mode, live process, exclusions -- but never probe
+them: nothing here is allowed to touch /proc.  Zero terminals returns
+nil rather than a \"0\", so sessions without terminals carry no
+indicator at all."
+  (let ((count (seq-count #'termdex--candidate-p (buffer-list))))
+    (when (> count 0)
+      (concat " "
+              (propertize (format "%s %d" termdex-indicator-glyph count)
+                          'help-echo "Terminals\nmouse-1: dashboard (termdex-list)"
+                          'mouse-face 'mode-line-highlight
+                          'local-map termdex-indicator-map)))))
+
+(defvar termdex--indicator-construct '(:eval (termdex--indicator))
+  "The construct `termdex-indicator-mode' puts in `global-mode-string'.
+Held in a variable so disabling the mode can find and remove exactly
+what enabling it added.")
+;; An `:eval' reached through a symbol is only evaluated if the symbol
+;; is marked risky.
+(put 'termdex--indicator-construct 'risky-local-variable t)
+
+;;;###autoload
+(define-minor-mode termdex-indicator-mode
+  "Show a terminal count in the mode line.
+
+A glyph (`termdex-indicator-glyph') and the number of live terminals,
+in every window's mode line.  Terminals excluded by `termdex-exclude'
+or `termdex-exclude-functions' are not counted, so the number is the
+population `termdex-switch' offers.  With no terminals at all the
+indicator disappears entirely.
+
+\\`mouse-1' on the indicator opens the `termdex-list' dashboard."
+  :global t
+  (if termdex-indicator-mode
+      (add-to-list 'global-mode-string 'termdex--indicator-construct t)
+    (setq global-mode-string
+          (delq 'termdex--indicator-construct global-mode-string))))
+
 (defun termdex-unload-function ()
-  "Cancel the dashboard timer before `unload-feature' removes it.
-Left running, it would call a function this package is about to unbind,
-and signal on every tick.  Returning nil leaves the rest of the
-unloading to `unload-feature'."
+  "Undo what leaves termdex-owned state outside this package's symbols.
+The dashboard timer would call a function about to be unbound and
+signal on every tick; the indicator would do the same from every mode
+line.  Returning nil leaves the rest of the unloading to
+`unload-feature'."
   (termdex--list-stop-timer)
+  (when termdex-indicator-mode
+    (termdex-indicator-mode -1))
   nil)
 
 (provide 'termdex)
