@@ -737,10 +737,10 @@ send you to."
 
 ;;;; Mode-line indicator
 
-(defcustom termdex-indicator-glyph ">_"
+(defcustom termdex-indicator-glyph "💻"
   "Glyph shown before the terminal count in the mode line.
-The default is plain ASCII so it renders in any font and any TTY.
-With a Nerd Font installed, a terminal icon glyph works here too."
+Any string works: plain ASCII (\">_\") for a TTY whose fonts cannot
+show the emoji, or a terminal icon glyph with a Nerd Font installed."
   :type 'string)
 
 (defvar-keymap termdex-indicator-map
