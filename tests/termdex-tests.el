@@ -551,4 +551,70 @@ every prompt and the name tracks a `cd' by itself."
       (should (termdex-tests--wait
                (lambda () (equal (buffer-name buffer) "*term chosen-title*")))))))
 
+
+;;;; Mode-line indicator
+;;
+;; Rendering goes through `format-mode-line' on the same construct the mode
+;; installs, symbol indirection included -- which is what proves the symbol
+;; is marked risky, since an unmarked one renders as nothing.  The suite runs
+;; in a real TTY frame, so this is the display engine's own rendering.
+
+(defmacro termdex-tests--with-indicator (&rest body)
+  "Run BODY with `termdex-indicator-mode' on, restoring it afterwards."
+  (declare (indent 0) (debug t))
+  `(unwind-protect
+       (progn (termdex-indicator-mode 1) ,@body)
+     (termdex-indicator-mode -1)))
+
+(defun termdex-tests--indicator ()
+  "Render the indicator construct the way a mode line would."
+  (format-mode-line (list "" 'termdex--indicator-construct)))
+
+(ert-deftest termdex-indicator-mode-installs-exactly-one-construct ()
+  "The mode adds its element once, and disabling removes it again.
+Needs no terminal: this is about `global-mode-string' surgery."
+  (termdex-tests--with-indicator
+    (should (memq 'termdex--indicator-construct global-mode-string))
+    (termdex-indicator-mode 1)
+    (should (= 1 (seq-count (lambda (element)
+                              (eq element 'termdex--indicator-construct))
+                            global-mode-string))))
+  (should-not (memq 'termdex--indicator-construct global-mode-string)))
+
+(termdex-tests--deftest termdex-indicator-counts-terminals ()
+  "The indicator shows the count, follows a kill, and hides at zero."
+  (termdex-tests--with-project root
+    (termdex-tests--with-indicator
+      (should (equal (termdex-tests--indicator) ""))
+      (termdex-tests--terminal root)
+      (let ((second (termdex-tests--terminal root)))
+        (should (equal (termdex-tests--indicator) " >_ 2"))
+        (let ((kill-buffer-query-functions nil))
+          (kill-buffer second)))
+      (should (equal (termdex-tests--indicator) " >_ 1")))))
+
+(termdex-tests--deftest termdex-indicator-does-not-count-excluded-terminals ()
+  "An excluded terminal is not in the count, matching what the commands see."
+  (termdex-tests--with-project root
+    (termdex-tests--with-indicator
+      (termdex-tests--terminal root)
+      (with-current-buffer (termdex-tests--terminal root)
+        (setq-local termdex-exclude t))
+      (should (equal (termdex-tests--indicator) " >_ 1")))))
+
+(termdex-tests--deftest termdex-indicator-click-opens-the-dashboard ()
+  "mouse-1 on the rendered indicator reaches `termdex-list'.
+The binding is read back from the rendered string's `local-map', the
+property a real click is dispatched through."
+  (termdex-tests--with-project root
+    (termdex-tests--with-indicator
+      (termdex-tests--terminal root)
+      (let* ((rendered (termdex-tests--indicator))
+             (map (get-text-property (1- (length rendered)) 'local-map rendered))
+             (binding (and map (lookup-key map (kbd "<mode-line> <mouse-1>")))))
+        (should (eq binding #'termdex-list))
+        (save-window-excursion
+          (call-interactively binding)
+          (should (derived-mode-p 'termdex-list-mode)))))))
+
 ;;; termdex-tests.el ends here
