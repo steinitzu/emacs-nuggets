@@ -554,32 +554,45 @@ every prompt and the name tracks a `cd' by itself."
 
 ;;;; Mode-line indicator
 ;;
-;; Rendering goes through `format-mode-line' on the same construct the mode
-;; installs, symbol indirection included -- which is what proves the symbol
-;; is marked risky, since an unmarked one renders as nothing.  The suite runs
-;; in a real TTY frame, so this is the display engine's own rendering.
+;; Rendering goes through `format-mode-line' on `global-mode-string' itself,
+;; starting from nil -- the state of a session where nothing else claimed it,
+;; and the state that exposed a real bug: a list whose car is a symbol is the
+;; conditional (SYMBOL THEN ELSE) to the renderer, and with no THEN it shows
+;; `*invalid*'.  Rendering a hand-padded ("" construct) instead is how the
+;; first version of these tests missed that.  Symbol indirection is still on
+;; the path, which is what proves the construct symbol is marked risky, since
+;; an unmarked one renders as nothing.  The suite runs in a real TTY frame,
+;; so this is the display engine's own rendering.
 
 (defmacro termdex-tests--with-indicator (&rest body)
-  "Run BODY with `termdex-indicator-mode' on, restoring it afterwards."
+  "Run BODY with `termdex-indicator-mode' on, over a fresh mode line.
+`global-mode-string' is rebound to nil first, so BODY sees exactly what
+a session where nothing else touched it would see."
   (declare (indent 0) (debug t))
-  `(unwind-protect
-       (progn (termdex-indicator-mode 1) ,@body)
-     (termdex-indicator-mode -1)))
+  `(let ((global-mode-string nil))
+     (unwind-protect
+         (progn (termdex-indicator-mode 1) ,@body)
+       (termdex-indicator-mode -1))))
 
 (defun termdex-tests--indicator ()
-  "Render the indicator construct the way a mode line would."
-  (format-mode-line (list "" 'termdex--indicator-construct)))
+  "Render `global-mode-string' the way a mode line would."
+  (format-mode-line global-mode-string))
 
 (ert-deftest termdex-indicator-mode-installs-exactly-one-construct ()
-  "The mode adds its element once, and disabling removes it again.
-Needs no terminal: this is about `global-mode-string' surgery."
+  "The mode adds its element once, never first, and removes it again.
+Never first because the renderer reads a symbol-headed list as a
+conditional construct, which renders as *invalid* -- the element must
+sit behind something that keeps the list's car a string.  Needs no
+terminal: this is about `global-mode-string' surgery."
   (termdex-tests--with-indicator
     (should (memq 'termdex--indicator-construct global-mode-string))
+    (should (equal (car global-mode-string) ""))
     (termdex-indicator-mode 1)
     (should (= 1 (seq-count (lambda (element)
                               (eq element 'termdex--indicator-construct))
-                            global-mode-string))))
-  (should-not (memq 'termdex--indicator-construct global-mode-string)))
+                            global-mode-string)))
+    (termdex-indicator-mode -1)
+    (should-not (memq 'termdex--indicator-construct global-mode-string))))
 
 (termdex-tests--deftest termdex-indicator-counts-terminals ()
   "The indicator shows the count, follows a kill, and hides at zero."
