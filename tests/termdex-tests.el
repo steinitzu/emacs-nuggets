@@ -578,6 +578,12 @@ a session where nothing else touched it would see."
   "Render `global-mode-string' the way a mode line would."
   (format-mode-line global-mode-string))
 
+(defun termdex-tests--expected (count)
+  "The indicator string for COUNT terminals, under the glyph in force.
+Derived from `termdex-indicator-glyph' rather than hardcoded, so the
+tests assert the shape of the indicator, not one default's spelling."
+  (format " %s %d" termdex-indicator-glyph count))
+
 (ert-deftest termdex-indicator-mode-installs-exactly-one-construct ()
   "The mode adds its element once, never first, and removes it again.
 Never first because the renderer reads a symbol-headed list as a
@@ -601,10 +607,10 @@ terminal: this is about `global-mode-string' surgery."
       (should (equal (termdex-tests--indicator) ""))
       (termdex-tests--terminal root)
       (let ((second (termdex-tests--terminal root)))
-        (should (equal (termdex-tests--indicator) " >_ 2"))
+        (should (equal (termdex-tests--indicator) (termdex-tests--expected 2)))
         (let ((kill-buffer-query-functions nil))
           (kill-buffer second)))
-      (should (equal (termdex-tests--indicator) " >_ 1")))))
+      (should (equal (termdex-tests--indicator) (termdex-tests--expected 1))))))
 
 (termdex-tests--deftest termdex-indicator-does-not-count-excluded-terminals ()
   "An excluded terminal is not in the count, matching what the commands see."
@@ -613,7 +619,7 @@ terminal: this is about `global-mode-string' surgery."
       (termdex-tests--terminal root)
       (with-current-buffer (termdex-tests--terminal root)
         (setq-local termdex-exclude t))
-      (should (equal (termdex-tests--indicator) " >_ 1")))))
+      (should (equal (termdex-tests--indicator) (termdex-tests--expected 1))))))
 
 (termdex-tests--deftest termdex-indicator-click-opens-the-dashboard ()
   "mouse-1 on the rendered indicator reaches `termdex-list'.
