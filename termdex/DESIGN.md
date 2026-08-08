@@ -311,9 +311,12 @@ Three decisions fall out of that rule and the indicator's job:
   mode-line clutter for the sessions that never open a terminal; absence
   carries the same information.
 
-The glyph is `termdex-indicator-glyph`, default `>_` — plain ASCII so it
-renders in any font and any TTY. Users with a Nerd Font can set a terminal
-icon glyph instead.
+The glyph is `termdex-indicator-glyph`, default `💻` (U+1F4BB). The first
+default was ASCII `>_` for universality; changed by owner decision — Unicode
+has no "screen with a prompt" character (that is Nerd Font iconography), and
+the laptop emoji is the closest thing that ordinary emoji fonts carry. The
+option is the escape hatch: plain ASCII for a TTY whose fonts cannot show
+it, or a Nerd Font terminal icon for those who have one.
 
 State: the mode adds one risky-marked symbol to `global-mode-string` and
 removes it when disabled; there is no cache, timer, or hook, so the count can
