@@ -320,6 +320,20 @@ removes it when disabled; there is no cache, timer, or hook, so the count can
 never be stale. `termdex-unload-function` turns the mode off so unloading
 does not strand a construct whose function is about to be unbound.
 
+**Found in live use, missed by the first tests: the construct symbol must
+never be `global-mode-string`'s first element.** The renderer reads a list
+whose car is a symbol as the conditional construct `(SYMBOL THEN ELSE)`, and
+with no THEN branch that is malformed — the whole element displays as
+`*invalid*`. In a session where nothing else has claimed `global-mode-string`
+its value is nil, so a bare `add-to-list` produced exactly that
+symbol-headed list. The fix is `display-time-mode`'s own: seed
+`global-mode-string` with `("")` before appending, so the list's car is
+always a string and the renderer iterates it as a plain list. The first
+tests missed this by rendering a hand-built `("" construct)` — accidentally
+the fixed shape — where they now render `global-mode-string` itself,
+starting from nil, through the same `format-mode-line` pipeline redisplay
+uses.
+
 ## Buffer naming
 
 Requirement: buffer names match the terminal title. Experiment 4 shows
