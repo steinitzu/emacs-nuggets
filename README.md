@@ -445,6 +445,20 @@ Terminals termdex creates are named after the title their shell reports, and
 follow it as it changes (`termdex-buffer-name-string`). Terminals started any
 other way are left alone.
 
+#### A count in the mode line
+
+```elisp
+(termdex-indicator-mode 1)
+```
+
+Puts `>_ 3` in every mode line — how many terminals are open right now.
+`mouse-1` on it opens the `termdex-list` dashboard. With no terminals the
+indicator disappears entirely, and excluded terminals (below) are not counted,
+so the number is always the population `termdex-switch` would offer.
+
+The glyph is plain ASCII by default so it renders anywhere; with a Nerd Font
+installed, set `termdex-indicator-glyph` to a terminal icon of your choice.
+
 #### Excluding terminals someone else drives
 
 A coding agent's session terminal, a build console, a REPL in its own window —
