@@ -277,6 +277,49 @@ The switcher is likely the command that actually gets used daily and the
 dashboard the occasional "what is going on" view, so both are built on the same
 collector function. That collector is the real product; the two UIs are thin.
 
+### Mode-line indicator: `termdex-indicator-mode`
+
+A global minor mode putting a small element in every mode line — a glyph and
+the number of live terminals — as a standing answer to "how many terminals do
+I have open?". `mouse-1` on it opens `termdex-list`; the indicator is the
+door to the dashboard, not a dashboard itself.
+
+The element lives in `global-mode-string` (rendered by `mode-line-misc-info`),
+which is the standard slot for exactly this kind of thing (`display-time`,
+battery). It is an `:eval` construct, recomputed at every mode-line redisplay
+of every window, which forces the one hard rule:
+
+> **Nothing at redisplay may touch `/proc`.** A count needs only `buffer-list`
+> and `termdex--candidate-p` — major mode, live process, exclusions — which is
+> cheap enough to run per redisplay. Probing is not, and is never done here.
+
+Three decisions fall out of that rule and the indicator's job:
+
+- **It shows how many, not how busy.** Busy state comes from `/proc`, so
+  showing it would mean either probing at redisplay (forbidden above) or a
+  background polling timer (state the package otherwise avoids, burning CPU
+  for a glyph). Deliberately not built: busy-ness is one click away in the
+  dashboard.
+- **It counts candidates** — the population every other command acts on and
+  `termdex-list` shows by default. An excluded terminal (an agent's session,
+  a build console) is not a terminal termdex will send you to, so it is not
+  in the count. Consequence: `termdex-exclude-functions` predicates run at
+  redisplay for each vterm buffer. They already had to be cheap and
+  non-signalling — every command starts by filtering through them — so this
+  tightens an existing requirement rather than adding one.
+- **Zero terminals shows nothing.** An indicator reading "0" is permanent
+  mode-line clutter for the sessions that never open a terminal; absence
+  carries the same information.
+
+The glyph is `termdex-indicator-glyph`, default `>_` — plain ASCII so it
+renders in any font and any TTY. Users with a Nerd Font can set a terminal
+icon glyph instead.
+
+State: the mode adds one risky-marked symbol to `global-mode-string` and
+removes it when disabled; there is no cache, timer, or hook, so the count can
+never be stale. `termdex-unload-function` turns the mode off so unloading
+does not strand a construct whose function is about to be unbound.
+
 ## Buffer naming
 
 Requirement: buffer names match the terminal title. Experiment 4 shows
