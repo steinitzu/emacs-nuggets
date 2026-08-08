@@ -784,7 +784,14 @@ indicator disappears entirely.
 \\`mouse-1' on the indicator opens the `termdex-list' dashboard."
   :global t
   (if termdex-indicator-mode
-      (add-to-list 'global-mode-string 'termdex--indicator-construct t)
+      (progn
+        ;; The construct symbol must never end up first: the renderer reads a
+        ;; list whose car is a symbol as the conditional (SYMBOL THEN ELSE),
+        ;; which with no THEN displays as *invalid*.  Seeding "" keeps the
+        ;; list's car a string; `display-time-mode' does the same.
+        (unless global-mode-string
+          (setq global-mode-string '("")))
+        (add-to-list 'global-mode-string 'termdex--indicator-construct t))
     (setq global-mode-string
           (delq 'termdex--indicator-construct global-mode-string))))
 
