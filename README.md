@@ -189,9 +189,10 @@ table keeps its own setting until you toggle it back or turn the mode off.
 A vertical record is never wider than its longest single value, which makes
 this a comfortable way to read a very wide table; long values wrap like
 ordinary prose. The separator comes from
-`md-table-align-vertical-record-format`, and the labels and separators render
-in the `md-table-align-vertical-label` and `md-table-align-vertical-record`
-faces.
+`md-table-align-vertical-record-format`, the gap between the widest label and
+the values from `md-table-align-vertical-gap` (default two spaces), and the
+labels and separators render in the `md-table-align-vertical-label` and
+`md-table-align-vertical-record` faces.
 
 #### How it works
 
@@ -246,6 +247,34 @@ from any hook.
   row loses its row label.
 - A window with no room for even a couple of characters of table is left to
   wrap, on the grounds that clipping it to nothing would be worse.
+
+### md-table-inline — inline markup inside table cells
+
+In `markdown-ts-mode`, inline markup inside a pipe table cell is dead text: a
+`` `code span` ``, `**emphasis**` or `[link](url)` in a cell gets no face, and
+`markdown-ts-toggle-hide-markup` leaves its delimiters visible — the backticks
+sit there raw while the same markup outside the table hides correctly.
+
+The cause is in the mode's parser plumbing: it only hands its inline grammar
+the `inline` nodes of the block parse, and table cells never produce one. This
+mode adds the missing ranges — each cell is parsed by the inline grammar the
+same way a paragraph is — and everything downstream (faces, markup hiding,
+cleanup) is `markdown-ts-mode`'s own machinery, reused rather than
+reimplemented.
+
+Enable per buffer or globally:
+
+```elisp
+(require 'md-table-inline)
+(add-hook 'markdown-ts-mode-hook #'md-table-inline-mode)
+;; or
+(global-md-table-inline-mode 1)
+```
+
+`md-table-inline-modes` (default `(markdown-ts-mode)`) says where the global
+mode applies. It composes with `md-table-align`: aligned tables are laid out
+to the *rendered* cell widths, so hidden delimiters take no space and toggling
+markup hiding re-aligns.
 
 ### md-bare-url — make plain URLs in Markdown actually open
 
@@ -568,6 +597,7 @@ under a pty to get a TTY frame; batch mode has no frame that lays text out.
 ```
 emacs-tools.el          collection loader; adds each extension to load-path
 md-table-align/         extension: display-only Markdown table alignment
+md-table-inline/        extension: inline markup inside Markdown table cells
 md-bare-url/            extension: make bare URLs in Markdown follow
 md-file-anchor/         extension: follow line/heading anchors on file links
 md-heading-scale/       extension: size Markdown headings by their level
