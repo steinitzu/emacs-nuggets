@@ -1,7 +1,7 @@
 ;;; md-table-align.el --- Display-only alignment of Markdown tables -*- lexical-binding: t; -*-
 
 ;; Author: Steinthor Palsson
-;; Version: 0.3.0
+;; Version: 0.4.0
 ;; Package-Requires: ((emacs "31.1"))
 ;; Keywords: markdown, faces, convenience
 
@@ -101,6 +101,16 @@ gives the table itself slightly more room."
   "Format for the separator line above each record of a vertical table.
 `%d' is the record's 1-based number.  See `md-table-align-toggle-vertical'."
   :type 'string)
+
+(defcustom md-table-align-vertical-gap 2
+  "Spaces between the widest label and the values of a vertical table.
+
+Every value in a record block starts at the same column, so this gap is
+what separates the *longest* label from its value; the shorter labels
+get correspondingly more.  One space is the psql tradition, but next to
+a bold label ending in a colon it reads as no separation at all, which
+is why the default is two."
+  :type 'natnum)
 
 (defface md-table-align-vertical-label
   '((t :inherit bold))
@@ -839,7 +849,7 @@ records of -- asks the caller to lay the table out horizontally instead."
          (save-excursion (goto-char (car (plist-get (car data) :pipes)))
                          (line-beginning-position))
          "")
-        (let ((value-x (+ indent unit
+        (let ((value-x (+ indent (* md-table-align-vertical-gap unit)
                           (seq-reduce
                            (lambda (acc label)
                              (max acc (funcall md-table-align-pixel-width-function
