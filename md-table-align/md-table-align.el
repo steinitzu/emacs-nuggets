@@ -720,8 +720,16 @@ clipping."
 
 Memoised against the buffer's modification tick.  Point motion inside a
 table consults the grid on every command, and re-measuring every cell
-that often would make simply moving the cursor crawl."
-  (let ((key (list (buffer-chars-modified-tick)
+that often would make simply moving the cursor crawl.
+
+`buffer-modified-tick', not `buffer-chars-modified-tick': text
+properties change what a cell measures -- a face swaps its font, an
+`invisible' from markup hiding takes the delimiters out of the width --
+and property-only changes advance only the former.  Font-lock's writes
+land under `with-silent-modifications', but that spares the modified
+*flag*, not the tick, so a fontification pass still invalidates this
+cache the way it should."
+  (let ((key (list (buffer-modified-tick)
                    (treesit-node-start node)
                    (treesit-node-end node)
                    md-table-align-padding)))
@@ -1243,6 +1251,13 @@ Requires a `markdown' tree-sitter parser in the buffer; see
             (message "md-table-align: no `markdown' tree-sitter parser available"))
         (setq md-table-align--follow-failed nil)
         (jit-lock-register #'md-table-align--jit t)
+        ;; `jit-lock-register' prepends, which would run alignment *before*
+        ;; `font-lock-fontify-region' whenever the two share a pass -- and a
+        ;; cell would be measured with the faces and invisibility properties
+        ;; that same pass is about to replace.  Re-adding at a late depth
+        ;; keeps registration's other effects and only moves the hook entry.
+        (remove-hook 'jit-lock-functions #'md-table-align--jit t)
+        (add-hook 'jit-lock-functions #'md-table-align--jit 90 t)
         ;; Window geometry is not something `jit-lock' watches, so clipping
         ;; needs its own triggers.  `window-state-change-functions' also fires
         ;; on a change of selected window, which is what re-lays a table when
@@ -1279,9 +1294,15 @@ Window width participates only when `md-table-align-hscroll' is on: with
 clipping off, width does not enter the grid and a resize should not cost
 a re-render.  `face-remapping-alist' always participates -- `mixed-pitch-mode'
 and friends change what every glyph measures, and the pixel targets already
-written into `:align-to' are frozen at layout time."
+written into `:align-to' are frozen at layout time.
+`buffer-invisibility-spec' participates for the same reason:
+`markdown-ts-toggle-hide-markup' works by toggling a member of it, and
+with `md-table-inline-mode' giving cells real markup, that toggle
+changes what every marked-up cell measures."
   (when-let* ((width (md-table-align--available-width)))
-    (cons (and md-table-align-hscroll width) face-remapping-alist)))
+    (list (and md-table-align-hscroll width)
+          face-remapping-alist
+          buffer-invisibility-spec)))
 
 (defun md-table-align--refit (&rest _)
   "Re-align when something a table was laid out against has changed.
