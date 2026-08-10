@@ -1094,3 +1094,43 @@ there is no batch tier.
 **The loader is exercised by the test harness.** `tests/run-tests.el` loads
 extensions via `emacs-tools.el` rather than adding directories itself, so every
 run also smoke-tests the documented install path.
+
+## Measuring against live fontification (v5.1)
+
+Prompted by `md-table-inline`, which gives table cells real inline markup —
+faces that change glyph widths, and `invisible` delimiters that change what a
+cell renders at when `markdown-ts-hide-markup` is on. Measurement has always
+sampled text properties (that is the point of pixel measurement), but three
+pieces of plumbing quietly assumed properties do not change between passes:
+
+**Alignment now runs after font-lock inside a shared jit-lock pass.**
+`jit-lock-register` prepends to `jit-lock-functions`, so `md-table-align--jit`
+— registered after font-lock's own function, since the minor mode comes up
+after the major mode — ran *first*, measuring cells whose faces and
+invisibility that same pass was about to (re)write. The mode now re-adds its
+hook entry at depth 90. `jit-lock-unregister' is unaffected: it removes by
+function, not by depth.
+
+**The metrics cache keys on `buffer-modified-tick`.** It keyed on
+`buffer-chars-modified-tick`, chosen so cursor motion (which consults the
+grid every command) could not trigger re-measurement — but property-only
+writes advance the chars tick not at all, so a fontification pass that
+changed what cells measure left the cache stale. The plain modified tick
+advances on property writes — `with-silent-modifications`, which font-lock
+wraps them in, spares the modified *flag* but not the tick — while still
+standing still during pure cursor motion, so the cache keeps paying for the
+case it was built for.
+
+**`buffer-invisibility-spec` joined the layout key.**
+`markdown-ts-toggle-hide-markup` works by toggling a member of that spec; the
+properties stay put. Width and face remapping were already in the key for
+exactly this shape of reason — state that redisplay consults but no tick
+records — and the post-command re-fit now notices the toggle the same way it
+notices `mixed-pitch-mode` arriving.
+
+Measurement itself needed no change: `string-pixel-width''s work buffer has
+the default `buffer-invisibility-spec' of `t', under which any non-nil
+`invisible' property hides, so a hidden delimiter measures at zero exactly
+when the real buffer draws it at zero, and when hiding is off the property
+does not exist at all (font-lock manages it via
+`font-lock-extra-managed-props').
