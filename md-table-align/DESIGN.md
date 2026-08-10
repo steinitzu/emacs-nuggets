@@ -907,9 +907,17 @@ For a table toggled vertical, layout places:
    line instead of the bare newline.
 3. **A `display ""` overlay** over the closing pipe and trailing whitespace.
 
-The value column is the indent plus the widest label plus one space, measured
-in pixels with the same width function as everything else, so the v2 lessons
-(face remapping, CJK, proportional fonts) carry over unchanged. Labels come
+The value column is the indent plus the widest label plus
+`md-table-align-vertical-gap` spaces, measured in pixels with the same width
+function as everything else, so the v2 lessons (face remapping, CJK,
+proportional fonts) carry over unchanged.
+
+*Deviation, recorded after v5 shipped:* the gap was originally one space,
+hardcoded — the psql tradition. In use it read as no separation at all: every
+value starts at the same column, so the longest label gets exactly the
+minimum, and a bold label ending in a colon followed by one space looks
+joined to its value (screenshot review, `hacks/vertical-table.png`). The gap
+is now a `defcustom` defaulting to two spaces. Labels come
 from the header cells' buffer text, re-propertized with the label face; a
 column with no header cell — ragged tables — falls back to its 1-based column
 number.
@@ -961,6 +969,8 @@ rather than a single marker, and why leaving the table resets nothing.
   No default binding.
 - `md-table-align-vertical-record-format` — separator format, default
   `"-[ row %d ]---"`, `%d` the 1-based record number.
+- `md-table-align-vertical-gap` — spaces between the widest label and the
+  value column, default 2.
 - Faces: `md-table-align-vertical-label` (inherits `bold`) and
   `md-table-align-vertical-record` (inherits `shadow`).
 
