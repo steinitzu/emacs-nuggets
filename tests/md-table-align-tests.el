@@ -886,13 +886,13 @@ the scroll leaves point on the viewport's edge, since that is inside
 ;;
 ;;     before                    <- row 0
 ;;     -[ row 1 ]---
-;;     a:   value1               <- values at column 5: widest label
-;;     bee: v2                      "bee:" is 4 wide, plus one space
-;;     c:   value3
+;;     a:    value1              <- values at column 6: widest label
+;;     bee:  v2                     "bee:" is 4 wide, plus the default
+;;     c:    value3                 two-space gap
 ;;     -[ row 2 ]---
-;;     a:   v4
-;;     bee: value5
-;;     c:   v6
+;;     a:    v4
+;;     bee:  value5
+;;     c:    v6
 ;;     after                     <- row 9
 ;;
 ;; so the header and delimiter lines contribute no screen lines at all.
@@ -906,7 +906,7 @@ the scroll leaves point on the viewport's edge, since that is inside
 after
 ")
 
-(defconst md-table-align-tests--vertical-value-column 5)
+(defconst md-table-align-tests--vertical-value-column 6)
 
 ;; Toggled back, the fixture's grid: column widths 6, 6 and 6, so pipes at
 ;; 0, 9, 18 and 27 on every row.
@@ -945,6 +945,16 @@ after
       (should (= (md-table-align-tests--row-of "v2") (+ base 1)))
       (should (= (md-table-align-tests--row-of "value3") (+ base 2)))
       (should (= (md-table-align-tests--row-of "v4") (+ base 4))))))
+
+(ert-deftest md-table-align-test-vertical-gap-follows-the-option ()
+  "`md-table-align-vertical-gap' sets the space after the widest label."
+  (md-table-align-tests--with-buffer md-table-align-tests--vertical
+    (md-table-align-tests--enable)
+    (let ((md-table-align-vertical-gap 4))
+      (md-table-align-tests--toggle-vertical)
+      (dolist (value '("value1" "v2" "value3"))
+        ;; "bee:" is 4 wide; 4 more of gap puts every value at column 8.
+        (should (= (md-table-align-tests--column-of value) 8))))))
 
 (ert-deftest md-table-align-test-vertical-data-row-occupies-fields-plus-separator ()
   "A three-column row renders as four screen lines: separator plus fields."
@@ -1017,8 +1027,9 @@ three: `after' lands nine rows under `before'."
 "
     (md-table-align-tests--enable)
     (md-table-align-tests--toggle-vertical)
-    ;; First table vertical: labels \"a:\" and \"b:\", values at column 3.
-    (should (= (md-table-align-tests--column-of "x") 3))
+    ;; First table vertical: labels \"a:\" and \"b:\", then the default
+    ;; two-space gap puts the values at column 4.
+    (should (= (md-table-align-tests--column-of "x") 4))
     (should (= (md-table-align-tests--row-of "y")
                (1+ (md-table-align-tests--row-of "x"))))
     ;; Second table untouched, on its own grid.
