@@ -45,6 +45,7 @@
 
 (declare-function treesit-parser-list "treesit")
 (declare-function treesit-query-capture "treesit")
+(declare-function treesit-query-compile "treesit")
 
 (defgroup md-table-align nil
   "Display-only alignment of Markdown tables."
@@ -875,11 +876,21 @@ records of -- asks the caller to lay the table out horizontally instead."
   "Return this buffer's `markdown' tree-sitter parser, if any."
   (car (treesit-parser-list nil 'markdown)))
 
+(defvar md-table-align--table-query nil
+  "Compiled query matching `pipe_table' nodes.
+Built on first use rather than at load time: a sexp query handed to
+`treesit-query-capture' is recompiled on every call, which shows up in
+scroll profiles, but compiling needs the markdown grammar, which may
+not be loadable when this file is.")
+
 (defun md-table-align--tables (beg end)
   "Return `pipe_table' nodes overlapping the region BEG to END."
   (when-let* ((parser (md-table-align--parser))
               (root (treesit-parser-root-node parser)))
-    (mapcar #'cdr (treesit-query-capture root '((pipe_table) @table) beg end))))
+    (unless md-table-align--table-query
+      (setq md-table-align--table-query
+            (treesit-query-compile 'markdown '((pipe_table) @table))))
+    (mapcar #'cdr (treesit-query-capture root md-table-align--table-query beg end))))
 
 (defun md-table-align--align-region (beg end)
   "Align every table overlapping the region BEG to END."
