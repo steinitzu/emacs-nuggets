@@ -46,10 +46,12 @@ visual-line, heading-scale, bare-url, file-anchor each ~0.
 4. **md-table-align cold cost splits ~half finding, ~half laying out.**
    `md-table-align--tables` (11% of full-config profile) passes a *sexp*
    query to `treesit-query-capture`, recompiled every jit chunk.  Measured
-   ~5x: 454 sexp queries 251 ms vs 54 ms precompiled.  Precompiling the
-   `(pipe_table) @table` query with `treesit-query-compile` at load time is
-   a free win (~0.4 ms/step).  The layout half is `string-pixel-width`
-   measurement — irreducible in kind, though a TTY understates its GUI cost.
+   ~5x: 454 sexp queries 251 ms vs 54 ms precompiled.  **Fixed**: the query
+   is now compiled once on first use (`md-table-align--table-query`);
+   `--tables` fell from 11% to 2% of the profile, and the table-align
+   config's cold mean on the 16k buffer fell to 7.1 ms/step vs vanilla's
+   6.5.  The remaining layout half is `string-pixel-width` measurement —
+   irreducible in kind, though a TTY understates its GUI cost.
 
 5. **GC is 22% of the cold profile** (default threshold; harness used 8 MB).
    Parser creation + measurement garbage.  A higher `gc-cons-threshold`
