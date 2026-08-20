@@ -362,6 +362,66 @@ sent here would have been swallowed by the job with no other trace."
       (should (termdex-tests--idle buffer))
       (should (equal 0 (file-attribute-size (file-attributes swallowed)))))))
 
+(termdex-tests--deftest termdex-project-root-reuses-a-root-terminal ()
+  "`termdex-project-root' from a subdirectory lands at the root.
+The root terminal is an exact match for the root, so no `cd' is sent
+and it stays where it is."
+  (termdex-tests--with-project root
+    (let* ((child (expand-file-name "child/" root))
+           (buffer nil)
+           (reached nil))
+      (make-directory child t)
+      (setq buffer (termdex-tests--terminal root))
+      (with-temp-buffer
+        (setq default-directory child)
+        (setq reached (save-window-excursion (termdex-project-root))))
+      (should (eq reached buffer))
+      (termdex-tests--settle buffer)
+      (should (equal (termdex-terminal-directory (termdex--probe buffer))
+                     (termdex--canonical root))))))
+
+(termdex-tests--deftest termdex-project-root-creates-at-the-root ()
+  "With no terminal at the root, one is made there, not here.
+A terminal below the root is no match either: its directory is not a
+prefix of the root, and grabbing it would drag you into whatever
+subdirectory it had wandered off to."
+  (termdex-tests--with-project root
+    (let* ((child (expand-file-name "child/" root))
+           (existing nil)
+           (created nil))
+      (make-directory child t)
+      (setq existing (termdex-tests--terminal child))
+      (with-temp-buffer
+        (setq default-directory child)
+        (setq created (save-window-excursion (termdex-project-root))))
+      (should-not (eq created existing))
+      (should (termdex-tests--directory-is created root)))))
+
+(termdex-tests--deftest termdex-project-root-idle-skips-a-busy-root-terminal ()
+  "`termdex-project-root-idle' spawns rather than land in a busy root."
+  (termdex-tests--with-project root
+    (let ((buffer (termdex-tests--terminal root))
+          (created nil))
+      (termdex-tests--type buffer "sleep 60\n")
+      (should (termdex-tests--busy buffer))
+      (with-temp-buffer
+        (setq default-directory root)
+        (setq created (save-window-excursion (termdex-project-root-idle))))
+      (should-not (eq created buffer))
+      (should (termdex-tests--directory-is created root)))))
+
+(termdex-tests--deftest termdex-project-root-outside-a-project-is-here ()
+  "With no project there is no root, so the current directory is used."
+  (let ((directory (file-name-as-directory (make-temp-file "termdex-" t))))
+    (unwind-protect
+        (let ((created nil))
+          (should-not (termdex--project-root (termdex--canonical directory)))
+          (with-temp-buffer
+            (setq default-directory directory)
+            (setq created (save-window-excursion (termdex-project-root))))
+          (should (termdex-tests--directory-is created directory)))
+      (delete-directory directory t))))
+
 (termdex-tests--deftest termdex-new-always-makes-a-terminal ()
   "`termdex-new' ignores a perfectly good match."
   (termdex-tests--with-project root
