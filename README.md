@@ -457,6 +457,8 @@ project it was born in, the way `projectile-run-vterm` and friends tie it.
 |---------|--------------|
 | `termdex-here` | Go to a terminal for this directory, or make one. Reuses one already here, else the nearest one in a parent directory up to the project root, most recently used first. A busy terminal still counts — this is "take me to the terminal for here", whatever it is doing. |
 | `termdex-here-idle` | The same, but something running disqualifies a terminal, so you always arrive at a prompt. |
+| `termdex-project-root` | Like `termdex-here`, but for the project root of where you are — "take me to the terminal of this project". Reuses a terminal already at the root, else makes one there. Outside a project it behaves as `termdex-here`. |
+| `termdex-project-root-idle` | The same, but you always arrive at a prompt. |
 | `termdex-new` | Always a new terminal. |
 | `termdex-switch` | Pick from every terminal, annotated with directory and what it is running. |
 | `termdex-switch-project` | The same, restricted to this project. |
@@ -469,6 +471,14 @@ Reusing a terminal from a parent directory sends it a `cd` so it follows you
 down — set `termdex-cd-on-ancestor-match` to nil to leave it where it stands.
 Either way a **busy** terminal is never typed into: it has no prompt to read the
 line, which would instead go to whatever is running.
+
+The project root everywhere in termdex comes from Emacs' built-in project.el
+(`project-current`). To use projectile's notion of a root instead, plug
+projectile into project.el and every termdex command follows:
+
+```elisp
+(add-hook 'project-find-functions #'project-projectile)  ; projectile 2.7+
+```
 
 Terminals termdex creates are named after the title their shell reports, and
 follow it as it changes (`termdex-buffer-name-string`). Terminals started any
