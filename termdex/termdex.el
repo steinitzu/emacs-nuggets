@@ -15,6 +15,8 @@
 ;;
 ;;   `termdex-here'          reach a terminal for this directory, or make one
 ;;   `termdex-here-idle'     the same, but never land in a busy terminal
+;;   `termdex-project-root'  reach a terminal at this project's root
+;;   `termdex-project-root-idle'  ... that is not busy
 ;;   `termdex-new'           always a new terminal
 ;;   `termdex-switch'        completing-read over every terminal
 ;;   `termdex-switch-project'  ... restricted to this project
@@ -467,10 +469,17 @@ shell-specific settings, so it is accepted rather than worked around."
         (setq-local vterm-buffer-name-string termdex-buffer-name-string)))
     (termdex--display buffer)))
 
-(defun termdex--reach (require-idle)
+(defun termdex--reach (require-idle &optional at-project-root)
   "Reach a terminal for the current directory, or make one.
-REQUIRE-IDLE excludes busy terminals from the search."
+REQUIRE-IDLE excludes busy terminals from the search.
+
+AT-PROJECT-ROOT makes the target the current directory's project root
+rather than the directory itself; with no project it changes nothing.
+A terminal already at the root is then an exact match -- no `cd' is
+sent -- and one below the root is no match at all."
   (let* ((directory (termdex-current-directory))
+         (directory (or (and at-project-root (termdex--project-root directory))
+                        directory))
          (terminal (termdex--match directory require-idle)))
     (if terminal
         (progn (termdex--send-cd terminal directory)
@@ -499,6 +508,27 @@ As `termdex-here', except that a terminal with something running in it
 does not count as a match, so you always arrive at a prompt."
   (interactive)
   (termdex--reach t))
+
+;;;###autoload
+(defun termdex-project-root ()
+  "Go to a terminal at this project's root, making one if there is none.
+
+As `termdex-here', except the directory looked for is the project root
+of where you are, not the directory itself -- \"take me to the terminal
+of this project\".  A terminal that has since moved *below* the root is
+not a match; you arrive at the root or in a fresh terminal there.
+
+Outside a project there is no root, so this is exactly `termdex-here'."
+  (interactive)
+  (termdex--reach nil t))
+
+;;;###autoload
+(defun termdex-project-root-idle ()
+  "Go to an idle terminal at this project's root, making one if needed.
+As `termdex-project-root', except that a terminal with something running
+in it does not count as a match, so you always arrive at a prompt."
+  (interactive)
+  (termdex--reach t t))
 
 ;;;###autoload
 (defun termdex-new ()
