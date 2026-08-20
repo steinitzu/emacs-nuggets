@@ -172,10 +172,43 @@ a terminal sitting in `$HOME` would match everything.
 |---------|--------|-------------|
 | `termdex-here` | as above; **matches regardless of busy state** | new terminal |
 | `termdex-here-idle` | as above, but a busy terminal is not a match | new terminal |
+| `termdex-project-root` | as `termdex-here`, from the **project root** | new terminal at the root |
+| `termdex-project-root-idle` | as above, but a busy terminal is not a match | new terminal at the root |
 | `termdex-new` | none | new terminal |
 
 Matching is **global**: a match in another frame or tab is still a match, and
 selecting it raises that frame.
+
+### `termdex-project-root`: the root as the target, not just the ceiling
+
+Added after first use. `termdex-here` treats the project root as a *ceiling for
+reuse* — the target is always the exact directory you are in, so run from a
+subdirectory with no matching terminal, it spawns one *there*. Often the
+terminal you want is "the terminal of this project", which lives at the root.
+
+`termdex-project-root` and `termdex-project-root-idle` are `termdex-here` /
+`termdex-here-idle` with one change: the directory searched for is the project
+root of where you are. Everything else is the same search, and the pieces
+compose without new rules:
+
+- A terminal already at the root is an **exact match**, so no `cd` is sent and
+  it stays put.
+- A terminal *below* the root is not a match — its directory is not a prefix of
+  the root — so asking for the root never grabs a terminal that has descended
+  into a subdirectory.
+- **Outside a project the commands degrade to `termdex-here`.** You asked for a
+  terminal for this project; with no project, the honest answer is "for here".
+
+The root comes from `termdex--project-root` — the same `project-current`-based
+function the matcher's ceiling uses. Deliberately **not** `projectile`: two
+definitions of "the root" inside one package can disagree (projectile
+recognises more markers), and then the command would open a terminal at a
+directory the matcher does not consider the root. A projectile user gets
+projectile's answer everywhere at once by plugging it into project.el:
+
+```elisp
+(add-hook 'project-find-functions #'project-projectile)  ; projectile 2.7+
+```
 
 ### `cd`-on-ancestor-match, and its collision with busy terminals
 
