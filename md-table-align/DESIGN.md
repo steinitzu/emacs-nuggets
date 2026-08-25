@@ -1134,3 +1134,68 @@ the default `buffer-invisibility-spec' of `t', under which any non-nil
 when the real buffer draws it at zero, and when hiding is off the property
 does not exist at all (font-lock manages it via
 `font-lock-extra-managed-props').
+
+## Many wide tables: open/resize lockups (v6)
+
+A file of 8 tables with ~900-char rows locked Emacs up on open and on every
+window resize. Profiled in a TTY frame (harness now lives in
+`tests/bench-tables.el`; findings in
+`docs/many-tables-open-resize-performance.md`): the elisp is fast, but it
+issued ~13k `string-pixel-width` calls to open the file and ~12k per window
+operation — and in a GUI each call does real font shaping at 0.1–1 ms.  The
+volume, not the per-call cost, is the bug.  Three sources, three changes:
+
+**The metrics cache is per-table, and keys on what measurement sees rather
+than on the modification tick.** The single-entry cache meant that with more
+than one table every layout pass evicted the previous table's entry — nothing
+was ever cached across passes (21 full measure passes for 8 tables on open).
+The variable is renamed (`md-table-align--metrics-caches`, a hash keyed by
+table start) so a stale binding of the old cons in a live session goes inert,
+per the repo's reload rules.
+
+The tick had to leave the key for the cache to survive a resize.  A width
+change re-fits by re-running the shared jit-lock pass, and font-lock's
+property rewrites bump `buffer-modified-tick` even when they re-apply
+identical faces — so on a pure resize, which changes nothing any cell
+measures, every cell re-measured anyway.  The key is now a summary of what
+measurement actually consumes: the table's text plus its intervals of the
+display-affecting properties (`face`, `display`, `invisible`,
+`composition`), hashed with `sxhash-equal`.  Hashing a few KB of text per
+lookup is C-speed noise next to a single shaping call; re-fontification with
+identical results now hits, and any change measurement could see still
+misses.  This supersedes the v4.1 tick-vs-chars-tick reasoning above: both
+ticks were proxies for "did the measurable content change", and the key now
+tests that directly.  What the key cannot see — face *remapping* and
+`buffer-invisibility-spec`, which change rendered widths without touching
+properties — was already the layout key's job: a re-fit whose non-width
+components changed drops the metrics caches wholesale; a pure width change
+keeps them.
+
+**The clip-boundary search is a binary search.** `md-table-align--split-at`
+walked the boundary one character at a time, measuring `[beg, beg+k)` for
+k = 1, 2, 3… — O(chars) shaping calls on strings of O(chars) length, per
+straddling cell, per row, per layout, and every row of a 900-char table
+straddles the viewport at any realistic width.  The measure is monotone
+non-decreasing in the end position (adding a character never narrows a
+string), which is the same assumption the linear walk already made, so the
+largest position that fits is found by bisection in O(log chars) measures.
+
+**Enabling the mode defers layout to jit-lock.** The mode body called
+`md-table-align-buffer` — every table in the buffer, eagerly, including ones
+never scrolled into view, and *before* first fontification, so the visible
+tables were measured once unfontified and again after font-lock ran.  It now
+calls `jit-lock-refontify`, which serves the original purpose of that call
+(text fontified before the handler registered would otherwise never reach
+it) while keeping the work lazy and after font-lock.  `md-table-align-buffer`
+remains eager for interactive use.
+
+Not changed: a table spanning several jit chunks is still re-laid once per
+chunk, and a width re-fit still re-runs font-lock over the visible region to
+reach the jit handler.  Both are overlay-placement and font-lock costs, cheap
+once the measurements they consume are cached; the benchmark keeps a
+`layout-table` column so the count stays visible.
+
+Regression guard: `make bench` (tests/run-bench.sh) runs open/resize/scroll
+scenarios at a pinned 400x60 frame and reports call counts, which are
+deterministic per fixture and code; recorded runs accumulate in
+`tests/bench-results.md`.
