@@ -1,7 +1,7 @@
 ;;; md-table-align.el --- Display-only alignment of Markdown tables -*- lexical-binding: t; -*-
 
 ;; Author: Steinthor Palsson
-;; Version: 0.4.0
+;; Version: 0.5.0
 ;; Package-Requires: ((emacs "31.1"))
 ;; Keywords: markdown, faces, convenience
 
@@ -164,8 +164,16 @@ state is meant to persist while point is elsewhere -- a table you flipped
 stays flipped -- which is why it is a list and leaving a table resets
 nothing.")
 
-(defvar-local md-table-align--metrics-cache nil
-  "Cons of (KEY . CONTEXT) memoising the most recent table measurement.")
+(defvar-local md-table-align--metrics-caches nil
+  "Hash from table start position to (KEY . CONTEXT), memoising measurement.
+KEY is what `md-table-align--metrics' computed the context against; see
+there.  Nil until the first table is measured.
+
+Renamed from `md-table-align--metrics-cache', which held a single
+\(KEY . CONTEXT) cons: with more than one table in the buffer every
+layout pass evicted the previous table's entry, so nothing was cached
+across passes -- and a live session holding the old cons would have it
+misread as a hash.")
 
 (defvar-local md-table-align--follow-failed nil
   "Non-nil once point-following has signalled an error in this buffer.
@@ -282,14 +290,21 @@ at all, such as `|a|', still be aligned."
 
 (defun md-table-align--split-at (beg end limit)
   "Return the largest position in [BEG, END] whose text from BEG fits LIMIT.
-LIMIT is in pixels.  Measured a character at a time rather than counted:
-in a proportional font there is no fixed relationship between characters
-and pixels, so the boundary has to be found by measuring up to it."
-  (let ((keep beg))
-    (while (and (< keep end)
-                (<= (md-table-align--measure beg (1+ keep)) limit))
-      (setq keep (1+ keep)))
-    keep))
+LIMIT is in pixels.  In a proportional font there is no fixed
+relationship between characters and pixels, so the boundary has to be
+found by measuring -- but not one character at a time: that costs one
+`string-pixel-width' per character, on ever longer strings, and with
+every row of a wide table straddling the viewport it was the single
+hottest path in the profile.  Adding a character never narrows a string,
+so the width is monotone in the end position and the boundary bisects in
+O(log chars) measurements."
+  (let ((lo beg) (hi end))
+    (while (< lo hi)
+      (let ((mid (/ (+ lo hi 1) 2)))
+        (if (<= (md-table-align--measure beg mid) limit)
+            (setq lo mid)
+          (setq hi (1- mid)))))
+    lo))
 
 (defun md-table-align--hide (beg end indicate)
   "Render the buffer text between BEG and END as nothing.
@@ -521,6 +536,21 @@ one."
     ('center (/ (max 0 (- width cell-width)) 2))
     (_ 0)))
 
+(defun md-table-align--pipe-width (ctx pos)
+  "Return the rendered width of the pipe at POS, memoised on CTX.
+Measured rather than assumed, for the same reason cell widths are --
+markup hiding can render every pipe at zero -- but measured *once* per
+context: every `|' in a table renders in the same face (the reasoning in
+`md-table-align--table-width'), and one measurement per pipe per layout
+pass was a visible slice of the many-tables profile.  The memo rides on
+CTX, so it lives exactly as long as the measurements it accompanies: a
+cached context keeps it across passes, and anything that drops or
+recomputes the context drops it too."
+  (or (plist-get ctx :pipe-render)
+      (let ((w (md-table-align--measure pos (1+ pos))))
+        (plist-put ctx :pipe-render w)
+        w)))
+
 (defun md-table-align--row-plan (row ctx)
   "Return the layout steps for ROW under context CTX, in buffer order.
 
@@ -558,9 +588,7 @@ row, and the alignment the package exists to provide collapses."
                  (cell-width (if cell (plist-get cell :width) 0))
                  (close (nth (1+ i) pipes))
                  (inner (+ pad width pad))
-                 ;; Measured rather than assumed, for the same reason cell
-                 ;; widths are.
-                 (pw (md-table-align--measure open (1+ open))))
+                 (pw (md-table-align--pipe-width ctx open)))
             (push (list :kind 'pipe :beg open :end (1+ open) :x x :width pw)
                   steps)
             (setq x (+ x pw))
@@ -587,7 +615,7 @@ row, and the alignment the package exists to provide collapses."
     ;; The pipe closing the last column belongs to no cell of its own.
     (when-let* ((last (nth (length cells) pipes)))
       (push (list :kind 'pipe :beg last :end (1+ last) :x x
-                  :width (md-table-align--measure last (1+ last)))
+                  :width (md-table-align--pipe-width ctx last))
             steps))
     (nreverse steps)))
 
@@ -716,28 +744,59 @@ clipping."
                                    node md-table-align-ellipsis))))
         (plist-put ctx :table-width (md-table-align--table-width ctx))))))
 
+(defconst md-table-align--measured-properties
+  '(face display invisible composition)
+  "Text properties that participate in what a cell measures.
+The complement of `md-table-align--unmeasurable-properties': these are
+the properties `string-pixel-width' renders, so they are what the
+metrics cache key has to be sensitive to.")
+
+(defun md-table-align--content-key (beg end)
+  "Return a key describing what measurement sees between BEG and END.
+The text, plus its intervals of `md-table-align--measured-properties'.
+Two regions with `equal' keys measure identically -- which is what makes
+this a valid cache key where `buffer-modified-tick' was only a proxy:
+the tick advances whenever any property is written, including font-lock
+re-applying identical faces on a re-fontification pass, and a cache
+keyed on it could never survive the re-fit after a window resize.  What
+no property records -- face remapping, `buffer-invisibility-spec' -- is
+the layout key's job; see `md-table-align--refit'."
+  (let ((s (buffer-substring beg end)))
+    (cons (substring-no-properties s)
+          (mapcar (lambda (interval)
+                    (cons (car interval)
+                          (mapcar (lambda (prop)
+                                    (plist-get (nth 2 interval) prop))
+                                  md-table-align--measured-properties)))
+                  (object-intervals s)))))
+
 (defun md-table-align--metrics (node)
   "Return the layout context for the table at NODE, measuring it if needed.
 
-Memoised against the buffer's modification tick.  Point motion inside a
-table consults the grid on every command, and re-measuring every cell
-that often would make simply moving the cursor crawl.
+Memoised per table, keyed on what measurement actually consumes (see
+`md-table-align--content-key') plus the padding setting.  Point motion
+inside a table consults the grid on every command, and re-measuring
+every cell that often would make simply moving the cursor crawl;
+building and comparing the key is a few C-level passes over the table's
+text, noise next to a single `string-pixel-width' call.
 
-`buffer-modified-tick', not `buffer-chars-modified-tick': text
-properties change what a cell measures -- a face swaps its font, an
-`invisible' from markup hiding takes the delimiters out of the width --
-and property-only changes advance only the former.  Font-lock's writes
-land under `with-silent-modifications', but that spares the modified
-*flag*, not the tick, so a fontification pass still invalidates this
-cache the way it should."
-  (let ((key (list (buffer-modified-tick)
-                   (treesit-node-start node)
-                   (treesit-node-end node)
-                   md-table-align-padding)))
-    (if (equal (car md-table-align--metrics-cache) key)
-        (cdr md-table-align--metrics-cache)
+The table's start position is the hash key, so an edit above a table
+moves it to a fresh entry and the old one goes stale in place; the
+caches are dropped wholesale when they could be wrong (see
+`md-table-align--refit') and capped against unbounded growth in
+`md-table-align--align-region'."
+  (let* ((beg (treesit-node-start node))
+         (end (treesit-node-end node))
+         (key (cons md-table-align-padding
+                    (md-table-align--content-key beg end)))
+         (caches (or md-table-align--metrics-caches
+                     (setq md-table-align--metrics-caches
+                           (make-hash-table :test #'eql))))
+         (cached (gethash beg caches)))
+    (if (and cached (equal (car cached) key))
+        (cdr cached)
       (let ((ctx (md-table-align--measure-table node)))
-        (setq md-table-align--metrics-cache (cons key ctx))
+        (puthash beg (cons key ctx) caches)
         ctx))))
 
 (defun md-table-align--layout-table (node)
@@ -895,6 +954,12 @@ not be loadable when this file is.")
 (defun md-table-align--align-region (beg end)
   "Align every table overlapping the region BEG to END."
   (setq md-table-align--layout-key (md-table-align--layout-key))
+  ;; Entries stranded by tables that moved or vanished accumulate; a blunt
+  ;; cap here (not in `md-table-align--metrics', which runs per command)
+  ;; bounds the memory, and a dropped cache simply refills.
+  (when (and md-table-align--metrics-caches
+             (> (hash-table-count md-table-align--metrics-caches) 256))
+    (clrhash md-table-align--metrics-caches))
   (dolist (node (md-table-align--tables beg end))
     (let ((tbeg (treesit-node-start node))
           (tend (treesit-node-end node)))
@@ -1161,7 +1226,7 @@ Buffer text is not modified, so this works in read-only buffers."
 (defun md-table-align-clear ()
   "Remove all table alignment from the buffer."
   (interactive)
-  (setq md-table-align--metrics-cache nil)
+  (setq md-table-align--metrics-caches nil)
   (md-table-align--clear-region (point-min) (point-max)))
 
 ;;;###autoload
@@ -1279,8 +1344,12 @@ Requires a `markdown' tree-sitter parser in the buffer; see
         ;; scrolled-off text would land where nothing is rendered.
         (add-hook 'post-command-hook #'md-table-align--post-command nil t)
         ;; Text already fontified before we registered would otherwise never
-        ;; reach our jit-lock handler.
-        (md-table-align-buffer))
+        ;; reach our jit-lock handler; re-marking it keeps the work lazy --
+        ;; only what is (or becomes) visible is laid out, and after
+        ;; font-lock, so cells are never measured with the faces a pending
+        ;; fontification is about to replace.  `md-table-align-buffer'
+        ;; stays eager for interactive use.
+        (jit-lock-refontify))
     (jit-lock-unregister #'md-table-align--jit)
     (remove-hook 'window-configuration-change-hook #'md-table-align--refit t)
     (remove-hook 'window-state-change-functions #'md-table-align--refit t)
@@ -1328,8 +1397,16 @@ new width by `md-table-align--viewport'."
       ;; key guard is what stops that turning into a re-layout of every
       ;; visible table.
       (unless (or (null key) (equal key md-table-align--layout-key))
+        ;; A pure width change moves the viewport but changes nothing any
+        ;; cell measures, so the metrics survive it -- this is what makes
+        ;; resizing cheap.  The key's other components (face remapping,
+        ;; invisibility spec) change rendered widths that no text property
+        ;; records, which the content-keyed cache cannot see, so those drop
+        ;; the caches wholesale.
+        (unless (equal (cdr key) (cdr md-table-align--layout-key))
+          (setq md-table-align--metrics-caches nil))
         (setq md-table-align--layout-key key)
-        (md-table-align-clear)
+        (md-table-align--clear-region (point-min) (point-max))
         (jit-lock-refontify)))))
 
 (defun md-table-align--maybe-enable ()

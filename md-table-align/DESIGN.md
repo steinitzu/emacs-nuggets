@@ -1180,6 +1180,18 @@ non-decreasing in the end position (adding a character never narrows a
 string), which is the same assumption the linear walk already made, so the
 largest position that fits is found by bisection in O(log chars) measures.
 
+**Pipe widths are measured once per layout context.** (Added during
+implementation, when the benchmark showed the first three changes had left a
+per-layout floor.)  `md-table-align--row-plan` measured every `|`
+individually on every pass — O(rows × columns) shaping calls per layout that
+no metrics cache could absorb, since row plans are rebuilt per layout.  Every
+pipe in a table renders alike (the `md-table-align--table-width` reasoning,
+and markup hiding hides all of them together), so the first measurement is
+memoised onto the context (`:pipe-render`) and lives exactly as long as the
+measurements it accompanies.  Still *measured*, not assumed from `:pipe`:
+the context's `:pipe` is a synthesized string carrying only the table's
+face, and a hidden pipe renders at zero where that string would not.
+
 **Enabling the mode defers layout to jit-lock.** The mode body called
 `md-table-align-buffer` — every table in the buffer, eagerly, including ones
 never scrolled into view, and *before* first fontification, so the visible
@@ -1193,7 +1205,17 @@ Not changed: a table spanning several jit chunks is still re-laid once per
 chunk, and a width re-fit still re-runs font-lock over the visible region to
 reach the jit handler.  Both are overlay-placement and font-lock costs, cheap
 once the measurements they consume are cached; the benchmark keeps a
-`layout-table` column so the count stays visible.
+`layout-table` column so the count stays visible.  One consequence the
+content key accepts: during a table's *initial* fontification, each chunk
+that adds faces changes what the table measures, so a table spanning several
+chunks re-measures once per chunk until its faces settle (13 measure passes
+for 8 tables on open, down from 21).  That is the key being right, not
+wrong — the faces really did change — and it self-limits to the first pass
+over each table.
+
+Measured effect (`tests/bench-results.md`, counts of `string-pixel-width`
+calls at 400 columns): open 12753 → 2900, three window operations
+35777 → 4870, paging through 16922 → 5078.
 
 Regression guard: `make bench` (tests/run-bench.sh) runs open/resize/scroll
 scenarios at a pinned 400x60 frame and reports call counts, which are
