@@ -12,7 +12,7 @@ EXTENSIONS := $(filter-out $(addprefix $(ROOT)/,$(NON_EXTENSIONS)), \
                 $(sort $(patsubst %/,%,$(dir $(wildcard $(ROOT)/*/*.el)))))
 SOURCES := $(ROOT)/emacs-tools.el $(wildcard $(addsuffix /*.el,$(EXTENSIONS)))
 
-.PHONY: test deps compile clean
+.PHONY: test bench deps compile clean
 
 ## Run the test suite.
 ##
@@ -21,6 +21,13 @@ SOURCES := $(ROOT)/emacs-tools.el $(wildcard $(addsuffix /*.el,$(EXTENSIONS)))
 ## usable frame, so Emacs runs under a pty (via script(1)) to get a TTY frame.
 test: deps
 	@tests/run-tests.sh
+
+## Run the md-table-align performance benchmark (a TTY frame, like the
+## tests).  Prints a Markdown section; append it to tests/bench-results.md
+## to record the run.  Call counts are the regression signal -- wall times
+## are machine-dependent.
+bench: deps
+	@tests/run-bench.sh
 
 ## Build the tree-sitter grammars the tests need.
 ##
