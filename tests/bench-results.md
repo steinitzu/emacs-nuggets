@@ -22,3 +22,13 @@ Changing the fixture or the frame size resets the baseline — note it here
 when that happens.
 
 ---
+## 2026-08-25 — 13d71e6 (baseline, pre-fix)
+
+Emacs 31.0.90, frame 400x59, fixture: 162 lines, max line 885
+
+| scenario | wall s | gc s | string-pixel-width | layout-table | measure passes | split-at |
+|---|---|---|---|---|---|---|
+| open | 0.407 | 0.226 | 12753 | 21 | 21 | 180 |
+| resize (3 window ops) | 0.674 | 0.413 | 35777 | 37 | 37 | 396 |
+| page through | 0.344 | 0.218 | 16922 | 26 | 27 | 240 |
+
