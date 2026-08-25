@@ -4,4 +4,5 @@ tests/.last-run.log
 hacks/
 flycheck_*.el
 
-.envrctests/.last-bench.log
+.envrc
+tests/.last-bench.log
