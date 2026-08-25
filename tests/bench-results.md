@@ -32,3 +32,13 @@ Emacs 31.0.90, frame 400x59, fixture: 162 lines, max line 885
 | resize (3 window ops) | 0.674 | 0.413 | 35777 | 37 | 37 | 396 |
 | page through | 0.344 | 0.218 | 16922 | 26 | 27 | 240 |
 
+## 2026-08-25 — 37788eb (post-fix)
+
+Emacs 31.0.90, frame 400x59, fixture: 162 lines, max line 885
+
+| scenario | wall s | gc s | string-pixel-width | layout-table | measure passes | split-at |
+|---|---|---|---|---|---|---|
+| open | 0.362 | 0.217 | 2900 | 13 | 13 | 132 |
+| resize (3 window ops) | 0.514 | 0.364 | 4870 | 37 | 7 | 396 |
+| page through | 0.408 | 0.292 | 5078 | 26 | 23 | 240 |
+
