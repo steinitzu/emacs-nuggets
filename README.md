@@ -549,8 +549,16 @@ identified, and for what it cannot see (a shell blocked in a builtin such as
 ```sh
 make deps      # build the tree-sitter grammars and install vterm for the tests
 make test      # run the test suite
+make bench     # run the md-table-align performance benchmark
 make compile   # byte-compile, warnings are errors
 ```
+
+`make bench` prints a Markdown section of call counts and timings for the
+many-wide-tables workload; append it to `tests/bench-results.md` to record a
+run (`tests/run-bench.sh >> tests/bench-results.md`). Call counts are
+deterministic for a given fixture and frame size, so compare them against the
+last recorded run to catch performance regressions; wall times are
+machine-dependent.
 
 `make deps` also installs `vterm` into `.test-env/elpa`, since termdex's tests
 drive real terminals. It compiles a C module, so it needs cmake, a compiler and

@@ -1,5 +1,11 @@
 # md-table-align: lockups opening / resizing a many-tables file
 
+**Resolved** (md-table-align 0.5.0): all four causes below fixed — see the
+"Many wide tables" section of `md-table-align/DESIGN.md`. `string-pixel-width`
+calls fell 70–86% per scenario (`tests/bench-results.md`); the ad-hoc harness
+described below became `tests/bench-tables.el` (`make bench`), which is the
+tool to reach for if this class of problem recurs.
+
 Profiled 2026-08-25 on Emacs 31.0.90, real TTY frames (80x23 and 400x59 via
 the script(1) pty trick), against `hacks/many-tables-example.md` — 254 lines,
 8 tables, longest line 895 chars, 69 lines over 150 chars, so at any realistic
