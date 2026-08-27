@@ -504,6 +504,52 @@ to it would spawn the new terminal in the wrong place."
 
 ;;;; Switching
 
+(termdex-tests--deftest termdex-last-goes-to-the-most-recent-terminal ()
+  "From a non-terminal buffer, `termdex-last' lands in the MRU terminal.
+Busy state is no obstacle: this is \"put me back where I was\", whatever
+that terminal is doing."
+  (termdex-tests--with-project root
+    (let ((older (termdex-tests--terminal root))
+          (recent (termdex-tests--terminal root)))
+      (termdex-tests--type recent "sleep 60\n")
+      (should (termdex-tests--busy recent))
+      (switch-to-buffer older)
+      (switch-to-buffer recent)
+      (switch-to-buffer (get-buffer-create "*termdex-test-elsewhere*"))
+      (should (eq (window-buffer) (get-buffer "*termdex-test-elsewhere*")))
+      (termdex-last)
+      (should (eq (window-buffer) recent)))))
+
+(termdex-tests--deftest termdex-last-toggles-between-two-terminals ()
+  "From inside a terminal, `termdex-last' goes to the most recent other
+one, so repeating it flips between the two most recent terminals."
+  (termdex-tests--with-project root
+    (let ((first (termdex-tests--terminal root))
+          (second (termdex-tests--terminal root)))
+      (switch-to-buffer second)
+      (termdex-last)
+      (should (eq (window-buffer) first))
+      (termdex-last)
+      (should (eq (window-buffer) second))
+      (termdex-last)
+      (should (eq (window-buffer) first)))))
+
+(termdex-tests--deftest termdex-last-skips-an-excluded-terminal ()
+  "An excluded terminal is never the answer, however recently it was used."
+  (termdex-tests--with-project root
+    (let ((wanted (termdex-tests--terminal root))
+          (excluded (termdex-tests--terminal root)))
+      (with-current-buffer excluded (setq-local termdex-exclude t))
+      (switch-to-buffer excluded)
+      (switch-to-buffer (get-buffer-create "*termdex-test-elsewhere*"))
+      (termdex-last)
+      (should (eq (window-buffer) wanted)))))
+
+(termdex-tests--deftest termdex-last-errors-with-no-terminal ()
+  "With nothing to jump to, `termdex-last' says so rather than spawning."
+  (switch-to-buffer (get-buffer-create "*termdex-test-elsewhere*"))
+  (should-error (termdex-last) :type 'user-error))
+
 (defvar termdex-tests--offered nil
   "Candidates and default from the last stubbed `completing-read'.")
 
