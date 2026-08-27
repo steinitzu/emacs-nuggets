@@ -1,7 +1,7 @@
 ;;; md-table-align.el --- Display-only alignment of Markdown tables -*- lexical-binding: t; -*-
 
 ;; Author: Steinthor Palsson
-;; Version: 0.6.0
+;; Version: 0.7.0
 ;; Package-Requires: ((emacs "31.1"))
 ;; Keywords: markdown, faces, convenience
 
@@ -103,13 +103,14 @@ gives the table itself slightly more room."
 `%d' is the record's 1-based number.  See `md-table-align-toggle-vertical'."
   :type 'string)
 
-(defcustom md-table-align-vertical-pipe-gap 1
+(defcustom md-table-align-vertical-pipe-gap 2
   "Spaces on each side of the pipe separating a vertical table's columns.
 
 Every value in a record block starts at the same column, so on the label
 side this gap is what separates the *longest* label from the pipe; the
 shorter labels get correspondingly more.  One space each side is the
-psql tradition.
+psql tradition, but next to a bold label it reads too tight, which is
+why the default is two.
 
 Renamed from `md-table-align-vertical-gap', which counted the whole
 span between the widest label and its value -- back when a colon ended
@@ -876,16 +877,21 @@ hidden with `display' \"\" and STRING rides in front of it."
     (overlay-put ov 'before-string string)
     ov))
 
-(defun md-table-align--layout-vertical-row (row index ctx labels separator)
+(defun md-table-align--layout-vertical-row (row index ctx labels separator wrap)
   "Place overlays rendering ROW as vertical record number INDEX.
 CTX is the table's layout context, LABELS the vector from
-`md-table-align--vertical-labels' and SEPARATOR the shared
-stretch-pipe-stretch string ending at the column values start at.
+`md-table-align--vertical-labels', SEPARATOR the shared
+stretch-pipe-stretch string ending at the column values start at, and
+WRAP the `wrap-prefix' string continuing the rail on wrapped lines.
 
 Each span from one cell's content end to the next cell's content start
 -- never empty, since it holds at least the pipe -- is replaced by a
 newline, a stretch to the table's indent, the label, and SEPARATOR.
-The values between those spans are left alone."
+The values between those spans are left visible, under an overlay
+carrying WRAP: a long value's continuation lines can only begin inside
+visible value text -- the hidden spans never wrap -- so this is exactly
+the text whose wrapping needs the prefix, and the label lines, which
+begin inside a span's `before-string', never inherit it."
   (let* ((pipes (plist-get row :pipes))
          (indent (plist-get ctx :indent))
          (eol (save-excursion (goto-char (car pipes)) (line-end-position)))
@@ -907,6 +913,11 @@ The values between those spans are left alone."
                    (if (> indent 0) (md-table-align--stretch indent) "")
                    (aref labels j)
                    separator))
+          (when (< beg end)
+            (let ((ov (make-overlay beg end)))
+              (overlay-put ov 'md-table-align t)
+              (overlay-put ov 'evaporate t)
+              (overlay-put ov 'wrap-prefix wrap)))
           (setq prev end)))
       (setq j (1+ j)))
     ;; The closing pipe and any trailing whitespace end no label line.
@@ -935,7 +946,12 @@ records of -- asks the caller to lay the table out horizontally instead."
         ;; The label lines share one stretch-pipe-stretch tail: a stretch to
         ;; the pipe column -- indent plus widest label plus the gap -- the
         ;; pipe, and a stretch past its measured width plus the gap again, to
-        ;; the common column the values start at.
+        ;; the common column the values start at.  The wrap prefix repeats
+        ;; that geometry on a wrapped value's continuation lines, but with
+        ;; `:width' stretches: `:align-to' -- either form -- is silently
+        ;; inert inside a `wrap-prefix' string (see DESIGN.md v8), and a
+        ;; prefix always starts at the wrap margin, so absolute widths land
+        ;; on the same columns.
         (let* ((gap (* md-table-align-vertical-pipe-gap unit))
                (pipe (propertize "|" 'face 'md-table-align-vertical-pipe))
                (pipe-x (+ indent gap
@@ -950,10 +966,15 @@ records of -- asks the caller to lay the table out horizontally instead."
                         (md-table-align--stretch
                          (+ pipe-x gap
                             (funcall md-table-align-pixel-width-function pipe)))))
+               (wrap
+                (concat (propertize " " 'display `(space :width (,pipe-x)))
+                        pipe
+                        (propertize " " 'display `(space :width (,gap)))))
                (i 0))
           (dolist (row data)
             (setq i (1+ i))
-            (md-table-align--layout-vertical-row row i ctx labels separator))))
+            (md-table-align--layout-vertical-row row i ctx labels separator
+                                                 wrap))))
       t)))
 
 ;;;; Discovery
