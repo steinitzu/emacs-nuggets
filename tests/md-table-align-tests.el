@@ -886,13 +886,13 @@ the scroll leaves point on the viewport's edge, since that is inside
 ;;
 ;;     before                    <- row 0
 ;;     -[ row 1 ]---
-;;     a   | value1              <- values at column 6: widest label "bee"
-;;     bee | v2                     is 3 wide, plus the default one-space
-;;     c   | value3                 gap on each side of the pipe
+;;     a    | value1             <- values at column 8: widest label "bee"
+;;     bee  | v2                    is 3 wide, plus the default two-space
+;;     c    | value3                gap on each side of the pipe
 ;;     -[ row 2 ]---
-;;     a   | v4
-;;     bee | value5
-;;     c   | v6
+;;     a    | v4
+;;     bee  | value5
+;;     c    | v6
 ;;     after                     <- row 9
 ;;
 ;; so the header and delimiter lines contribute no screen lines at all.
@@ -906,7 +906,7 @@ the scroll leaves point on the viewport's edge, since that is inside
 after
 ")
 
-(defconst md-table-align-tests--vertical-value-column 6)
+(defconst md-table-align-tests--vertical-value-column 8)
 
 ;; Toggled back, the fixture's grid: column widths 6, 6 and 6, so pipes at
 ;; 0, 9, 18 and 27 on every row.
@@ -977,6 +977,57 @@ content."
         ;; The label "a", then the pipe, and nowhere a colon.
         (should (string-match-p "a.*|" injected))
         (should-not (string-search ":" injected))))))
+
+;; A long value under `visual-line-mode' wraps; its continuation lines must
+;; continue at the value column, under an extra pipe on the rail, rather
+;; than restart at the window edge.  Labels "k" and "data": widest label 4,
+;; so with the default gap the pipe is at column 6 and values at column 9.
+(defconst md-table-align-tests--vertical-wrapping
+  "| k | data |
+|---|------|
+| one | alpha bravo charlie delta echo foxtrot golf hotel india juliet |
+")
+
+(ert-deftest md-table-align-test-vertical-wrapped-value-continues-at-the-value-column ()
+  "Visual-line continuation lines of a long value start at the value column."
+  (md-table-align-tests--with-buffer md-table-align-tests--vertical-wrapping
+    (md-table-align-tests--enable)
+    (visual-line-mode 1)
+    (md-table-align-tests--with-frame-width 40
+      (md-table-align-tests--toggle-vertical)
+      (let ((first-row (md-table-align-tests--row-of "alpha"))
+            (rows (make-hash-table)))
+        ;; Only a continuation line's first word sits at the value column;
+        ;; collect each row's leftmost word and check that.
+        (dolist (word '("bravo" "charlie" "delta" "echo" "foxtrot"
+                        "golf" "hotel" "india" "juliet"))
+          (let ((row (md-table-align-tests--row-of word))
+                (col (md-table-align-tests--column-of word)))
+            (if (= row first-row)
+                (should (> col 9))
+              (should (> row first-row))
+              (puthash row (min col (gethash row rows most-positive-fixnum))
+                       rows))))
+        (should (> (hash-table-count rows) 0))
+        (maphash (lambda (_row leftmost) (should (= leftmost 9))) rows)))))
+
+(ert-deftest md-table-align-test-vertical-wrap-prefix-carries-the-rail-pipe ()
+  "Each value's overlay holds a `wrap-prefix' with the pipe on the rail.
+The prefix renders only on wrapped lines, where `posn-at-point' cannot
+address it, so the column test above covers its geometry and this one
+its content."
+  (md-table-align-tests--with-buffer md-table-align-tests--vertical
+    (md-table-align-tests--enable)
+    (md-table-align-tests--toggle-vertical)
+    (goto-char (point-min))
+    (should (search-forward "value1" nil t))
+    (let* ((beg (match-beginning 0))
+           (ov (seq-find (lambda (o) (and (overlay-get o 'md-table-align)
+                                          (overlay-get o 'wrap-prefix)))
+                         (overlays-at beg))))
+      (should ov)
+      (should (= (overlay-end ov) (match-end 0)))
+      (should (string-search "|" (overlay-get ov 'wrap-prefix))))))
 
 (ert-deftest md-table-align-test-vertical-data-row-occupies-fields-plus-separator ()
   "A three-column row renders as four screen lines: separator plus fields."
@@ -1050,9 +1101,9 @@ three: `after' lands nine rows under `before'."
     (md-table-align-tests--enable)
     (md-table-align-tests--toggle-vertical)
     ;; First table vertical: labels \"a\" and \"b\" are 1 wide, then the
-    ;; default one-space gap, the pipe and the gap again put the values at
-    ;; column 4.
-    (should (= (md-table-align-tests--column-of "x") 4))
+    ;; default two-space gap, the pipe and the gap again put the values at
+    ;; column 6.
+    (should (= (md-table-align-tests--column-of "x") 6))
     (should (= (md-table-align-tests--row-of "y")
                (1+ (md-table-align-tests--row-of "x"))))
     ;; Second table untouched, on its own grid.
