@@ -1281,3 +1281,68 @@ A white-box test asserts the injected string carries the pipe and no colon —
 the pipe lives in a `before-string`, which `posn-at-point` cannot address,
 so the rendered-column assertions cover its geometry and the string check
 covers its content.
+
+## Vertical records: wider label gap, wrapped-line rail (v8)
+
+Screenshot review of v7 in a live GUI session (`hacks/vertical.png`) surfaced
+two problems:
+
+1. **One space before the pipe is too tight.** The widest label gets exactly
+   the minimum, and a bold label one space from the rail reads as joined to
+   it — the same conclusion the v5 colon layout reached about its gap. The
+   per-side gap default goes from one space to two; spacing stays even on
+   both sides of the pipe, per the original v7 request. The variable's
+   meaning is unchanged — a default change is not the defcustom trap.
+
+2. **Wrapped values fall off the record.** Under `visual-line-mode` (with or
+   without `visual-fill-column-mode`) a long value's continuation lines
+   restart at the window edge, visually severing them from their field. They
+   should continue at the value column, under an extra pipe on the rail, the
+   way psql pads wrapped output.
+
+### Continuation lines: `wrap-prefix`
+
+Emacs renders a `wrap-prefix` string at the start of every *continuation*
+line of text that carries the property — precisely the hook needed, and it
+works from an overlay, so it stays display-only. One overlay per data cell,
+spanning the value text, with a `wrap-prefix` of stretch + pipe + stretch
+puts every wrapped line at the value column under a rail pipe. Properties of
+the plan verified by TTY probes before this design was committed:
+
+| # | Question | Result |
+|---|----------|--------|
+| 1 | Does an overlay `wrap-prefix` string indent continuations and render its pipe? | Yes — but see 2 |
+| 2 | Are stretch glyphs inside the prefix string honored? | **`:align-to` is silently inert — both the bare and the pixel `(N)` form — collapsing to zero width. `:width` works, in both forms.** |
+| 3 | Does an overlay's `wrap-prefix` beat the `wrap-prefix` *text* property? | Yes — so `visual-wrap-prefix-mode`, which installs text properties, is overridden inside the table |
+
+Probe 2 is the finding worth recording: everything else in this package
+stretches with `:align-to`, and inside a `wrap-prefix` string that form
+fails *silently* — the pipe renders, at column zero, looking almost right.
+(The v5 lesson again: probe with a target nothing lands on naturally.)
+Inside a prefix there is no line origin to align to, so the stretches must
+be widths: the prefix is a `:width` stretch of pipe-column pixels — an
+absolute width works because the prefix always starts at the wrap margin —
+then the pipe, then a `:width` stretch of the gap.
+
+Continuation lines can only begin inside visible value text: the pipe spans
+between values render as `display ""`, and hidden text never wraps. So the
+per-cell overlay covers exactly the value, and label lines — which begin
+inside a *span* overlay's `before-string` — never inherit the prefix.
+Cells with no content get no overlay (nothing can wrap there, and an empty
+evaporating overlay would die on creation anyway).
+
+### Interface delta
+
+- `md-table-align-vertical-pipe-gap` default 1 → 2. Meaning unchanged.
+- No new options: the continuation rail is not optional behavior — a
+  wrapped value that abandons its record is simply wrong — and it renders
+  from the same gap and faces as the label lines.
+
+### Testing delta
+
+The default-gap arithmetic moves everywhere: fixture value column 6 → 8
+(widest label 3 + 2 + pipe + 2). A wrap test renders a long value in a
+40-column frame under `visual-line-mode` and asserts a word on the
+continuation line lands at the value column; the prefix's pipe, like the
+label-line pipes, is unreachable by `posn-at-point`, so a white-box check
+asserts the value overlay's `wrap-prefix` carries it.
