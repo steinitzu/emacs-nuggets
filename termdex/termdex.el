@@ -551,17 +551,17 @@ toggles between your two most recent terminals.
 
 Terminals excluded by `termdex-exclude' or `termdex-exclude-functions'
 are never the answer, as everywhere else.  With no terminal to go to
-this signals an error rather than making one -- choosing a directory
-for a new terminal is `termdex-here''s question, and this command
-exists to not ask it."
+at all, this falls back to `termdex-here': a keystroke meaning \"take
+me to a terminal\" should produce one, and with nothing to jump back
+to, the terminal for where you are is the most useful answer."
   (interactive)
   (let ((buffer (seq-find (lambda (buffer)
                             (and (not (eq buffer (current-buffer)))
                                  (termdex--candidate-p buffer)))
                           (buffer-list))))
-    (unless buffer
-      (user-error "No terminal"))
-    (termdex--display buffer)))
+    (if buffer
+        (termdex--display buffer)
+      (termdex-here))))
 
 (defun termdex--describe (terminal)
   "Return (DIRECTORY . STATE) describing TERMINAL for display."
