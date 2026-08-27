@@ -18,6 +18,7 @@
 ;;   `termdex-project-root'  reach a terminal at this project's root
 ;;   `termdex-project-root-idle'  ... that is not busy
 ;;   `termdex-new'           always a new terminal
+;;   `termdex-last'          back to the last terminal you were in
 ;;   `termdex-switch'        completing-read over every terminal
 ;;   `termdex-switch-project'  ... restricted to this project
 ;;   `termdex-list'          a dashboard of all of them
@@ -538,6 +539,29 @@ in it does not count as a match, so you always arrive at a prompt."
 
 
 ;;;; Switching
+
+;;;###autoload
+(defun termdex-last ()
+  "Go to the last terminal you were in, unconditionally.
+
+No directory matching, no prompt, no regard for busy state: the most
+recently used terminal, wherever it is and whatever it is doing.  From
+inside a terminal, the most recent *other* one, so invoking this twice
+toggles between your two most recent terminals.
+
+Terminals excluded by `termdex-exclude' or `termdex-exclude-functions'
+are never the answer, as everywhere else.  With no terminal to go to
+this signals an error rather than making one -- choosing a directory
+for a new terminal is `termdex-here''s question, and this command
+exists to not ask it."
+  (interactive)
+  (let ((buffer (seq-find (lambda (buffer)
+                            (and (not (eq buffer (current-buffer)))
+                                 (termdex--candidate-p buffer)))
+                          (buffer-list))))
+    (unless buffer
+      (user-error "No terminal"))
+    (termdex--display buffer)))
 
 (defun termdex--describe (terminal)
   "Return (DIRECTORY . STATE) describing TERMINAL for display."
