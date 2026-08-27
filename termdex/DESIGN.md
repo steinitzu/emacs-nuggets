@@ -286,6 +286,34 @@ Deliberately **not** built: toggling between global and project scope from
 inside the minibuffer. Doing that portably means writing per-framework code for
 each completion UI. Two bindings cost less and break less.
 
+### `termdex-last`: the last touched terminal, unconditionally
+
+Added after first use. Every reaching command answers a question first — which
+directory, which project, busy or not — and `termdex-switch` asks *you* one.
+Sometimes the want is simpler than any of them: "put me back in the terminal I
+was just using", with no matching, no prompt, and no regard for what it is
+doing. That is a one-keystroke jump, and none of the existing commands is it —
+`termdex-switch` is two keystrokes and a minibuffer flash, `termdex-here` can
+land somewhere else entirely (or spawn) when you have wandered out of the
+terminal's directory.
+
+`termdex-last` goes to the most recently used candidate terminal, full stop:
+
+- **No probing.** The command needs neither directory nor busy state, so it
+  never touches `/proc` — the answer is `buffer-list` order filtered through
+  `termdex--candidate-p`, the same population every other command acts on.
+  Exclusions still apply: an agent's terminal is not "the terminal you were
+  just using" in the intended sense, however recently its buffer was current.
+- **From inside a terminal, the most recent *other* one.** The last touched
+  terminal is then the one you are in, and jumping to it is a no-op; skipping
+  it makes repeated invocations toggle between your two most recent terminals,
+  the same behaviour `termdex-switch`'s `RET` `RET` gives — for free, since
+  switching updates MRU order.
+- **No terminal means an error, not a spawn.** The command's contract is a
+  jump to something that exists; quietly creating a terminal would mean
+  choosing a directory, which is exactly the question this command exists to
+  not ask. `termdex-here` and `termdex-new` are the creating commands.
+
 ### Dashboard: `termdex-list`
 
 A `tabulated-list-mode` buffer, one row per terminal:
