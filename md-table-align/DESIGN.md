@@ -1221,3 +1221,63 @@ Regression guard: `make bench` (tests/run-bench.sh) runs open/resize/scroll
 scenarios at a pinned 400x60 frame and reports call counts, which are
 deterministic per fixture and code; recorded runs accumulate in
 `tests/bench-results.md`.
+
+## Pipe separator for vertical records (v7)
+
+The vertical view (v5) rendered each field as `label:  value` — a bold label
+with a colon suffix, then a gap to the common value column. This revision
+replicates psql's `\x` display exactly: no colon, a `|` between the padded
+label and the value, with the same number of spaces on each side of the pipe:
+
+```
+-[ row 1 ]---
+a   | value1
+bee | v2
+c   | value3
+```
+
+The v5 deviation note records why the gap grew from one space to two: a bold
+label ending in a colon followed by a single space read as joined to its
+value, because nothing *visible* separated label from value — the colon
+belongs to the label. A pipe is a separator in its own right, standing
+between the columns rather than attached to one, so the original single
+space works again and is the default. That note is superseded by this
+section.
+
+### Mechanism delta
+
+Small, because the injection string was already assembled per label line:
+
+- Labels are the header cells' text under the label face, no colon appended.
+- The injected string after each label becomes: a stretch to the pipe
+  column, the pipe, a stretch to the value column. The pipe column is the
+  indent plus the widest label plus the gap; the value column adds the
+  pipe's own measured width plus the gap again. All widths in pixels via
+  `md-table-align-pixel-width-function`, as ever, so the pipes align as a
+  rail even under proportional fonts.
+- The stretch-pipe-stretch tail is identical for every field of the table,
+  so it is built once per layout and shared.
+
+### Interface delta
+
+- `md-table-align-vertical-gap` ("spaces between the widest label and the
+  values", default 2) is **renamed**, not reinterpreted: the value now
+  counts spaces on *each side* of the pipe, and a live session or config
+  holding the old value would silently double it. Per the repo's stale-
+  binding rule the old variable goes inert and obsolete; the new one is
+  `md-table-align-vertical-pipe-gap`, default 1 — the psql tradition,
+  workable again now that a real separator stands between label and value.
+- New face `md-table-align-vertical-pipe`, default unstyled: psql's pipes
+  are plain text, but a face makes dimming them a one-liner.
+
+### Testing delta
+
+The fixture's widest label is `bee` (3 wide, was 4 with the colon), and with
+the default gap of 1 the value column is 3 + 1 + 1 + 1 = 6 — unchanged, so
+the alignment tests keep their expectations. The gap-option test moves to
+the new variable and the new arithmetic (gap 4: 3 + 4 + 1 + 4 = 12), which
+also distinguishes the per-side semantics from the old single-gap formula.
+A white-box test asserts the injected string carries the pipe and no colon —
+the pipe lives in a `before-string`, which `posn-at-point` cannot address,
+so the rendered-column assertions cover its geometry and the string check
+covers its content.
