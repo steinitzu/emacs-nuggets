@@ -880,19 +880,19 @@ the scroll leaves point on the viewport's edge, since that is inside
 ;;;; Vertical records view
 ;;
 ;; `md-table-align-toggle-vertical' renders a table as psql's `\x' expanded
-;; display: one `label: value' line per cell, one record block per data row.
-;; The values are real buffer text; the labels and record separators are
-;; overlay strings.  Rendered, the fixture below reads:
+;; display: one `label | value' line per cell, one record block per data row.
+;; The values are real buffer text; the labels, pipes and record separators
+;; are overlay strings.  Rendered, the fixture below reads:
 ;;
 ;;     before                    <- row 0
 ;;     -[ row 1 ]---
-;;     a:    value1              <- values at column 6: widest label
-;;     bee:  v2                     "bee:" is 4 wide, plus the default
-;;     c:    value3                 two-space gap
+;;     a   | value1              <- values at column 6: widest label "bee"
+;;     bee | v2                     is 3 wide, plus the default one-space
+;;     c   | value3                 gap on each side of the pipe
 ;;     -[ row 2 ]---
-;;     a:    v4
-;;     bee:  value5
-;;     c:    v6
+;;     a   | v4
+;;     bee | value5
+;;     c   | v6
 ;;     after                     <- row 9
 ;;
 ;; so the header and delimiter lines contribute no screen lines at all.
@@ -947,14 +947,36 @@ after
       (should (= (md-table-align-tests--row-of "v4") (+ base 4))))))
 
 (ert-deftest md-table-align-test-vertical-gap-follows-the-option ()
-  "`md-table-align-vertical-gap' sets the space after the widest label."
+  "`md-table-align-vertical-pipe-gap' sets the space on each side of the pipe."
   (md-table-align-tests--with-buffer md-table-align-tests--vertical
     (md-table-align-tests--enable)
-    (let ((md-table-align-vertical-gap 4))
+    (let ((md-table-align-vertical-pipe-gap 4))
       (md-table-align-tests--toggle-vertical)
       (dolist (value '("value1" "v2" "value3"))
-        ;; "bee:" is 4 wide; 4 more of gap puts every value at column 8.
-        (should (= (md-table-align-tests--column-of value) 8))))))
+        ;; "bee" is 3 wide; 4 of gap, the pipe, and 4 more puts every value
+        ;; at column 12 -- per side, not the old label-to-value span.
+        (should (= (md-table-align-tests--column-of value) 12))))))
+
+(ert-deftest md-table-align-test-vertical-separator-is-a-pipe ()
+  "Label lines read `label | value': a pipe, no colon, before each value.
+The pipe rides in the injected `before-string', which `posn-at-point'
+cannot address, so the column tests cover its geometry and this one its
+content."
+  (md-table-align-tests--with-buffer md-table-align-tests--vertical
+    (md-table-align-tests--enable)
+    (md-table-align-tests--toggle-vertical)
+    (goto-char (point-min))
+    (should (search-forward "value1" nil t))
+    (let* ((beg (match-beginning 0))
+           (ov (seq-find (lambda (o) (and (overlay-get o 'md-table-align)
+                                          (= (overlay-end o) beg)
+                                          (overlay-get o 'before-string)))
+                         (overlays-in (point-min) beg))))
+      (should ov)
+      (let ((injected (overlay-get ov 'before-string)))
+        ;; The label "a", then the pipe, and nowhere a colon.
+        (should (string-match-p "a.*|" injected))
+        (should-not (string-search ":" injected))))))
 
 (ert-deftest md-table-align-test-vertical-data-row-occupies-fields-plus-separator ()
   "A three-column row renders as four screen lines: separator plus fields."
@@ -1027,8 +1049,9 @@ three: `after' lands nine rows under `before'."
 "
     (md-table-align-tests--enable)
     (md-table-align-tests--toggle-vertical)
-    ;; First table vertical: labels \"a:\" and \"b:\", then the default
-    ;; two-space gap puts the values at column 4.
+    ;; First table vertical: labels \"a\" and \"b\" are 1 wide, then the
+    ;; default one-space gap, the pipe and the gap again put the values at
+    ;; column 4.
     (should (= (md-table-align-tests--column-of "x") 4))
     (should (= (md-table-align-tests--row-of "y")
                (1+ (md-table-align-tests--row-of "x"))))
@@ -1066,10 +1089,10 @@ three: `after' lands nine rows under `before'."
            (catch 'found
              (dolist (ov (md-table-align-tests--own-overlays))
                (let ((d (overlay-get ov 'before-string)))
-                 (when (and (stringp d) (string-search "bee:" d))
+                 (when (and (stringp d) (string-search "bee" d))
                    (throw 'found d)))))))
       (should label)
-      (should (eq (get-text-property (string-search "bee:" label) 'face label)
+      (should (eq (get-text-property (string-search "bee" label) 'face label)
                   'md-table-align-vertical-label)))))
 
 (ert-deftest md-table-align-test-vertical-record-separators-are-rendered ()
