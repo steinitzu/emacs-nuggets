@@ -309,10 +309,14 @@ terminal's directory.
   it makes repeated invocations toggle between your two most recent terminals,
   the same behaviour `termdex-switch`'s `RET` `RET` gives — for free, since
   switching updates MRU order.
-- **No terminal means an error, not a spawn.** The command's contract is a
-  jump to something that exists; quietly creating a terminal would mean
-  choosing a directory, which is exactly the question this command exists to
-  not ask. `termdex-here` and `termdex-new` are the creating commands.
+- **No terminal falls back to `termdex-here`.** First designed to error —
+  "the command's contract is a jump to something that exists" — and revised by
+  owner decision after first use: a keystroke meaning "take me to a terminal"
+  that instead prints an error is a dead key at exactly the moment you wanted
+  a terminal. With nothing to jump back to, the most useful terminal is the
+  one `termdex-here` would give you: a match for where you are, or a fresh
+  one here. The unconditional jump stays unconditional whenever there is
+  anything to jump to; the fallback only exists at zero terminals.
 
 ### Dashboard: `termdex-list`
 
