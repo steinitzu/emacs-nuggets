@@ -560,8 +560,9 @@ make compile   # byte-compile, warnings are errors
 ```
 
 `make bench` prints a Markdown section of call counts and timings for the
-many-wide-tables workload; append it to `tests/bench-results.md` to record a
-run (`tests/run-bench.sh >> tests/bench-results.md`). Call counts are
+many-wide-tables workload, horizontally and with every table toggled
+vertical; append it to `tests/bench-results.md` to record a run
+(`tests/run-bench.sh >> tests/bench-results.md`). Call counts are
 deterministic for a given fixture and frame size, so compare them against the
 last recorded run to catch performance regressions; wall times are
 machine-dependent.

@@ -42,3 +42,26 @@ Emacs 31.0.90, frame 400x59, fixture: 162 lines, max line 885
 | resize (3 window ops) | 0.514 | 0.364 | 4870 | 37 | 7 | 396 |
 | page through | 0.408 | 0.292 | 5078 | 26 | 23 | 240 |
 
+## 2026-08-27 — b5be635
+
+Three vertical scenarios added this run: all 8 tables toggled vertical,
+then the resize and page-through passes repeated.  The horizontal rows
+are the baseline for comparison; `split-at` is structurally 0 for
+vertical tables (no viewport to clip).  Vertical relayout is cheaper
+than horizontal across the board: no clipping, and only labels and the
+pipe are re-measured per pass (56 calls for the initial 8-table toggle
+is exactly 48 labels + 8 pipes).  `layout-table` is higher when paging
+vertically because records render ~4x more screen lines, so the same
+buffer is more pages.
+
+Emacs 31.0.90, frame 400x59, fixture: 162 lines, max line 885
+
+| scenario | wall s | gc s | string-pixel-width | layout-table | measure passes | split-at |
+|---|---|---|---|---|---|---|
+| open | 0.232 | 0.145 | 2900 | 13 | 13 | 132 |
+| resize (3 window ops) | 0.335 | 0.245 | 4870 | 37 | 7 | 396 |
+| page through | 0.282 | 0.208 | 5078 | 26 | 23 | 240 |
+| toggle vertical (8 tables) | 0.028 | 0.020 | 56 | 8 | 0 | 0 |
+| resize vertical (3 window ops) | 0.100 | 0.073 | 707 | 16 | 5 | 0 |
+| page through vertical | 0.299 | 0.218 | 3063 | 35 | 24 | 0 |
+

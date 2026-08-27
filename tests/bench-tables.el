@@ -210,6 +210,37 @@ that surfaced the lockups."
                   (when (>= (window-end nil t) (point-max))
                     (goto-char (point-max))))))
 
+            ;; The same workload with every table toggled vertical: tables
+            ;; stay flipped while the user resizes and scrolls, so each
+            ;; jit-lock re-layout re-renders records -- labels and pipe
+            ;; re-measured per pass -- instead of the column grid.
+            (bench--scenario "toggle vertical (8 tables)"
+              (dotimes (i 8)
+                (goto-char (point-min))
+                (search-forward (format "| col%d-0 " i))
+                (md-table-align-toggle-vertical))
+              (redisplay t))
+
+            (bench--scenario "resize vertical (3 window ops)"
+              (split-window-right)
+              (redisplay t)
+              (delete-other-windows)
+              (redisplay t)
+              (split-window-right)
+              (redisplay t))
+
+            (delete-other-windows)
+            (bench--scenario "page through vertical"
+              (goto-char (point-min))
+              (let ((pages 0))
+                (while (and (< (point) (point-max)) (< pages 40))
+                  (ignore-errors (scroll-up-command))
+                  (run-hooks 'post-command-hook)
+                  (redisplay t)
+                  (setq pages (1+ pages))
+                  (when (>= (window-end nil t) (point-max))
+                    (goto-char (point-max))))))
+
             (bench--write-report stats)
             (delete-file fixture)
             (setq exit 0))
