@@ -467,7 +467,7 @@ project it was born in, the way `projectile-run-vterm` and friends tie it.
 | `termdex-project-root` | Like `termdex-here`, but for the project root of where you are — "take me to the terminal of this project". Reuses a terminal already at the root, else makes one there. Outside a project it behaves as `termdex-here`. |
 | `termdex-project-root-idle` | The same, but you always arrive at a prompt. |
 | `termdex-new` | Always a new terminal. |
-| `termdex-last` | Back to the last terminal you were in, unconditionally — no directory matching, no prompt, busy or not. From inside a terminal, the most recent *other* one, so repeating it toggles between your two most recent terminals. Errors rather than spawning when there is none. |
+| `termdex-last` | Back to the last terminal you were in, unconditionally — no directory matching, no prompt, busy or not. From inside a terminal, the most recent *other* one, so repeating it toggles between your two most recent terminals. With no terminal at all it behaves as `termdex-here`. |
 | `termdex-switch` | Pick from every terminal, annotated with directory and what it is running. |
 | `termdex-switch-project` | The same, restricted to this project. |
 | `termdex-list` | A dashboard: every terminal, its directory, whether it is busy, and what it is running. `RET` switch, `o` other window, `k` kill, `+` new terminal there, `g` refresh. |
