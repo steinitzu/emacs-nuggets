@@ -118,7 +118,7 @@ Customization:
 | `md-table-align-ellipsis` | `…` | Marks where the window's edge has clipped a table. |
 | `md-table-align-hscroll-indicator` | `t` | Whether to mark clipped edges at all. |
 | `md-table-align-vertical-record-format` | `-[ row %d ]---` | Separator line above each record of a vertical table. |
-| `md-table-align-vertical-pipe-gap` | `1` | Spaces on each side of the pipe between a vertical table's labels and values. |
+| `md-table-align-vertical-pipe-gap` | `2` | Spaces on each side of the pipe between a vertical table's labels and values. |
 
 #### Wide tables and word wrap
 
@@ -175,26 +175,30 @@ record block per row, labels bold and values aligned to a common column:
 
 ```
 -[ row 1 ]---
-Name        | alpha
-Description | first item description here
-Status      | open
+Name         | alpha
+Description  | a very long value wraps at the window
+             | edge and continues under its own pipe,
+             | aligned with the rest of the record
+Status       | open
 -[ row 2 ]---
-Name        | beta
-Description | second item description
-Status      | done
+Name         | beta
+Description  | second item description
+Status       | done
 ```
 
 Run it again to flip back. Like everything else here it is a rendering, not an
 edit — buffer text is untouched, so it works in read-only buffers, and each
 table keeps its own setting until you toggle it back or turn the mode off.
 A vertical record is never wider than its longest single value, which makes
-this a comfortable way to read a very wide table; long values wrap like
-ordinary prose. The separator comes from
-`md-table-align-vertical-record-format`, the spacing on each side of the pipe
-from `md-table-align-vertical-pipe-gap` (default one space), and the labels,
-pipes and separators render in the `md-table-align-vertical-label`,
-`md-table-align-vertical-pipe` (unstyled by default) and
-`md-table-align-vertical-record` faces.
+this a comfortable way to read a very wide table; under `visual-line-mode` a
+long value wraps at the window edge and continues at the value column, under
+an extra pipe on the rail (this also overrides `visual-wrap-prefix-mode`
+inside the table, whose prose-style prefix would misplace the continuation).
+The separator comes from `md-table-align-vertical-record-format`, the spacing
+on each side of the pipe from `md-table-align-vertical-pipe-gap` (default two
+spaces), and the labels, pipes and separators render in the
+`md-table-align-vertical-label`, `md-table-align-vertical-pipe` (unstyled by
+default) and `md-table-align-vertical-record` faces.
 
 #### How it works
 
