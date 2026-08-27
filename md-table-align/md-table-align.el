@@ -1,7 +1,7 @@
 ;;; md-table-align.el --- Display-only alignment of Markdown tables -*- lexical-binding: t; -*-
 
 ;; Author: Steinthor Palsson
-;; Version: 0.5.0
+;; Version: 0.6.0
 ;; Package-Requires: ((emacs "31.1"))
 ;; Keywords: markdown, faces, convenience
 
@@ -26,7 +26,7 @@
 ;; \\[scroll-right] move it by hand.  See `md-table-align-hscroll'.
 ;;
 ;; `md-table-align-toggle-vertical' flips the table at point into psql's
-;; `\x'-style expanded display -- one `label: value' line per cell, one record
+;; `\x'-style expanded display -- one `label | value' line per cell, one record
 ;; block per row -- and back.  Also a rendering, not an edit.
 ;;
 ;; Usage:
@@ -103,19 +103,28 @@ gives the table itself slightly more room."
 `%d' is the record's 1-based number.  See `md-table-align-toggle-vertical'."
   :type 'string)
 
-(defcustom md-table-align-vertical-gap 2
-  "Spaces between the widest label and the values of a vertical table.
+(defcustom md-table-align-vertical-pipe-gap 1
+  "Spaces on each side of the pipe separating a vertical table's columns.
 
-Every value in a record block starts at the same column, so this gap is
-what separates the *longest* label from its value; the shorter labels
-get correspondingly more.  One space is the psql tradition, but next to
-a bold label ending in a colon it reads as no separation at all, which
-is why the default is two."
+Every value in a record block starts at the same column, so on the label
+side this gap is what separates the *longest* label from the pipe; the
+shorter labels get correspondingly more.  One space each side is the
+psql tradition.
+
+Renamed from `md-table-align-vertical-gap', which counted the whole
+span between the widest label and its value -- back when a colon ended
+the label and nothing else stood in between."
   :type 'natnum)
 
 (defface md-table-align-vertical-label
   '((t :inherit bold))
   "Face for the column labels of a table rendered vertically.")
+
+(defface md-table-align-vertical-pipe
+  '((t nil))
+  "Face for the pipes between labels and values of a vertical table.
+Unstyled by default -- psql's pipes are plain text -- but customizing
+it to inherit `shadow' dims the rail if you prefer.")
 
 (defface md-table-align-vertical-record
   '((t :inherit shadow))
@@ -132,6 +141,12 @@ see `md-table-align-hscroll'."
  "columns are no longer capped, so there is no width to floor;
 see `md-table-align-hscroll'."
  "0.2.0")
+
+(make-obsolete-variable
+ 'md-table-align-vertical-gap
+ "the label-to-value span now holds a pipe with the same spacing on
+both sides, counted per side; see `md-table-align-vertical-pipe-gap'."
+ "0.6.0")
 
 (defvar-local md-table-align--layout-key nil
   "What the current layout was computed against, besides the buffer text.
@@ -815,7 +830,7 @@ data rows to make records of falls back to the horizontal layout."
 ;;;; Vertical records view
 ;;
 ;; A table toggled vertical renders as psql's `\x' expanded display: each data
-;; row becomes a block of `label: value' lines under a record separator.  The
+;; row becomes a block of `label | value' lines under a record separator.  The
 ;; values are already in buffer order, so they stay real, visible buffer text;
 ;; only the labels -- which repeat once per record, something buffer text
 ;; cannot do -- are synthesized, in the overlay strings that hide the pipes.
@@ -828,9 +843,9 @@ data rows to make records of falls back to the horizontal layout."
 
 (defun md-table-align--vertical-labels (ctx)
   "Return a vector of label strings for the columns of the table under CTX.
-Labels are the header cells' text under `md-table-align-vertical-label',
-suffixed with a colon.  A column the header does not name -- ragged
-tables -- falls back to its 1-based number."
+Labels are the header cells' text under `md-table-align-vertical-label'.
+A column the header does not name -- ragged tables -- falls back to its
+1-based number."
   (let* ((header (seq-find (lambda (r) (not (plist-get r :delimiter)))
                            (plist-get ctx :rows)))
          (cells (plist-get header :cells))
@@ -842,7 +857,7 @@ tables -- falls back to its 1-based number."
                        (buffer-substring-no-properties
                         (plist-get cell :beg) (plist-get cell :end))
                      (number-to-string (1+ j)))))
-        (aset labels j (propertize (concat text ":")
+        (aset labels j (propertize text
                                    'face 'md-table-align-vertical-label))))
     labels))
 
@@ -861,16 +876,16 @@ hidden with `display' \"\" and STRING rides in front of it."
     (overlay-put ov 'before-string string)
     ov))
 
-(defun md-table-align--layout-vertical-row (row index ctx labels value-x)
+(defun md-table-align--layout-vertical-row (row index ctx labels separator)
   "Place overlays rendering ROW as vertical record number INDEX.
 CTX is the table's layout context, LABELS the vector from
-`md-table-align--vertical-labels' and VALUE-X the pixel column values
-start at.
+`md-table-align--vertical-labels' and SEPARATOR the shared
+stretch-pipe-stretch string ending at the column values start at.
 
 Each span from one cell's content end to the next cell's content start
 -- never empty, since it holds at least the pipe -- is replaced by a
-newline, a stretch to the table's indent, the label, and a stretch to
-VALUE-X.  The values between those spans are left alone."
+newline, a stretch to the table's indent, the label, and SEPARATOR.
+The values between those spans are left alone."
   (let* ((pipes (plist-get row :pipes))
          (indent (plist-get ctx :indent))
          (eol (save-excursion (goto-char (car pipes)) (line-end-position)))
@@ -891,7 +906,7 @@ VALUE-X.  The values between those spans are left alone."
                      "\n")
                    (if (> indent 0) (md-table-align--stretch indent) "")
                    (aref labels j)
-                   (md-table-align--stretch value-x)))
+                   separator))
           (setq prev end)))
       (setq j (1+ j)))
     ;; The closing pipe and any trailing whitespace end no label line.
@@ -917,16 +932,28 @@ records of -- asks the caller to lay the table out horizontally instead."
          (save-excursion (goto-char (car (plist-get (car data) :pipes)))
                          (line-beginning-position))
          "")
-        (let ((value-x (+ indent (* md-table-align-vertical-gap unit)
+        ;; The label lines share one stretch-pipe-stretch tail: a stretch to
+        ;; the pipe column -- indent plus widest label plus the gap -- the
+        ;; pipe, and a stretch past its measured width plus the gap again, to
+        ;; the common column the values start at.
+        (let* ((gap (* md-table-align-vertical-pipe-gap unit))
+               (pipe (propertize "|" 'face 'md-table-align-vertical-pipe))
+               (pipe-x (+ indent gap
                           (seq-reduce
                            (lambda (acc label)
                              (max acc (funcall md-table-align-pixel-width-function
                                                label)))
                            (append labels nil) 0)))
-              (i 0))
+               (separator
+                (concat (md-table-align--stretch pipe-x)
+                        pipe
+                        (md-table-align--stretch
+                         (+ pipe-x gap
+                            (funcall md-table-align-pixel-width-function pipe)))))
+               (i 0))
           (dolist (row data)
             (setq i (1+ i))
-            (md-table-align--layout-vertical-row row i ctx labels value-x))))
+            (md-table-align--layout-vertical-row row i ctx labels separator))))
       t)))
 
 ;;;; Discovery
@@ -1258,7 +1285,7 @@ takes over."
   "Toggle the table at point between horizontal and vertical display.
 
 Vertical is psql's `\\x' expanded display: each data row renders as a
-block of `label: value' lines under a record separator, with the labels
+block of `label | value' lines under a record separator, with the labels
 taken from the header row.  Like everything else here it is a rendering,
 not an edit -- buffer text is untouched, so it works in read-only
 buffers, and toggling back is just a re-render.
