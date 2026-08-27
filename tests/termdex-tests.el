@@ -545,10 +545,16 @@ one, so repeating it flips between the two most recent terminals."
       (termdex-last)
       (should (eq (window-buffer) wanted)))))
 
-(termdex-tests--deftest termdex-last-errors-with-no-terminal ()
-  "With nothing to jump to, `termdex-last' says so rather than spawning."
-  (switch-to-buffer (get-buffer-create "*termdex-test-elsewhere*"))
-  (should-error (termdex-last) :type 'user-error))
+(termdex-tests--deftest termdex-last-falls-back-to-termdex-here ()
+  "With nothing to jump to, `termdex-last' behaves as `termdex-here':
+you asked for a terminal, so you get one, in the directory you are in."
+  (termdex-tests--with-project root
+    (let ((created nil))
+      (with-temp-buffer
+        (setq default-directory root)
+        (setq created (save-window-excursion (termdex-last))))
+      (should (termdex--vterm-buffer-p created))
+      (should (termdex-tests--directory-is created root)))))
 
 (defvar termdex-tests--offered nil
   "Candidates and default from the last stubbed `completing-read'.")
