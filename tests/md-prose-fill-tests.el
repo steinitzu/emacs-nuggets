@@ -52,6 +52,11 @@
 (defconst md-prose-fill-tests--long-word
   "alphabetagammadeltaepsilonzetaetathetaiotakappalambdamunuxiomicronpirhosigma\n")
 
+;; A token wider than the whole budget, with prose on both sides of it.  The
+;; token has to overflow, but the prose after it must still be filled.
+(defconst md-prose-fill-tests--long-word-in-prose
+  "alpha beta gamma delta epsilon zeta https://example.com/a/very/long/path/that/has/no/spaces/in/it and then some more words that should still be filled after it\n")
+
 ;;;; Helpers
 
 (defmacro md-prose-fill-tests--with-buffer (text &rest body)
@@ -234,6 +239,25 @@ This is how the chat transcript buffers this package is for are locked."
   (md-prose-fill-tests--with-buffer md-prose-fill-tests--long-word
     (md-prose-fill-tests--enable)
     (should-not (md-prose-fill-tests--breaks))))
+
+(ert-deftest md-prose-fill-test-resumes-filling-after-a-long-token ()
+  "A token too wide to fit costs one long line, not the rest of the fill.
+The token overflows to the window edge; the prose after it is filled
+again from the first space past it."
+  (md-prose-fill-tests--with-buffer md-prose-fill-tests--long-word-in-prose
+    (md-prose-fill-tests--enable)
+    (let* ((url (md-prose-fill-tests--word "https://"))
+           (tail (md-prose-fill-tests--word "and then"))
+           (last (md-prose-fill-tests--word "after it"))
+           (url-row (md-prose-fill-tests--row url)))
+      ;; The token is not cut: it starts a row and is still on it at its end.
+      (should (= (md-prose-fill-tests--col url) 0))
+      (should (= (md-prose-fill-tests--row (1- tail)) url-row))
+      ;; And filling resumes: the prose after it is on later rows, and gets
+      ;; broken again rather than running on as one long line.
+      (should (> (md-prose-fill-tests--row tail) url-row))
+      (should (> (md-prose-fill-tests--row last)
+                 (md-prose-fill-tests--row tail))))))
 
 (ert-deftest md-prose-fill-test-leaves-foreign-display-properties-alone ()
   "A space already carrying a `display' property is never taken as a break.

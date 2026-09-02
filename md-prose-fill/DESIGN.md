@@ -78,9 +78,11 @@ A column scan, not a pixel measurement:
 2. Walk forward accumulating `char-width`, remembering the last space seen.
 3. When the accumulated width passes the budget, break at that last space and
    start the next segment after it.
-4. A stretch with no space in it — a long URL — gets no break. The line
-   overflows to the window edge and wraps there, which is what `fill-column`
-   does too.
+4. A token wider than the whole budget — a long URL — has no space to break
+   at. It is never cut: it overflows to the window edge and wraps there, which
+   is what `fill-column` does too. Filling then **resumes** at the first space
+   past the overflow, so one long token costs one long line rather than
+   switching the fill off for the rest of the paragraph.
 
 A space that already carries a `display` property from somewhere else is never
 chosen as a break point, so this cannot fight `md-bare-url`, `md-file-anchor`
@@ -154,6 +156,14 @@ Recorded after implementation.
   already occupies at its start and subtracts it. Caught by the test that
   asserts every rendered row ends inside the column, which is why that test
   exists separately from the one asserting the indent.
+
+- **A long token stopped the fill instead of overflowing within it.** The
+  first implementation returned "no break" both when the rest of the line fits
+  and when a token is wider than the budget, and the caller's loop read the
+  second as "this line is done" — so a URL turned the fill off for everything
+  after it on that line. Found in live use, not by the suite, whose long-token
+  fixture had nothing after the token. The two cases are now distinguished, and
+  the overflow case resumes at the first space past the token.
 
 - **`visual-wrap-prefix-mode` hands back a string here, not a spec.** Under
   `markdown-ts-mode` the `wrap-prefix` for a list item comes out as `"  "`

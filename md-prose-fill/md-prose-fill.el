@@ -191,11 +191,15 @@ it would fight that package for the character."
 (defun md-prose-fill--break-position (start limit budget)
   "Return where to break the text from START, or nil for no break.
 
-BUDGET is how many columns the line may occupy.  The result is the
-position of the last breakable space that leaves the text before it
-inside the budget; nil when the text fits, or when it overflows with no
-space to break at -- a long URL -- in which case the line runs on to the
-window edge and wraps there, as it would under `fill-column'."
+BUDGET is how many columns the line may occupy.  Normally the result is
+the last breakable space that leaves the text before it inside the
+budget, and nil means the rest of the text fits.
+
+A token longer than the whole budget -- a URL -- has no such space.  It
+is not cut: it overflows to the window edge and wraps there, as it would
+under `fill-column'.  But filling *resumes* after it, at the first
+breakable space past the overflow, so one long token costs one long line
+rather than turning off the fill for everything that follows it."
   (let ((pos start)
         (width 0)
         (last nil))
@@ -204,7 +208,13 @@ window edge and wraps there, as it would under `fill-column'."
         (setq last pos))
       (setq width (+ width (char-width (char-after pos)))
             pos (1+ pos)))
-    (and (> width budget) last)))
+    (cond
+     ((<= width budget) nil)             ; what is left fits
+     (last last)                         ; break inside the budget
+     (t                                  ; a token wider than the budget
+      (while (and (< pos limit) (not (md-prose-fill--breakable-p pos)))
+        (setq pos (1+ pos)))
+      (and (< pos limit) pos)))))
 
 (defun md-prose-fill--fill-line (beg end prefix start-column)
   "Break the logical line from BEG to END at `md-prose-fill-column'.
