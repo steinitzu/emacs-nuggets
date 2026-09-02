@@ -230,6 +230,11 @@ whose end-of-line `display` property is not on its `visual-wrap--safe-display-sp
 list, so a joined line would silently lose its wrap prefix — the same
 composition problem this design solved for breaks, in the other direction.
 
+Worked through, with the verified facts and what taking it on would cost, in
+[docs/joining-hard-wrapped-lines.md](../docs/joining-hard-wrapped-lines.md).
+Note that `visual-fill-column-mode` fills such source just as raggedly — this
+is not something the injected break introduced.
+
 ## Open questions
 
 - Joining hard-wrapped source lines, per the gap above.
