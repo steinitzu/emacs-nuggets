@@ -87,10 +87,11 @@ Derived modes count."
 ;; file, so the functions above can test it.
 (defvar md-prose-fill-mode)
 
-(defvar-local md-prose-fill--wide nil
-  "Whether the last geometry check found a window wide enough to fill in.
+(defvar-local md-prose-fill--state nil
+  "What the last fill was computed against, besides the buffer text.
 Compared against on every window change, so an ordinary resize costs a
-comparison rather than a refontification.")
+comparison rather than a refontification.  See `md-prose-fill--state'
+the function.")
 
 ;;;; Properties
 ;;
@@ -136,6 +137,18 @@ ahead of display does not have to be redone."
         (>= (apply #'max (mapcar #'window-body-width windows))
             md-prose-fill-column))))
 
+(defun md-prose-fill--state ()
+  "Return what the fill depends on besides the buffer text.
+
+Two things.  Whether any window is wide enough to fill for at all, which
+is the one piece of geometry that matters.  And
+`buffer-invisibility-spec', because hidden text costs no columns
+\(`md-prose-fill--width') and toggling what is hidden --
+`markdown-ts-hide-markup' works exactly that way -- changes where every
+break on the line belongs, without changing a character of text for
+`jit-lock' to notice."
+  (cons (md-prose-fill--wide-enough-p) buffer-invisibility-spec))
+
 ;;;; Discovery
 
 (defun md-prose-fill--parser ()
@@ -180,39 +193,100 @@ repeats verbatim such as a block quote's, or nil."
             (t 0))))
    (t 0)))
 
-(defun md-prose-fill--breakable-p (pos)
-  "Return non-nil when POS is a space this package may render as a break.
-A space already carrying a `display' property belongs to something else
--- `md-bare-url' and `md-table-inline' both place them -- and replacing
-it would fight that package for the character."
-  (and (eq (char-after pos) ?\s)
-       (null (get-char-property pos 'display))))
+(defun md-prose-fill--code-spans (beg end)
+  "Return the inline code spans between BEG and END, as ((START . END) ...).
 
-(defun md-prose-fill--break-position (start limit budget)
+A code span is one thing -- a command, a path, a symbol -- and breaking
+inside it is what makes a shell line unreadable and unpasteable.  It is
+treated as a single token instead.
+
+Costs nothing on a line with no backtick in it, which is nearly all of
+them.  `markdown-ts-mode' embeds `markdown-inline' with `:local t', so
+its parsers exist only where something has asked for one; asking is what
+`treesit-node-at' does, and it is how the mode reaches inline nodes
+itself.  Walking backtick to backtick, and skipping to the end of each
+span found, keeps that to one query per span."
+  (when (treesit-ready-p 'markdown-inline t)
+    (save-excursion
+      (goto-char beg)
+      (let ((spans nil))
+        (while (search-forward "`" end t)
+          (let* ((node (treesit-node-at (1- (point)) 'markdown-inline))
+                 (span (and node
+                            (treesit-parent-until
+                             node
+                             (lambda (n) (equal (treesit-node-type n) "code_span"))
+                             t))))
+            ;; A backtick that opens nothing is literal text; keep looking.
+            (when span
+              (push (cons (treesit-node-start span) (treesit-node-end span))
+                    spans)
+              (goto-char (max (point) (min end (treesit-node-end span)))))))
+        (nreverse spans)))))
+
+(defun md-prose-fill--in-span-p (pos spans)
+  "Return non-nil when POS falls inside one of SPANS."
+  (seq-some (lambda (span) (and (>= pos (car span)) (< pos (cdr span)))) spans))
+
+(defun md-prose-fill--breakable-p (pos spans)
+  "Return non-nil when POS is a space this package may render as a break.
+
+Not one already carrying a `display' property: it belongs to something
+else -- `md-bare-url' and `md-table-inline' both place them -- and
+replacing it would fight that package for the character.  Not a hidden
+one either, since a break nothing renders is no break.  And not one
+inside a code span, per `md-prose-fill--code-spans'."
+  (and (eq (char-after pos) ?\s)
+       (null (get-char-property pos 'display))
+       (not (invisible-p pos))
+       (not (md-prose-fill--in-span-p pos spans))))
+
+(defun md-prose-fill--width (beg end)
+  "Return the columns the text from BEG to END occupies on screen.
+
+Hidden text occupies none.  Counting it would misplace every break on a
+line carrying an `invisible' overlay -- which is what a folded tool row
+in a chat transcript is, and what `markdown-ts-hide-markup' makes of
+markup characters."
+  (let ((pos beg)
+        (width 0))
+    (while (< pos end)
+      (if (invisible-p pos)
+          (setq pos (next-single-char-property-change pos 'invisible nil end))
+        (setq width (+ width (char-width (char-after pos)))
+              pos (1+ pos))))
+    width))
+
+(defun md-prose-fill--break-position (start limit budget spans)
   "Return where to break the text from START, or nil for no break.
 
-BUDGET is how many columns the line may occupy.  Normally the result is
-the last breakable space that leaves the text before it inside the
-budget, and nil means the rest of the text fits.
+BUDGET is how many columns the line may occupy and SPANS are the code
+spans not to break inside.  Normally the result is the last breakable
+space that leaves the text before it inside the budget, and nil means
+the rest of the text fits.
 
-A token longer than the whole budget -- a URL -- has no such space.  It
-is not cut: it overflows to the window edge and wraps there, as it would
-under `fill-column'.  But filling *resumes* after it, at the first
-breakable space past the overflow, so one long token costs one long line
-rather than turning off the fill for everything that follows it."
+A token longer than the whole budget -- a URL, or a code span -- has no
+such space.  It is not cut: it overflows to the window edge and wraps
+there, as it would under `fill-column'.  But filling *resumes* after it,
+at the first breakable space past the overflow, so one long token costs
+one long line rather than turning off the fill for everything that
+follows it."
   (let ((pos start)
         (width 0)
         (last nil))
     (while (and (< pos limit) (<= width budget))
-      (when (and (> pos start) (md-prose-fill--breakable-p pos))
-        (setq last pos))
-      (setq width (+ width (char-width (char-after pos)))
-            pos (1+ pos)))
+      (if (invisible-p pos)
+          ;; Hidden text renders nothing, so it costs no columns.
+          (setq pos (next-single-char-property-change pos 'invisible nil limit))
+        (when (and (> pos start) (md-prose-fill--breakable-p pos spans))
+          (setq last pos))
+        (setq width (+ width (char-width (char-after pos)))
+              pos (1+ pos))))
     (cond
      ((<= width budget) nil)             ; what is left fits
      (last last)                         ; break inside the budget
      (t                                  ; a token wider than the budget
-      (while (and (< pos limit) (not (md-prose-fill--breakable-p pos)))
+      (while (and (< pos limit) (not (md-prose-fill--breakable-p pos spans)))
         (setq pos (1+ pos)))
       (and (< pos limit) pos)))))
 
@@ -225,11 +299,12 @@ already occupies before BEG -- a list item's marker, say, which is part
 of the line but not part of the paragraph node -- and comes out of the
 first line's budget so that it too ends at the fill column."
   (let ((indent (md-prose-fill--indent prefix))
+        (spans (md-prose-fill--code-spans beg end))
         (start beg)
         (budget (- md-prose-fill-column start-column)))
     (while-let ((pos (and (< start end)
                           (> budget 0)
-                          (md-prose-fill--break-position start end budget))))
+                          (md-prose-fill--break-position start end budget spans))))
       (put-text-property pos (1+ pos) 'display "\n")
       (put-text-property pos (1+ pos) md-prose-fill--break t)
       ;; The line after an injected break is a fresh line, not a
@@ -258,9 +333,8 @@ computed across a hard line boundary."
                (end (min limit (line-end-position)))
                ;; A paragraph inside a list item starts *after* the marker,
                ;; so the line is already this many columns wide at BEG.
-               (start-column (string-width
-                              (buffer-substring-no-properties
-                               (line-beginning-position) beg))))
+               (start-column (md-prose-fill--width
+                              (line-beginning-position) beg)))
           (when (< beg end)
             (md-prose-fill--fill-line
              beg end (get-text-property beg 'wrap-prefix) start-column))
@@ -295,17 +369,21 @@ from the start of a logical line and a chunk boundary lands anywhere."
 ;;;; Geometry changes
 
 (defun md-prose-fill--refill (&rest _)
-  "Re-fill when the window has crossed the width the fill needs.
+  "Re-fill when something the fill was computed against has changed.
 
 An absolute fill column means an ordinary resize changes nothing, so
-this does nothing on one.  The single exception is the threshold: in a
-window narrower than `md-prose-fill-column' the breaks would land past
-the window edge and wrap twice, so below it the fill is dropped and the
-window edge takes over."
+this does nothing on one -- the comparison against
+`md-prose-fill--state' is what keeps a hook that fires on every window
+operation from turning into a refill of the buffer.
+
+The two things that do matter are the width threshold, below which the
+breaks would land past the window edge and wrap twice so the fill is
+dropped, and a change in what is hidden, which moves every break on the
+affected line."
   (when md-prose-fill-mode
-    (let ((wide (md-prose-fill--wide-enough-p)))
-      (unless (eq wide md-prose-fill--wide)
-        (setq md-prose-fill--wide wide)
+    (let ((state (md-prose-fill--state)))
+      (unless (equal state md-prose-fill--state)
+        (setq md-prose-fill--state state)
         (with-silent-modifications
           (md-prose-fill--clear-region (point-min) (point-max)))
         (jit-lock-refontify)))))
@@ -351,7 +429,7 @@ block quotes.  Requires a `markdown' tree-sitter parser in the buffer."
           (progn
             (setq md-prose-fill-mode nil)
             (message "md-prose-fill: no `markdown' tree-sitter parser available"))
-        (setq md-prose-fill--wide (md-prose-fill--wide-enough-p))
+        (setq md-prose-fill--state (md-prose-fill--state))
         (jit-lock-register #'md-prose-fill--jit t)
         ;; `jit-lock-register' prepends, which would run the fill before
         ;; `font-lock-fontify-region' whenever the two share a pass -- and
@@ -373,7 +451,7 @@ block quotes.  Requires a `markdown' tree-sitter parser in the buffer."
     (jit-lock-unregister #'md-prose-fill--jit)
     (remove-hook 'window-configuration-change-hook #'md-prose-fill--refill t)
     (remove-hook 'window-state-change-functions #'md-prose-fill--refill t)
-    (setq md-prose-fill--wide nil)
+    (setq md-prose-fill--state nil)
     (md-prose-fill-clear)))
 
 (defun md-prose-fill--maybe-enable ()

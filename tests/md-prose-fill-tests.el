@@ -57,6 +57,20 @@
 (defconst md-prose-fill-tests--long-word-in-prose
   "alpha beta gamma delta epsilon zeta https://example.com/a/very/long/path/that/has/no/spaces/in/it and then some more words that should still be filled after it\n")
 
+;; An inline code span longer than the fill column, with prose on both sides.
+;; A shell command is one thing; breaking inside it is what made an agent's tool
+;; row wrap where it was meant to stay on a single folded line.
+(defconst md-prose-fill-tests--code-span
+  "alpha beta `sed -i 's/x/y/' file.el && rm -f \"$OUT\" && timeout 90 script -qec` gamma delta epsilon zeta eta\n")
+
+;; A line whose visible width is well inside the fill column but whose buffer
+;; text is not -- what an `invisible' overlay makes of a folded tool row.
+(defconst md-prose-fill-tests--hidden-tail
+  "alpha beta gamma delta and then a long hidden tail that nobody can see at all here\n")
+
+(defconst md-prose-fill-tests--hidden-from 25
+  "Character offset at which `md-prose-fill-tests--hidden-tail' is hidden.")
+
 ;;;; Helpers
 
 (defmacro md-prose-fill-tests--with-buffer (text &rest body)
@@ -258,6 +272,70 @@ again from the first space past it."
       (should (> (md-prose-fill-tests--row tail) url-row))
       (should (> (md-prose-fill-tests--row last)
                  (md-prose-fill-tests--row tail))))))
+
+;;;; Inline code, and text that is not shown
+
+(ert-deftest md-prose-fill-test-never-breaks-inside-a-code-span ()
+  "An inline code span is one token: the fill goes around it, never into it."
+  (md-prose-fill-tests--with-buffer md-prose-fill-tests--code-span
+    (md-prose-fill-tests--enable)
+    (let ((open (md-prose-fill-tests--word "`sed"))
+          (close (save-excursion
+                   (goto-char (point-min))
+                   (should (search-forward "-qec`" nil t))
+                   (point))))
+      (should (md-prose-fill-tests--breaks))
+      (dolist (pos (md-prose-fill-tests--breaks))
+        (should-not (and (> pos open) (< pos close)))))))
+
+(ert-deftest md-prose-fill-test-fills-the-prose-around-a-code-span ()
+  "Going around a code span does not mean giving up on the rest of the line."
+  (md-prose-fill-tests--with-buffer md-prose-fill-tests--code-span
+    (md-prose-fill-tests--enable)
+    (let ((close (save-excursion
+                   (goto-char (point-min))
+                   (should (search-forward "-qec`" nil t))
+                   (point))))
+      ;; At least one break before the span, and one from its end onwards --
+      ;; the space closing the span off is itself the natural next break.
+      (should (seq-some (lambda (pos) (< pos close)) (md-prose-fill-tests--breaks)))
+      (should (seq-some (lambda (pos) (>= pos close))
+                        (md-prose-fill-tests--breaks))))))
+
+(ert-deftest md-prose-fill-test-hidden-text-costs-no-columns ()
+  "A line hidden down to inside the fill column is not broken.
+Counting hidden characters would break a folded tool row that renders
+well short of the column."
+  (md-prose-fill-tests--with-buffer md-prose-fill-tests--hidden-tail
+    (let ((ov (make-overlay (+ (point-min) md-prose-fill-tests--hidden-from)
+                            (line-end-position))))
+      (overlay-put ov 'invisible 'md-prose-fill-test-fold)
+      (add-to-invisibility-spec (cons 'md-prose-fill-test-fold t)))
+    (unwind-protect
+        (progn
+          (md-prose-fill-tests--enable)
+          (should-not (md-prose-fill-tests--breaks)))
+      (remove-from-invisibility-spec (cons 'md-prose-fill-test-fold t)))))
+
+(ert-deftest md-prose-fill-test-unhiding-refills ()
+  "Revealing hidden text puts the breaks back where they now belong.
+No character changes, so `jit-lock' sees nothing; the invisibility spec
+is part of what the fill is compared against for exactly this reason."
+  (md-prose-fill-tests--with-buffer md-prose-fill-tests--hidden-tail
+    (let ((ov (make-overlay (+ (point-min) md-prose-fill-tests--hidden-from)
+                            (line-end-position))))
+      (overlay-put ov 'invisible 'md-prose-fill-test-fold)
+      (add-to-invisibility-spec (cons 'md-prose-fill-test-fold t)))
+    (unwind-protect
+        (progn
+          (md-prose-fill-tests--enable)
+          (should-not (md-prose-fill-tests--breaks))
+          (remove-from-invisibility-spec (cons 'md-prose-fill-test-fold t))
+          (md-prose-fill--refill)
+          (redisplay t)
+          (jit-lock-fontify-now (point-min) (point-max))
+          (should (md-prose-fill-tests--breaks)))
+      (remove-from-invisibility-spec (cons 'md-prose-fill-test-fold t)))))
 
 (ert-deftest md-prose-fill-test-leaves-foreign-display-properties-alone ()
   "A space already carrying a `display' property is never taken as a break.

@@ -510,9 +510,13 @@ edge takes over.
   a chat transcript holds — are unaffected.
 - **Break points are counted in columns**, so the fill is ragged under
   `mixed-pitch-mode` or another variable-pitch prose face.
-- A token wider than the fill column — a long URL — is never cut. It runs on
-  to the window edge and wraps there, as it would under `fill-column`, and the
-  prose after it is filled again from the first space past it.
+- A token wider than the fill column — a long URL, or an inline code span — is
+  never cut. It runs on to the window edge and wraps there, as it would under
+  `fill-column`, and the prose after it is filled again from the first space
+  past it.
+- Inline code spans are never broken into, and hidden text costs no columns —
+  so a line folded behind an `invisible` overlay is measured by what it
+  actually shows.
 - This needs a `markdown` tree-sitter parser; the mode declines without one.
 
 See [md-prose-fill/DESIGN.md](md-prose-fill/DESIGN.md), and

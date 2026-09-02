@@ -84,9 +84,29 @@ A column scan, not a pixel measurement:
    past the overflow, so one long token costs one long line rather than
    switching the fill off for the rest of the paragraph.
 
-A space that already carries a `display` property from somewhere else is never
-chosen as a break point, so this cannot fight `md-bare-url`, `md-file-anchor`
-or `md-table-inline` over the same character.
+Three kinds of space are never chosen as a break point:
+
+- One already carrying a `display` property from somewhere else, so this cannot
+  fight `md-bare-url`, `md-file-anchor` or `md-table-inline` over the same
+  character.
+- A **hidden** one, since a break nothing renders is no break at all.
+- One **inside an inline code span**. A code span is one thing — a command, a
+  path, a symbol — and breaking inside it is what makes a shell line
+  unreadable and unpasteable. It is treated as a single token, so it follows
+  the long-token rule above.
+
+Hidden text also costs **no columns**. Counting it would misplace every break
+on a line carrying an `invisible` overlay, which is what a folded tool row in
+a coding agent's chat transcript is, and what `markdown-ts-hide-markup`
+makes of markup characters.
+
+Code spans come from the `markdown-inline` grammar, which `markdown-ts-mode`
+embeds with `:local t` — its parsers exist only where something has asked for
+one, so there is no parser list to query. Asking is what `treesit-node-at`
+does, and it is how the mode reaches inline nodes itself. Walking backtick to
+backtick and skipping to the end of each span found keeps that to one query per
+span, and to none at all on a line with no backtick in it, which is nearly all
+of them.
 
 The column scan assumes prose renders in a fixed-pitch face. That is true of
 the transcript buffers this is for, and false under `mixed-pitch-mode`, where
@@ -103,6 +123,13 @@ window-state change.
 - **Edits** are covered by `jit-lock`, registered the way `md-table-align`
   registers: re-added at a late depth so the fill runs after `font-lock` and
   after `visual-wrap-prefix-mode` has had a chance to compute prefixes.
+- **What is hidden** is not something `jit-lock` watches either: toggling
+  `markdown-ts-hide-markup` changes where every break on a line belongs without
+  changing a character. `buffer-invisibility-spec` is therefore part of
+  `md-prose-fill--state`, alongside the width threshold. Revealing a *single*
+  overlay's tail — expanding one folded tool row — changes no spec and so does
+  not refill; the row simply stays unbroken and runs to the window edge, which
+  is the right rendering for a command anyway.
 - **Geometry** matters at exactly one threshold. In a window narrower than
   `md-prose-fill-column` the injected breaks would land past the window edge
   and produce a ragged double wrap, so below that threshold the breaks are
@@ -164,6 +191,15 @@ Recorded after implementation.
   after it on that line. Found in live use, not by the suite, whose long-token
   fixture had nothing after the token. The two cases are now distinguished, and
   the overflow case resumes at the first space past the token.
+
+- **Inline code spans and hidden text both had to become first-class.** Found
+  in live use against a coding agent's chat transcript, where a tool
+  row — a blockquote whose body is one long inline code span, folded past
+  column 78 with an `invisible` overlay so it costs one screen line — was being
+  broken in two. Two independent causes: the fill was breaking *inside* the
+  code span, and it was counting the hidden tail's characters as columns.
+  Neither is specific to that package: the first mangles any shell command in
+  prose, the second misplaces every break under `markdown-ts-hide-markup`.
 
 - **`visual-wrap-prefix-mode` hands back a string here, not a spec.** Under
   `markdown-ts-mode` the `wrap-prefix` for a list item comes out as `"  "`
