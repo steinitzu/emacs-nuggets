@@ -441,6 +441,83 @@ Setext headings (underlined with `===`) follow level 1, since
 See [md-heading-scale/DESIGN.md](md-heading-scale/DESIGN.md) for why remapping
 is used rather than `markdown-mode`'s global `set-face-attribute`.
 
+### md-prose-fill — fill prose to a column, and leave tables the whole window
+
+`visual-fill-column-mode` and `olivetti-mode` give prose a comfortable measure
+by setting **window margins**. Margins come out of the window's text area, so
+the narrowing belongs to the window and nothing in the buffer can opt out of
+it: on a full-screen frame, a table that would have fitted is clipped to the
+prose measure and has to be scrolled sideways to read.
+
+`md-prose-fill` inverts that. The window keeps its full width — so tables, code
+blocks and headings get the whole screen, exactly as they do with
+`visual-fill-column-mode` off — and prose paragraphs are broken early, in the
+display only, at `md-prose-fill-column`:
+
+```
+## Wide tables and word wrap                        ← heading, untouched
+
+Emacs has no way to switch wrapping off              ← prose, filled at 40
+for part of a buffer, so a package that
+wants a comfortable measure for prose
+has to narrow the whole window.
+
+| Extension      | What it does                                                          | Status |
+|:---------------|:----------------------------------------------------------------------|:-------|
+| md-table-align | Display-only alignment of Markdown tables, with a horizontal viewport | done   |
+
+- A list item whose text runs on well             ← continuation keeps its
+  past the fill column, so that its                 indent
+  continuation lines have somewhere to
+  be indented to.
+```
+
+Turn it on:
+
+```elisp
+(add-hook 'markdown-ts-mode-hook #'visual-line-mode)
+(add-hook 'markdown-ts-mode-hook #'visual-wrap-prefix-mode)
+(add-hook 'markdown-ts-mode-hook #'md-prose-fill-mode)
+```
+
+or `(global-md-prose-fill-mode 1)` for every mode in `md-prose-fill-modes`
+(`markdown-ts-mode` by default). `visual-wrap-prefix-mode` is optional — it is
+what keeps a wrapped list item indented under its own text.
+
+Nothing is inserted. A break is a `display` property of `"\n"` on a space that
+is already in the buffer, so buffer text is untouched, copy and yank are
+unaffected, and it works in a buffer locked with a `read-only` text property.
+
+| Variable | Default | Meaning |
+|:---------|:--------|:--------|
+| `md-prose-fill-column` | `80` | Column prose is filled to, indent included. |
+| `md-prose-fill-modes` | `(markdown-ts-mode)` | Modes `global-md-prose-fill-mode` switches the mode on in. |
+
+`M-x md-prose-fill-buffer` fills the whole buffer at once rather than as it
+scrolls into view; `M-x md-prose-fill-clear` removes every break.
+
+Because the fill column is absolute rather than a fraction of the window,
+**resizing costs nothing** — no margins to recompute. The one exception is a
+window narrower than the fill column, where the breaks would land past the
+window edge; below that threshold the fill switches itself off and the window
+edge takes over.
+
+#### Limitations
+
+- **Hard-wrapped source fills raggedly.** A paragraph is filled one logical
+  line at a time, so a file already wrapped at 80 and filled to 40 leaves a
+  short line wherever each source line ended. Long unwrapped paragraphs — what
+  a chat transcript holds — are unaffected.
+- **Break points are counted in columns**, so the fill is ragged under
+  `mixed-pitch-mode` or another variable-pitch prose face.
+- A stretch with no space in it — a long URL — is not broken, and runs on to
+  the window edge, as it would under `fill-column`.
+- This needs a `markdown` tree-sitter parser; the mode declines without one.
+
+See [md-prose-fill/DESIGN.md](md-prose-fill/DESIGN.md), and
+[docs/per-region-wrap-width.md](docs/per-region-wrap-width.md) for why the
+margin approach cannot be made to exempt a table.
+
 ### termdex — reach the right terminal, out of many
 
 With a handful of `vterm` buffers open, `C-x b` stops helping: buffer names say
@@ -628,6 +705,8 @@ md-table-inline/        extension: inline markup inside Markdown table cells
 md-bare-url/            extension: make bare URLs in Markdown follow
 md-file-anchor/         extension: follow line/heading anchors on file links
 md-heading-scale/       extension: size Markdown headings by their level
+md-prose-fill/          extension: fill Markdown prose without narrowing windows
 termdex/                extension: directory-aware handling for many vterms
+docs/                   cross-session working notes: questions and findings
 tests/                  test suite and TTY test runner
 ```
