@@ -147,10 +147,46 @@ registration would otherwise outlive the code that removes them.
 
 Recorded after implementation.
 
-- None yet.
+- **The first line's budget needed a starting column.** A `paragraph` inside a
+  list item starts *after* the marker, so measuring the budget from the node
+  start left the marker's columns uncounted and the first line ended one column
+  past the fill column. `md-prose-fill--fill-line` takes the column the line
+  already occupies at its start and subtracts it. Caught by the test that
+  asserts every rendered row ends inside the column, which is why that test
+  exists separately from the one asserting the indent.
+
+- **`visual-wrap-prefix-mode` hands back a string here, not a spec.** Under
+  `markdown-ts-mode` the `wrap-prefix` for a list item comes out as `"  "`
+  rather than `(space :align-to (2 . width))`, because the marker matches
+  `adaptive-fill-first-line-regexp`. `md-prose-fill--indent` handles both.
+  Reusing whatever that mode computed — rather than deciding for ourselves —
+  means the indent matches a natural wrap exactly either way.
+
+## Known gap: hard-wrapped source
+
+A paragraph is filled one logical line at a time, so a Markdown file that is
+already hard wrapped at, say, 80 columns and is then filled to 40 breaks each
+*source* line separately and leaves a short line where each one ended:
+
+```
+every
+table in it goes along for the ride.
+```
+
+The transcript buffers this package is for hold long unwrapped lines, where
+this does not arise, and it is unrelated to the width question the package was
+built to answer — so it is recorded rather than fixed.
+
+The fix is the mirror of the break: render the newline *between* two lines of
+one paragraph as a space (`display " "`), joining them into one flow before
+filling it. The obstacle is that `visual-wrap-prefix-function` skips any line
+whose end-of-line `display` property is not on its `visual-wrap--safe-display-specs`
+list, so a joined line would silently lose its wrap prefix — the same
+composition problem this design solved for breaks, in the other direction.
 
 ## Open questions
 
+- Joining hard-wrapped source lines, per the gap above.
 - Pixel-accurate break points for `mixed-pitch-mode`, per "Break points" above.
 - Whether headings should be filled after all when they are long enough to wrap.
 - Whether the narrow-window threshold should fall back to filling at the window
