@@ -332,6 +332,7 @@ A `tabulated-list-mode` buffer, one row per terminal:
 | Directory | abbreviated (`~/…`) |
 | State | idle / busy / remote |
 | Process | foreground command, blank when idle |
+| Quiet | how long until cleanup would close it, or why it will not |
 | Buffer | buffer name |
 
 *(Deviation: a separate Title column was dropped during implementation. The
@@ -342,6 +343,45 @@ Keys: `RET` switch, `o` other window, `k` kill (confirming when busy), `+` new
 terminal in that row's directory, `g` refresh. Auto-refresh runs on a timer
 **only while the buffer is displayed**, and the timer is the one piece of state
 `termdex-unload-function` must clean up.
+
+#### The Quiet column
+
+Added with the cleanup sweep, in place of a separate command for asking about
+one terminal at a time. It is the answer to "why is that still here?", and it
+belongs next to the terminals rather than behind a prompt that makes you name
+one first.
+
+A cell is either how long the terminal has been quiet (`12m 03s`), or the reason
+that question does not apply — the protection in force (`busy`, `jobs`,
+`remote`, `shown`, `excluded`), or `-` for a terminal no sweep has stamped yet.
+
+That last one earns its place. After a reload it is *every* terminal, since the
+records live on the buffers and go with them, and it is the honest form of the
+answer to "I reloaded and ran cleanup and nothing happened": the clock had not
+started. Printing `0m 00s` there would be a number the sweep does not stand
+behind.
+
+Two constraints the column has to meet:
+
+> **Reading must not stamp.** The dashboard re-probes twice a second while
+> displayed, and the sweep's reading *starts and restarts clocks*. If the
+> dashboard used it, leaving the dashboard open would decide when terminals
+> died. So the reading is split: `termdex--cleanup-quiet-since` for the sweep,
+> which stamps, and `termdex--cleanup-quiet-for` for the display, which cannot.
+> The one thing the read-only version still gets right is output — it compares
+> the terminal's tick against the recorded one, so a terminal that has spoken
+> since the last sweep reads as `0m 00s` rather than as stale.
+
+> **Sorting is on seconds, not on text.** `9m 00s` sorts after `10m 00s` as
+> text. The seconds ride along on the cell as a text property and the column's
+> sort predicate reads them; cells with no number sort first, as one group.
+
+The protection check became `termdex--cleanup-protection`, returning *which*
+protection rather than a boolean, since the column has to print it. The sweep
+reads the same answer as a yes or no. Its `cond` is ordered by what is worth
+saying rather than by what is cheap to test, with `excluded` first: the sweep
+never sees an excluded terminal at all, so no other answer about one would be
+true.
 
 The switcher is likely the command that actually gets used daily and the
 dashboard the occasional "what is going on" view, so both are built on the same
@@ -653,7 +693,7 @@ they asked for rather than the first busy reading — `termdex-tests--busy` take
 an optional expected command, and returns the last thing it saw if that never
 arrives, so a genuine wrong answer still fails and still says what it was.
 
-Final state: 43 termdex tests, all against real terminals, ~25s for the whole
+Final state: 46 termdex tests, all against real terminals, ~25s for the whole
 collection's suite.
 
 ### The cleanup tests are the slow ones, and a third thing about negatives

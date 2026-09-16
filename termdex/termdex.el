@@ -694,7 +694,8 @@ The only state termdex keeps, and the only thing
 
 \\{termdex-list-mode-map}"
   (setq tabulated-list-format
-        [("Directory" 40 t) ("State" 8 t) ("Process" 14 t) ("Buffer" 30 t)]
+        `[("Directory" 40 t) ("State" 8 t) ("Process" 14 t)
+          ("Quiet" 9 ,#'termdex--list-quiet-lessp) ("Buffer" 30 t)]
         tabulated-list-padding 1)
   (tabulated-list-init-header))
 
@@ -703,20 +704,58 @@ The only state termdex keeps, and the only thing
 Kept buffer-locally so the refresh timer redraws what was asked for
 rather than reverting to the default on its first tick.")
 
+(defconst termdex--list-quiet-column 3
+  "Index of the Quiet column, which its sort predicate reads.
+Must match `tabulated-list-format' in `termdex-list-mode'.")
+
+(defun termdex--list-quiet (terminal now)
+  "Return the Quiet cell for TERMINAL at NOW.
+
+How long `termdex-cleanup-mode' would call the terminal quiet, or, when
+that question does not apply, why: the protection in force, or `-' for
+a terminal no sweep has stamped yet.  The last is worth showing rather
+than hiding -- after a reload it is every terminal, and it is the whole
+reason they are not closed on the next sweep but the one after.
+
+The seconds ride along on the string as a text property, since sorting
+the text would put \"9m\" after \"10m\"."
+  (if-let* ((protection (termdex--cleanup-protection terminal)))
+      (symbol-name protection)
+    (if-let* ((quiet (termdex--cleanup-quiet-for terminal now))
+              (whole (truncate quiet)))
+        (propertize (format "%dm %02ds" (/ whole 60) (% whole 60))
+                    'termdex-quiet quiet)
+      "-")))
+
+(defun termdex--list-quiet-key (entry)
+  "Return the seconds behind ENTRY's Quiet cell, or -1 when it has none."
+  (let ((cell (aref (cadr entry) termdex--list-quiet-column)))
+    (or (and (> (length cell) 0) (get-text-property 0 'termdex-quiet cell))
+        -1)))
+
+(defun termdex--list-quiet-lessp (a b)
+  "Compare entries A and B by how long each has been quiet.
+Sorting the printed text would put \"9m 00s\" after \"10m 00s\".  A cell
+with no number behind it -- a protected terminal, or one no sweep has
+stamped -- sorts before every terminal that has a clock running."
+  (< (termdex--list-quiet-key a) (termdex--list-quiet-key b)))
+
 (defun termdex--list-entries ()
   "Return `tabulated-list-entries' for every terminal."
-  (mapcar
-   (lambda (terminal)
-     (let* ((described (termdex--describe terminal))
-            (busy (termdex-terminal-busy terminal)))
-       (list (termdex-terminal-buffer terminal)
-             (vector (car described)
-                     (cond ((eq busy 'unknown) "remote")
-                           (busy "busy")
-                           (t "idle"))
-                     (or (termdex-terminal-command terminal) "")
-                     (termdex-terminal-name terminal)))))
-   (termdex-terminals termdex--list-include-excluded)))
+  (let ((now (current-time)))
+    (mapcar
+     (lambda (terminal)
+       (let* ((described (termdex--describe terminal))
+              (busy (termdex-terminal-busy terminal)))
+         (list (termdex-terminal-buffer terminal)
+               (vector (car described)
+                       (cond ((eq busy 'unknown) "remote")
+                             (busy "busy")
+                             (t "idle"))
+                       (or (termdex-terminal-command terminal) "")
+                       (termdex--list-quiet terminal now)
+                       (termdex-terminal-name terminal)))))
+     (termdex-terminals termdex--list-include-excluded))))
 
 (defun termdex-list-refresh ()
   "Re-probe every terminal and redraw the dashboard."
@@ -917,59 +956,97 @@ Nil, zero and negative all mean the same thing: close nothing."
   (with-current-buffer buffer
     (setq termdex--cleanup-activity (cons (buffer-chars-modified-tick) now))))
 
-(defun termdex--cleanup-quiet-since (buffer now)
-  "Return when BUFFER last showed a sign of life, stamping it if it just did.
+(defun termdex--cleanup-alive-at (record buffer)
+  "Return when BUFFER last showed a sign of life, given its RECORD.
 
 Two signals, and the later of them wins.  `buffer-chars-modified-tick'
-is the terminal's output: vterm writes what the shell prints into the
-buffer, and measurement says the tick does not move on its own at an
-untouched prompt.  It moves for a redraw with no output -- displaying
-the terminal, resizing a frame -- which is a false positive pointing
-the safe way, since it happens exactly when you are looking at it.
+-- which RECORD carries -- is the terminal's output: vterm writes what
+the shell prints into the buffer, and measurement says the tick does
+not move on its own at an untouched prompt.  It moves for a redraw with
+no output -- displaying the terminal, resizing a frame -- which is a
+false positive pointing the safe way, since it happens exactly when you
+are looking at it.
 
 `buffer-display-time' is the other: `set-window-buffer' stamps it, so
 visiting a terminal counts as using it even if nothing was typed.  This
 is how `clean-buffer-list' measures a buffer's age too -- that reaper
 is no use here, since it skips any buffer with a process, but its
 notion of \"last used\" is the right one."
+  (let ((displayed (buffer-local-value 'buffer-display-time buffer)))
+    (if (and displayed (time-less-p (cdr record) displayed))
+        displayed
+      (cdr record))))
+
+(defun termdex--cleanup-quiet-since (buffer now)
+  "Return when BUFFER last showed a sign of life, stamping it if it just did.
+The sweep's reading, which starts a clock that was not running and
+restarts one the terminal has outrun.  See `termdex--cleanup-quiet-for'
+for the reading that changes nothing."
   (let ((tick (buffer-chars-modified-tick buffer))
         (record (buffer-local-value 'termdex--cleanup-activity buffer)))
     (unless (and record (eql (car record) tick))
       ;; Output since the last sweep -- or no record at all, which is a
       ;; terminal this sweep is meeting for the first time.
       (setq record (termdex--cleanup-touch buffer now)))
-    (let ((displayed (buffer-local-value 'buffer-display-time buffer)))
-      (if (and displayed (time-less-p (cdr record) displayed))
-          displayed
-        (cdr record)))))
+    (termdex--cleanup-alive-at record buffer)))
 
-(defun termdex--cleanup-protected-p (terminal)
-  "Non-nil when TERMINAL must not be closed, whatever its age.
+(defun termdex--cleanup-quiet-for (terminal now)
+  "Return how long TERMINAL has been quiet at NOW, in seconds, or nil.
 
-Every uncertain case resolves to leaving it alone, because closing a
-terminal is not undoable and takes its scrollback with it.  Exclusions
-need no test here: the sweep walks `termdex-terminals', which applies
-them already."
+Nil means no sweep has stamped this terminal yet, so its clock has not
+started -- which after a reload is every terminal, since the records
+live on the buffers and go with them.
+
+Read-only, unlike `termdex--cleanup-quiet-since': the dashboard asks
+this of every terminal twice a second, and looking at a terminal must
+not start, restart or advance the clock that decides whether it lives."
+  (let* ((buffer (termdex-terminal-buffer terminal))
+         (record (buffer-local-value 'termdex--cleanup-activity buffer)))
+    (when record
+      (if (not (eql (car record) (buffer-chars-modified-tick buffer)))
+          ;; It has spoken since the last sweep, which is what that sweep
+          ;; will make of it too.
+          0
+        (max 0 (float-time
+                (time-subtract now (termdex--cleanup-alive-at record buffer))))))))
+
+(defun termdex--cleanup-protection (terminal)
+  "Return why TERMINAL must not be closed whatever its age, or nil.
+
+One of `excluded', `busy', `jobs', `remote', `shown' or `current'.
+Every uncertain case resolves to leaving the terminal alone, because
+closing one is not undoable and takes its scrollback with it.
+
+Ordered by what is worth saying rather than by what is cheap to test:
+an excluded terminal is not the sweep's to close at all, so no other
+answer about it would be true.  The sweep only reads this as a yes or
+no; the dashboard prints it."
   (let ((buffer (termdex-terminal-buffer terminal)))
-    (or (eq buffer (current-buffer))
-        ;; Displayed anywhere, in any frame.
-        (and (get-buffer-window buffer t) t)
-        ;; Busy, or remote -- whose busy state reads `unknown', and not
-        ;; knowing what a terminal is doing is not grounds for killing it.
-        (and (termdex-terminal-busy terminal) t)
-        ;; A backgrounded job leaves a prompt behind, so the terminal reads
-        ;; idle; killing the buffer would take the job with it on the pty's
-        ;; SIGHUP.  The shell's children are one more /proc read of data the
-        ;; probe already walked to.
-        (when-let* ((shell (termdex-terminal-shell terminal)))
-          (and (termdex--children shell) t)))))
+    (cond
+     ;; Never reached from the sweep, which walks `termdex-terminals' and
+     ;; so never sees one -- but `termdex-list' can be asked to show them.
+     ((termdex--excluded-p buffer) 'excluded)
+     ;; Remote reads `unknown': not knowing what a terminal is doing is
+     ;; not grounds for killing it.
+     ((eq (termdex-terminal-busy terminal) 'unknown) 'remote)
+     ((termdex-terminal-busy terminal) 'busy)
+     ;; A backgrounded job leaves a prompt behind, so the terminal reads
+     ;; idle; killing the buffer would take the job with it on the pty's
+     ;; SIGHUP.  The shell's children are one more /proc read of data the
+     ;; probe already walked to.
+     ((when-let* ((shell (termdex-terminal-shell terminal)))
+        (termdex--children shell))
+      'jobs)
+     ;; Displayed anywhere, in any frame.
+     ((get-buffer-window buffer t) 'shown)
+     ((eq buffer (current-buffer)) 'current))))
 
 (defun termdex--cleanup-close (buffer quiet)
   "Kill BUFFER, quiet for QUIET seconds, and say that it happened.
 
 Announced rather than silent: this is the one thing termdex does
 without being asked, and a terminal that vanishes should be explicable
-afterwards -- `termdex--cleanup-protected-p' cannot see a shell blocked
+afterwards -- `termdex--cleanup-protection' cannot see a shell blocked
 in a builtin such as `read', and that is the case most likely to
 surprise.
 
@@ -990,7 +1067,7 @@ question the sweep has just answered."
       (dolist (terminal (termdex-terminals))
         (with-demoted-errors "termdex cleanup: %S"
           (let ((buffer (termdex-terminal-buffer terminal)))
-            (if (termdex--cleanup-protected-p terminal)
+            (if (termdex--cleanup-protection terminal)
                 ;; The clock is restarted, not paused: a terminal that spent
                 ;; forty minutes on a job has not been idle for forty
                 ;; minutes, it has been idle since the job ended.

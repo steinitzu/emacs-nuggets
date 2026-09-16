@@ -138,6 +138,55 @@ hang a batch run, so the query functions are suppressed."
      (skip-unless termdex-tests--available)
      (termdex-tests--with-terminals ,@body)))
 
+(defmacro termdex-tests--with-cleanup (seconds &rest body)
+  "Run BODY with the cleanup threshold at SECONDS and the timer off.
+
+The mode is on by default, so the suite runs with a live sweep timer.
+With the threshold turned down to a second, a sweep fired from an idle
+moment could reach into a terminal another test is still using, so the
+mode is switched off for the duration and put back as it was."
+  (declare (indent 1) (debug (form body)))
+  `(let ((termdex-tests--cleanup-was termdex-cleanup-mode)
+         (termdex-cleanup-idle-seconds ,seconds)
+         (termdex--cleanup-last-sweep nil))
+     (unwind-protect
+         (progn (termdex-cleanup-mode -1) ,@body)
+       (termdex-cleanup-mode (if termdex-tests--cleanup-was 1 -1)))))
+
+(defun termdex-tests--pause (seconds)
+  "Let SECONDS of wall clock pass, pumping process output meanwhile.
+The one place a fixed wait is right: what is being waited for is time
+itself, since the assertion is about a terminal having been quiet for
+long enough."
+  (let ((deadline (time-add nil seconds)))
+    (while (time-less-p nil deadline)
+      (accept-process-output nil 0.05))))
+
+(defun termdex-tests--quiet (buffer)
+  "Wait until BUFFER's terminal has written nothing for half a second.
+
+A shell reaches its prompt in stages: /proc calls it idle as soon as
+nothing is running, while it is still printing.  The sweep reads output
+as activity and restarts the clock, so a test that sweeps before the
+terminal has gone quiet is timing the shell's startup rather than its
+own pause -- and every terminal survives, protected or not."
+  (let ((tick nil) (since nil))
+    (termdex-tests--wait
+     (lambda ()
+       (let ((now (buffer-chars-modified-tick buffer)))
+         (unless (eql tick now)
+           (setq tick now since (current-time)))
+         (time-less-p (time-add since 0.5) nil))))))
+
+(defun termdex-tests--spoke (buffer string)
+  "Type STRING into BUFFER and wait until the terminal writes something.
+Returns non-nil if output arrived, which is what the sweep reads as
+activity."
+  (let ((before (buffer-chars-modified-tick buffer)))
+    (termdex-tests--type buffer string)
+    (termdex-tests--wait
+     (lambda () (/= before (buffer-chars-modified-tick buffer))))))
+
 
 ;;;; Probing: where a terminal is, and whether it is busy
 
@@ -632,6 +681,65 @@ offered the one you are already in."
           (should (equal (aref (cadr (assq busy rows)) 2) "sleep"))
           (should (equal (aref (cadr (assq idle rows)) 1) "idle")))))))
 
+(defun termdex-tests--list-cell (buffer column)
+  "Return the dashboard cell for BUFFER's terminal in COLUMN.
+Rebuilds the entries rather than reading the printed buffer: the cells
+are what the mode prints, and one of them carries a text property the
+printed line would not let us at."
+  (with-current-buffer termdex-list-buffer-name
+    (termdex-list-refresh)
+    (aref (cadr (assq buffer tabulated-list-entries)) column)))
+
+(termdex-tests--deftest termdex-list-shows-how-long-a-terminal-has-been-quiet ()
+  "The Quiet column counts from the last sweep, and names protections.
+Before any sweep there is no clock to report, which is the state every
+terminal is in after a reload -- the column says so rather than showing
+a zero it cannot stand behind."
+  (termdex-tests--with-project root
+    (let ((idle (termdex-tests--terminal root))
+          (busy (termdex-tests--terminal root)))
+      (termdex-tests--type busy "sleep 60\n")
+      (should (equal (termdex-tests--busy busy "sleep") "sleep"))
+      (should (termdex-tests--quiet idle))
+      ;; A threshold no test can reach: this is about what is displayed,
+      ;; and nothing here should be closed while it is being read.
+      (termdex-tests--with-cleanup 1800
+        (save-window-excursion (termdex-list))
+        (should (equal (termdex-tests--list-cell
+                        idle termdex--list-quiet-column)
+                       "-"))
+        (termdex-cleanup-now)
+        (let ((cell (termdex-tests--list-cell idle termdex--list-quiet-column)))
+          (should (string-match-p "\\`[0-9]+m [0-9][0-9]s\\'" cell))
+          ;; The seconds ride along for the sort, which the printed text
+          ;; would get wrong at "9m" against "10m".
+          (should (numberp (get-text-property 0 'termdex-quiet cell))))
+        (should (equal (termdex-tests--list-cell
+                        busy termdex--list-quiet-column)
+                       "busy"))))))
+
+(termdex-tests--deftest termdex-list-does-not-start-a-terminals-clock ()
+  "Looking at the dashboard must not stamp a terminal.
+The dashboard re-probes twice a second while it is displayed; if that
+counted as a sweep, leaving it open would decide when terminals die."
+  (termdex-tests--with-project root
+    (let ((buffer (termdex-tests--terminal root)))
+      (termdex-tests--with-cleanup 1800
+        (should-not (buffer-local-value 'termdex--cleanup-activity buffer))
+        (save-window-excursion (termdex-list))
+        (termdex-tests--list-cell buffer termdex--list-quiet-column)
+        (should-not (buffer-local-value 'termdex--cleanup-activity buffer))))))
+
+(ert-deftest termdex-list-sorts-the-quiet-column-by-time ()
+  "The Quiet column sorts on seconds, not on the text of the cell.
+Needs no terminal: this is about two entries and a predicate."
+  (let ((old (list "x" (vector "" "" "" (propertize "9m 00s" 'termdex-quiet 540) "")))
+        (new (list "y" (vector "" "" "" (propertize "10m 00s" 'termdex-quiet 600) "")))
+        (none (list "z" (vector "" "" "" "busy" ""))))
+    (should (termdex--list-quiet-lessp old new))
+    (should-not (termdex--list-quiet-lessp new old))
+    (should (termdex--list-quiet-lessp none old))))
+
 (termdex-tests--deftest termdex-list-kills-a-terminal ()
   "`k' on an idle terminal kills it without asking."
   (termdex-tests--with-project root
@@ -759,55 +867,6 @@ property a real click is dispatched through."
 ;; finished making noise, so the second sweep sees an unmoved tick.  Otherwise
 ;; a terminal would be spared by its own output and the test would pass
 ;; without the protection it is named after ever being consulted.
-
-(defmacro termdex-tests--with-cleanup (seconds &rest body)
-  "Run BODY with the cleanup threshold at SECONDS and the timer off.
-
-The mode is on by default, so the suite runs with a live sweep timer.
-With the threshold turned down to a second, a sweep fired from an idle
-moment could reach into a terminal another test is still using, so the
-mode is switched off for the duration and put back as it was."
-  (declare (indent 1) (debug (form body)))
-  `(let ((termdex-tests--cleanup-was termdex-cleanup-mode)
-         (termdex-cleanup-idle-seconds ,seconds)
-         (termdex--cleanup-last-sweep nil))
-     (unwind-protect
-         (progn (termdex-cleanup-mode -1) ,@body)
-       (termdex-cleanup-mode (if termdex-tests--cleanup-was 1 -1)))))
-
-(defun termdex-tests--pause (seconds)
-  "Let SECONDS of wall clock pass, pumping process output meanwhile.
-The one place a fixed wait is right: what is being waited for is time
-itself, since the assertion is about a terminal having been quiet for
-long enough."
-  (let ((deadline (time-add nil seconds)))
-    (while (time-less-p nil deadline)
-      (accept-process-output nil 0.05))))
-
-(defun termdex-tests--quiet (buffer)
-  "Wait until BUFFER's terminal has written nothing for half a second.
-
-A shell reaches its prompt in stages: /proc calls it idle as soon as
-nothing is running, while it is still printing.  The sweep reads output
-as activity and restarts the clock, so a test that sweeps before the
-terminal has gone quiet is timing the shell's startup rather than its
-own pause -- and every terminal survives, protected or not."
-  (let ((tick nil) (since nil))
-    (termdex-tests--wait
-     (lambda ()
-       (let ((now (buffer-chars-modified-tick buffer)))
-         (unless (eql tick now)
-           (setq tick now since (current-time)))
-         (time-less-p (time-add since 0.5) nil))))))
-
-(defun termdex-tests--spoke (buffer string)
-  "Type STRING into BUFFER and wait until the terminal writes something.
-Returns non-nil if output arrived, which is what the sweep reads as
-activity."
-  (let ((before (buffer-chars-modified-tick buffer)))
-    (termdex-tests--type buffer string)
-    (termdex-tests--wait
-     (lambda () (/= before (buffer-chars-modified-tick buffer))))))
 
 (termdex-tests--deftest termdex-cleanup-closes-a-quiet-terminal ()
   "A terminal that has done nothing for long enough is closed.

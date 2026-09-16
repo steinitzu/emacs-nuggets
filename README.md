@@ -552,7 +552,7 @@ project it was born in, the way `projectile-run-vterm` and friends tie it.
 | `termdex-last` | Back to the last terminal you were in, unconditionally — no directory matching, no prompt, busy or not. From inside a terminal, the most recent *other* one, so repeating it toggles between your two most recent terminals. With no terminal at all it behaves as `termdex-here`. |
 | `termdex-switch` | Pick from every terminal, annotated with directory and what it is running. |
 | `termdex-switch-project` | The same, restricted to this project. |
-| `termdex-list` | A dashboard: every terminal, its directory, whether it is busy, and what it is running. `RET` switch, `o` other window, `k` kill, `+` new terminal there, `g` refresh. |
+| `termdex-list` | A dashboard: every terminal, its directory, whether it is busy, what it is running, and how long it has been quiet. `RET` switch, `o` other window, `k` kill, `+` new terminal there, `g` refresh. |
 | `termdex-cleanup-now` | Close every terminal that has gone quiet, without waiting for the timer that normally does it. |
 
 `termdex-switch` toggles the way `C-x b` does: `RET` takes you to the most
@@ -616,6 +616,23 @@ at an unanswered prompt of its own — looks idle to `/proc`, and can be closed.
 
 The sweep runs from an idle timer, so it never interrupts your typing, and at
 most once a minute. `M-x termdex-cleanup-now` runs one immediately.
+
+`M-x termdex-list` shows where each terminal stands, in its **Quiet** column:
+
+```
+~/projects/emacs-tools   idle             12m 03s   *term emacs-tools*
+~/projects/emacs-tools   busy    sleep    busy      *term sleep*
+~/src/kernel             idle             jobs      *term kernel*
+~/notes                  idle             -         *term notes*
+```
+
+Either how long it has been quiet, or why that question does not apply: `busy`,
+`jobs` (a background job), `shown` (displayed somewhere), `remote`, `excluded` —
+or `-` for a terminal no sweep has stamped yet. **After loading or reloading
+termdex, every terminal reads `-`**: the clock lives on the buffer and starts at
+the first sweep that sees it, so existing terminals get a fresh idle period
+rather than being closed immediately. Sort by the column with `S` to bring the
+stalest to the top.
 
 #### Excluding terminals someone else drives
 
