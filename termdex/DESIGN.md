@@ -107,7 +107,8 @@ Of that shell's pid:
 
 A handful of small file reads per terminal, performed **on demand** — when the
 switcher opens, the dashboard refreshes, or a command searches for a match.
-Nothing polls in the background.
+Nothing polls in the background except the idle-terminal sweep, which is the one
+deliberate exception and is argued for where it is designed.
 
 ### Relationship to vterm's shell-side integration
 
@@ -146,8 +147,12 @@ out of that:
 - **Recency is free.** `buffer-list` is already MRU-ordered, which is exactly
   the tiebreaker the matching rules and the switcher need.
 - **`emacs-tools-reload` is a non-event.** Nothing accumulates, so nothing needs
-  resetting. `termdex-unload-function` has to cancel the dashboard's refresh
-  timer and nothing else.
+  resetting. `termdex-unload-function` has only timers to cancel.
+
+The idle-terminal sweep, added later, keeps its own record of when a terminal
+last did anything — but buffer-locally, *on the terminal*, so it is still not a
+registry: it cannot outlive what it describes, and a stale one is a timestamp
+that the next sweep corrects.
 
 Buffer names change on every `cd` (experiment 4), so **identity is the buffer
 object**, never its name. No lookup may be keyed on a name.
@@ -362,9 +367,11 @@ Three decisions fall out of that rule and the indicator's job:
 
 - **It shows how many, not how busy.** Busy state comes from `/proc`, so
   showing it would mean either probing at redisplay (forbidden above) or a
-  background polling timer (state the package otherwise avoids, burning CPU
-  for a glyph). Deliberately not built: busy-ness is one click away in the
-  dashboard.
+  background polling timer burning CPU for a glyph. Deliberately not built:
+  busy-ness is one click away in the dashboard. (The idle-terminal sweep added
+  later *is* a background timer, but not one this could ride on: it runs about
+  once a minute and only while Emacs is idle, so an indicator fed from it would
+  be wrong about busy-ness most of the time it mattered.)
 - **It counts candidates** — the population every other command acts on and
   `termdex-list` shows by default. An excluded terminal (an agent's session,
   a build console) is not a terminal termdex will send you to, so it is not
@@ -401,6 +408,139 @@ tests missed this by rendering a hand-built `("" construct)` — accidentally
 the fixed shape — where they now render `global-mode-string` itself,
 starting from nil, through the same `format-mode-line` pipeline redisplay
 uses.
+
+## Closing terminals that have gone quiet
+
+Added after long use. Terminals accumulate: a week into a session, most of a
+dozen are a shell sitting at a prompt in a directory nobody is working in any
+more. They cost a process each, they pad the switcher, and they inflate the
+count in the mode line until it stops meaning anything.
+
+`termdex-cleanup-mode` closes them. A terminal that has done nothing for
+`termdex-cleanup-idle-seconds` (default 1800, half an hour) is killed. On by
+default, which is the point — a cleanup you have to remember to turn on is one
+more thing to forget.
+
+This is the first thing in termdex that runs on its own, and "nothing polls in
+the background" was a rule rather than an accident. What pays for the exception:
+the sweep happens only while Emacs is idle, at most once a minute, and it costs
+the same handful of `/proc` reads the dashboard already does twice a second
+whenever it is on screen.
+
+### The timer
+
+Three mechanisms were considered.
+
+**Garbage collection is not one of them,** though it is the first thing that
+comes to mind. `post-gc-hook` exists, but GC cadence tracks allocation, not wall
+clock: it can fire thousands of times a minute or not once in an hour, and it
+fires at arbitrary points inside other code, which is the last place to run
+`kill-buffer` on a process buffer. `make-finalizer` is worse than useless here —
+a finalizer runs when a Lisp object becomes *unreachable*, and a live buffer is
+reachable from `buffer-list` forever. Emacs has no notion of an unreferenced
+buffer; buffers are killed explicitly or not at all.
+
+**An idle timer alone is the wrong clock.** `run-with-idle-timer` measures time
+since the last *user input to Emacs*, which has nothing to do with whether a
+terminal is in use: hack in a file for an hour and Emacs is never idle for
+thirty minutes, while a terminal running a build all night makes it idle the
+whole time.
+
+**A plain repeating `run-at-time`** is the right clock but the wrong moment — it
+fires in the middle of whatever you are typing.
+
+So: an idle timer as a *gate* on a wall-clock interval. One repeating idle timer
+at 5 seconds, which sweeps only if a minute has passed since the last sweep:
+
+```elisp
+(run-with-idle-timer 5 t #'termdex--cleanup-maybe-sweep)
+```
+
+Both numbers are internal constants, not options. A half-hour deadline does not
+need punctuality, and there is nothing a user would gain by tuning the
+granularity of when it is noticed. The interval is compared against a
+*timestamp* rather than counted in ticks, so a laptop that was suspended for two
+hours wakes up and finds its terminals half an hour stale, which is the truth.
+
+### What counts as activity
+
+Measured against a real vterm before designing this (`hacks/idle-signal-probe.el`),
+because the candidate signal is only useful if it never moves on its own:
+
+| Situation | `buffer-chars-modified-tick` |
+|---|---|
+| untouched prompt, buried, 6s | **still** |
+| untouched prompt, displayed, 6s | **still** |
+| `echo hello` | moved |
+| silent `sleep 6` running, buried | still — but `/proc` says busy |
+| merely displaying the buffer, no output | moved (vterm redraws on resize) |
+
+So a terminal is active when any of three things is true:
+
+- **It has produced output** since the last sweep — `buffer-chars-modified-tick`
+  changed. vterm writes output into the buffer, so the tick is the output. Its
+  one false positive is a redraw with no output, which happens when the terminal
+  is displayed or a frame is resized; that coincides with you looking at the
+  terminal, so it says "active" at exactly the moments it should.
+- **It has been visited** — `buffer-display-time`, which `set-window-buffer`
+  stamps for free. This is `clean-buffer-list`'s notion of "last used" too,
+  which is reassuring: the built-in buffer reaper measures age the same way.
+  (It is no use *here*: it skips any buffer with a process, so it will never
+  touch a vterm, and it only runs once a day.)
+- **It is protected** by one of the rules below, in which case the clock is not
+  merely paused but **restarted**. A terminal that spent forty minutes running a
+  silent job has not been idle for forty minutes; it has been idle since the job
+  ended.
+
+The record is one buffer-local cons of `(TICK . TIME)` on the terminal itself.
+
+### What is never closed
+
+- **A busy terminal.** Something is running in it.
+- **A terminal whose shell has any children.** A backgrounded job (`sleep 60 &`)
+  reads as idle by design — there is still a prompt — and killing the buffer
+  would `SIGHUP` the session out from under the job. One extra `/proc` read
+  catches it, from data the probe already collects.
+- **A remote terminal.** Its busy state is unknowable (`'unknown`), and "we
+  cannot tell what it is doing" is not grounds for killing it.
+- **An excluded terminal.** Someone else drives it; it is not termdex's to
+  close. This falls out for free — the sweep walks `termdex-terminals`, which
+  applies the exclusions already.
+- **A displayed terminal**, in any window of any frame, and the current buffer.
+
+The one gap left open is the one the probe already documents: a shell blocked in
+a builtin — `read`, `wait` — forks nothing, so it reads as idle and a terminal
+sitting on an unanswered prompt can be closed. Nothing short of shell-side
+integration can see it. Accepted, with mitigation: **every kill is announced**
+in the echo area and `*Messages*`, with the buffer name and how long it had been
+quiet, so a terminal disappearing is at least explicable after the fact.
+`clean-buffer-list` does the same, for the same reason.
+
+Killing a terminal is not undoable and takes its scrollback with it. That is
+what was asked for, and it is why the protections above are conservative in
+every direction: every uncertain case resolves to "leave it alone".
+
+### Configuration and state
+
+One option: `termdex-cleanup-idle-seconds`, default 1800. Non-positive or nil
+means nothing is ever closed. Per the reload note below the unit is *in the
+name*, since this is exactly the option whose meaning must never be reinterpreted
+in a running session — a value meant as minutes, read as seconds, closes
+everything.
+
+`termdex-cleanup-mode` is a global minor mode, enabled at the end of the file so
+that loading termdex switches it on. `:init-value t` would not do it: the
+variable would read `t` while the body that starts the timer never ran. Turning
+it off is `(termdex-cleanup-mode -1)`, or setting the option to nil — the sweep
+reads the option every time rather than at timer setup, so a value changed by any
+means takes effect without restarting anything.
+
+`termdex-cleanup-now` runs a sweep immediately, ignoring the rate limit. It is
+what the tests drive — no suite can wait half an hour — and it is a reasonable
+thing to have on a key.
+
+State: one timer, cancelled by `termdex-unload-function` alongside the
+dashboard's.
 
 ## Buffer naming
 
@@ -450,6 +590,12 @@ What gets tested against real terminals:
 - **Switcher** — assert the default candidate is the MRU other terminal, and
   that switching twice returns to the start (the toggle).
 - **Naming** — assert the buffer name follows the title across a `cd`.
+- **Cleanup** — with the threshold turned down to a second or two, assert a
+  quiet terminal is closed, that output restarts its clock, and that each
+  protection holds: busy, a background job, displayed, excluded. The tests
+  drive `termdex-cleanup-now` rather than the timer, and switch the mode off
+  around themselves so the global sweep cannot reach into another test's
+  terminals.
 
 Two mechanics the tests need: a `wait-until` helper polling a predicate with a
 timeout (never a fixed `sleep-for` — the probes above needed ~1–2s for a shell
@@ -501,3 +647,12 @@ collection's suite.
 Per `CLAUDE.md`: `termdex-cd-on-ancestor-match` is a boolean, so a stale value
 in a running session is harmless. Any future option carrying *units* must be
 introduced under a new name rather than have its meaning changed.
+
+`termdex-cleanup-idle-seconds` is the first option where that matters for real:
+a session holding a value meant as minutes and reading it as seconds would close
+every terminal it could. The unit is in the name, and if the unit ever changes
+so does the name.
+
+Reloading also drops the buffer-local activity records, which is harmless — the
+sweep after a reload re-stamps every terminal and starts the clock again, so the
+worst case is that a terminal about to be closed gets another half hour.
