@@ -23,6 +23,8 @@
 ;;   `termdex-switch-project'  ... restricted to this project
 ;;   `termdex-list'          a dashboard of all of them
 ;;   `termdex-indicator-mode'  a terminal count in the mode line
+;;   `termdex-cleanup-mode'  close terminals that have gone quiet (on by
+;;                           default; `termdex-cleanup-now' sweeps at once)
 ;;
 ;; Three facts about a terminal make all of that work: where it is, whether it
 ;; is busy, and what it is running.  All three come from /proc, asked of the
@@ -122,6 +124,20 @@ alone:
 The timer only does work while the dashboard is displayed in some
 window, so a dashboard left buried costs nothing."
   :type 'number)
+
+(defcustom termdex-cleanup-idle-seconds 1800
+  "How long a terminal may sit doing nothing before it is closed.
+
+Counted from the last sign of life: output, being displayed, or
+anything that protected it from closing -- a job finishing restarts the
+clock rather than resuming it.  See `termdex-cleanup-mode' for what is
+never closed at all.
+
+Nil, zero or negative closes nothing.  The unit is in the name because
+it must never quietly change: a value meant as minutes and read as
+seconds would close every terminal you have."
+  :type '(choice (const :tag "Never close idle terminals" nil)
+                 (number :tag "Seconds")))
 
 (defconst termdex--walk-limit 32
   "How deep to descend a terminal's process tree before giving up.
@@ -285,7 +301,8 @@ cached."
   (directory nil :documentation "Where the terminal is now, or nil if unknown.")
   (busy nil :documentation "Non-nil when something is running; `unknown' when unknowable.")
   (command nil :documentation "What is running, as a string, or nil.")
-  (remote nil :documentation "Non-nil when the terminal's shell is not local."))
+  (remote nil :documentation "Non-nil when the terminal's shell is not local.")
+  (shell nil :documentation "Pid of the shell you are typing at, or nil when remote."))
 
 (defun termdex--vterm-buffer-p (buffer)
   "Non-nil when BUFFER is a vterm with a live process."
@@ -315,7 +332,8 @@ cooperation from the shell."
          :buffer buffer
          :directory (termdex--cwd shell)
          :busy (and commands t)
-         :command (when commands (string-join commands "|")))))))
+         :command (when commands (string-join commands "|"))
+         :shell shell)))))
 
 (defun termdex--excluded-p (buffer)
   "Non-nil when BUFFER is a terminal termdex should leave alone.
@@ -849,16 +867,215 @@ indicator disappears entirely.
     (setq global-mode-string
           (delq 'termdex--indicator-construct global-mode-string))))
 
+;;;; Closing terminals that have gone quiet
+;;
+;; The one thing here that runs on its own.  An idle timer is the wrong clock
+;; -- it measures time since *you* last typed at Emacs, which says nothing
+;; about a terminal -- and a plain repeating timer is the right clock at the
+;; wrong moment, firing in the middle of your typing.  So: an idle timer
+;; gating a wall-clock interval.
+;;
+;; Garbage collection, which looks like it ought to fit, does not.  GC cadence
+;; follows allocation rather than time, `post-gc-hook' runs at arbitrary
+;; points inside other code, and a finalizer only fires for an *unreachable*
+;; object -- which a buffer never is, since `buffer-list' holds it.
+
+(defconst termdex--cleanup-sweep-seconds 60
+  "Shortest interval between two cleanup sweeps.
+Not an option: a half-hour deadline does not need punctuality, and
+there is nothing to be gained from tuning how promptly it is noticed.")
+
+(defconst termdex--cleanup-emacs-idle-seconds 5
+  "How long Emacs must be idle before a sweep may run.
+The gate that keeps the sweep out of the middle of your typing.")
+
+(defvar termdex--cleanup-timer nil
+  "Idle timer driving the cleanup sweep, or nil.")
+
+(defvar termdex--cleanup-last-sweep nil
+  "When the last sweep ran, or nil.
+Compared as a timestamp rather than counted in ticks, so an Emacs that
+was suspended for two hours wakes up and finds its terminals two hours
+stale, which is the truth.")
+
+(defvar-local termdex--cleanup-activity nil
+  "Cons of this terminal's modification tick and when it last looked alive.
+
+Kept on the terminal itself rather than in a registry, so it cannot
+outlive what it describes.  Losing it -- to a reload, say -- costs the
+terminal one more idle period: the next sweep stamps it afresh.")
+
+(defun termdex--cleanup-seconds ()
+  "Return the idle period after which a terminal is closed, or nil.
+Nil, zero and negative all mean the same thing: close nothing."
+  (when (and (numberp termdex-cleanup-idle-seconds)
+             (> termdex-cleanup-idle-seconds 0))
+    termdex-cleanup-idle-seconds))
+
+(defun termdex--cleanup-touch (buffer now)
+  "Record BUFFER as having shown a sign of life at NOW."
+  (with-current-buffer buffer
+    (setq termdex--cleanup-activity (cons (buffer-chars-modified-tick) now))))
+
+(defun termdex--cleanup-quiet-since (buffer now)
+  "Return when BUFFER last showed a sign of life, stamping it if it just did.
+
+Two signals, and the later of them wins.  `buffer-chars-modified-tick'
+is the terminal's output: vterm writes what the shell prints into the
+buffer, and measurement says the tick does not move on its own at an
+untouched prompt.  It moves for a redraw with no output -- displaying
+the terminal, resizing a frame -- which is a false positive pointing
+the safe way, since it happens exactly when you are looking at it.
+
+`buffer-display-time' is the other: `set-window-buffer' stamps it, so
+visiting a terminal counts as using it even if nothing was typed.  This
+is how `clean-buffer-list' measures a buffer's age too -- that reaper
+is no use here, since it skips any buffer with a process, but its
+notion of \"last used\" is the right one."
+  (let ((tick (buffer-chars-modified-tick buffer))
+        (record (buffer-local-value 'termdex--cleanup-activity buffer)))
+    (unless (and record (eql (car record) tick))
+      ;; Output since the last sweep -- or no record at all, which is a
+      ;; terminal this sweep is meeting for the first time.
+      (setq record (termdex--cleanup-touch buffer now)))
+    (let ((displayed (buffer-local-value 'buffer-display-time buffer)))
+      (if (and displayed (time-less-p (cdr record) displayed))
+          displayed
+        (cdr record)))))
+
+(defun termdex--cleanup-protected-p (terminal)
+  "Non-nil when TERMINAL must not be closed, whatever its age.
+
+Every uncertain case resolves to leaving it alone, because closing a
+terminal is not undoable and takes its scrollback with it.  Exclusions
+need no test here: the sweep walks `termdex-terminals', which applies
+them already."
+  (let ((buffer (termdex-terminal-buffer terminal)))
+    (or (eq buffer (current-buffer))
+        ;; Displayed anywhere, in any frame.
+        (and (get-buffer-window buffer t) t)
+        ;; Busy, or remote -- whose busy state reads `unknown', and not
+        ;; knowing what a terminal is doing is not grounds for killing it.
+        (and (termdex-terminal-busy terminal) t)
+        ;; A backgrounded job leaves a prompt behind, so the terminal reads
+        ;; idle; killing the buffer would take the job with it on the pty's
+        ;; SIGHUP.  The shell's children are one more /proc read of data the
+        ;; probe already walked to.
+        (when-let* ((shell (termdex-terminal-shell terminal)))
+          (and (termdex--children shell) t)))))
+
+(defun termdex--cleanup-close (buffer quiet)
+  "Kill BUFFER, quiet for QUIET seconds, and say that it happened.
+
+Announced rather than silent: this is the one thing termdex does
+without being asked, and a terminal that vanishes should be explicable
+afterwards -- `termdex--cleanup-protected-p' cannot see a shell blocked
+in a builtin such as `read', and that is the case most likely to
+surprise.
+
+The kill query is suppressed because the live process is the whole
+point: `kill-buffer' would otherwise ask, from a timer, about the
+question the sweep has just answered."
+  (let ((name (buffer-name buffer)))
+    (when (let ((kill-buffer-query-functions nil))
+            (kill-buffer buffer))
+      (message "termdex: closed %s, quiet for %s"
+               name (format-seconds "%Y, %D, %H, %M, %z%S" (round quiet))))))
+
+(defun termdex--cleanup-sweep ()
+  "Close every terminal that has been quiet for long enough."
+  (when-let* ((limit (termdex--cleanup-seconds)))
+    (let ((now (current-time)))
+      (setq termdex--cleanup-last-sweep now)
+      (dolist (terminal (termdex-terminals))
+        (with-demoted-errors "termdex cleanup: %S"
+          (let ((buffer (termdex-terminal-buffer terminal)))
+            (if (termdex--cleanup-protected-p terminal)
+                ;; The clock is restarted, not paused: a terminal that spent
+                ;; forty minutes on a job has not been idle for forty
+                ;; minutes, it has been idle since the job ended.
+                (termdex--cleanup-touch buffer now)
+              (let ((quiet (float-time
+                            (time-subtract
+                             now (termdex--cleanup-quiet-since buffer now)))))
+                (when (>= quiet limit)
+                  (termdex--cleanup-close buffer quiet))))))))))
+
+(defun termdex--cleanup-maybe-sweep ()
+  "Sweep unless the last sweep was too recent.
+Called from an idle timer, which fires as often as Emacs goes quiet;
+the rate limit is what makes that a sweep once a minute rather than one
+every few seconds while you read the screen."
+  (when (or (null termdex--cleanup-last-sweep)
+            (time-less-p (time-add termdex--cleanup-last-sweep
+                                   termdex--cleanup-sweep-seconds)
+                         nil))
+    (termdex--cleanup-sweep)))
+
+(defun termdex--cleanup-stop-timer ()
+  "Cancel the cleanup sweep timer."
+  (when termdex--cleanup-timer
+    (cancel-timer termdex--cleanup-timer)
+    (setq termdex--cleanup-timer nil)))
+
+(defun termdex--cleanup-start-timer ()
+  "Start the cleanup sweep timer, replacing any previous one."
+  (termdex--cleanup-stop-timer)
+  (setq termdex--cleanup-timer
+        (run-with-idle-timer termdex--cleanup-emacs-idle-seconds t
+                             #'termdex--cleanup-maybe-sweep)))
+
+;;;###autoload
+(defun termdex-cleanup-now ()
+  "Close every terminal that has been quiet for long enough, right now.
+The sweep `termdex-cleanup-mode' runs on a timer, without waiting for
+the timer.  Does nothing when `termdex-cleanup-idle-seconds' is nil."
+  (interactive)
+  (termdex--cleanup-sweep))
+
+;;;###autoload
+(define-minor-mode termdex-cleanup-mode
+  "Close terminals that have sat doing nothing.
+
+A terminal quiet for `termdex-cleanup-idle-seconds' -- half an hour by
+default -- is killed, so a long session does not silt up with shells
+sitting at a prompt in directories nobody is working in any more.
+
+Enabled when termdex is loaded.  Turn it off with a negative argument,
+or by setting `termdex-cleanup-idle-seconds' to nil; the option is read
+at every sweep, so changing it by any means takes effect without
+restarting anything.
+
+A terminal is never closed while it is busy, while its shell has a
+background job, while it is displayed in any window of any frame, or
+when it is remote (nothing local can tell what a shell across an ssh is
+doing).  Terminals excluded by `termdex-exclude' or
+`termdex-exclude-functions' are never touched: they belong to whatever
+drives them.  Every terminal that is closed is reported in the echo
+area.
+
+The sweep runs from an idle timer, so it never interrupts typing, and
+at most once a minute.  \\[termdex-cleanup-now] runs one immediately."
+  :global t
+  (if termdex-cleanup-mode
+      (termdex--cleanup-start-timer)
+    (termdex--cleanup-stop-timer)))
+
 (defun termdex-unload-function ()
   "Undo what leaves termdex-owned state outside this package's symbols.
-The dashboard timer would call a function about to be unbound and
-signal on every tick; the indicator would do the same from every mode
-line.  Returning nil leaves the rest of the unloading to
-`unload-feature'."
+Either timer would call a function about to be unbound and signal on
+every tick; the indicator would do the same from every mode line.
+Returning nil leaves the rest of the unloading to `unload-feature'."
   (termdex--list-stop-timer)
+  (termdex--cleanup-stop-timer)
   (when termdex-indicator-mode
     (termdex-indicator-mode -1))
   nil)
+
+;; On by default: a cleanup you have to remember to switch on is one more
+;; thing to forget.  `:init-value t' would not do it -- the variable would
+;; read t while the body that starts the timer had never run.
+(termdex-cleanup-mode 1)
 
 (provide 'termdex)
 
