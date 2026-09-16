@@ -639,8 +639,28 @@ they asked for rather than the first busy reading — `termdex-tests--busy` take
 an optional expected command, and returns the last thing it saw if that never
 arrives, so a genuine wrong answer still fails and still says what it was.
 
-Final state: 21 termdex tests, all against real terminals, ~8s for the whole
+Final state: 43 termdex tests, all against real terminals, ~25s for the whole
 collection's suite.
+
+### The cleanup tests are the slow ones, and a third thing about negatives
+
+They cost about 12s of that, and the cost is inherent: a sweep can only be
+tested by letting real time pass, twice per test — once waiting for the shell to
+go quiet, once being quiet for longer than the threshold.
+
+The first of those was found the hard way. Every cleanup test failed at first,
+all in the same direction — nothing was ever closed — because a shell reaches
+its prompt in stages: `/proc` calls it idle as soon as nothing is running, while
+it is still printing. The sweep reads that printing as activity and restarts the
+clock, correctly, so the tests were timing the shell's startup rather than their
+own pause. `termdex-tests--quiet` waits for the tick to stand still before the
+clock starts.
+
+That is the third rule about testing negatives here, after the two above: *make
+sure the sweep can reach the terminal at all*. A spared-terminal test that
+starts its clock too early passes whether or not the protection it is named
+after exists — which is why they all run beside a terminal with no protection,
+and assert that it died.
 
 ## Reload notes
 

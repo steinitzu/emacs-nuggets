@@ -748,4 +748,187 @@ property a real click is dispatched through."
           (call-interactively binding)
           (should (derived-mode-p 'termdex-list-mode)))))))
 
+;;;; Closing terminals that have gone quiet
+;;
+;; The sweep is driven directly rather than through its timer: no suite can
+;; wait half an hour, and an idle timer in a run that is never idle would
+;; never fire anyway.  What is turned down to a second or two is the
+;; *threshold*, which is the only thing about the sweep that is slow.
+;;
+;; Every spared-terminal test runs its first sweep *after* the terminal has
+;; finished making noise, so the second sweep sees an unmoved tick.  Otherwise
+;; a terminal would be spared by its own output and the test would pass
+;; without the protection it is named after ever being consulted.
+
+(defmacro termdex-tests--with-cleanup (seconds &rest body)
+  "Run BODY with the cleanup threshold at SECONDS and the timer off.
+
+The mode is on by default, so the suite runs with a live sweep timer.
+With the threshold turned down to a second, a sweep fired from an idle
+moment could reach into a terminal another test is still using, so the
+mode is switched off for the duration and put back as it was."
+  (declare (indent 1) (debug (form body)))
+  `(let ((termdex-tests--cleanup-was termdex-cleanup-mode)
+         (termdex-cleanup-idle-seconds ,seconds)
+         (termdex--cleanup-last-sweep nil))
+     (unwind-protect
+         (progn (termdex-cleanup-mode -1) ,@body)
+       (termdex-cleanup-mode (if termdex-tests--cleanup-was 1 -1)))))
+
+(defun termdex-tests--pause (seconds)
+  "Let SECONDS of wall clock pass, pumping process output meanwhile.
+The one place a fixed wait is right: what is being waited for is time
+itself, since the assertion is about a terminal having been quiet for
+long enough."
+  (let ((deadline (time-add nil seconds)))
+    (while (time-less-p nil deadline)
+      (accept-process-output nil 0.05))))
+
+(defun termdex-tests--quiet (buffer)
+  "Wait until BUFFER's terminal has written nothing for half a second.
+
+A shell reaches its prompt in stages: /proc calls it idle as soon as
+nothing is running, while it is still printing.  The sweep reads output
+as activity and restarts the clock, so a test that sweeps before the
+terminal has gone quiet is timing the shell's startup rather than its
+own pause -- and every terminal survives, protected or not."
+  (let ((tick nil) (since nil))
+    (termdex-tests--wait
+     (lambda ()
+       (let ((now (buffer-chars-modified-tick buffer)))
+         (unless (eql tick now)
+           (setq tick now since (current-time)))
+         (time-less-p (time-add since 0.5) nil))))))
+
+(defun termdex-tests--spoke (buffer string)
+  "Type STRING into BUFFER and wait until the terminal writes something.
+Returns non-nil if output arrived, which is what the sweep reads as
+activity."
+  (let ((before (buffer-chars-modified-tick buffer)))
+    (termdex-tests--type buffer string)
+    (termdex-tests--wait
+     (lambda () (/= before (buffer-chars-modified-tick buffer))))))
+
+(termdex-tests--deftest termdex-cleanup-closes-a-quiet-terminal ()
+  "A terminal that has done nothing for long enough is closed.
+The control for every test below: without this one passing, a spared
+terminal proves nothing."
+  (termdex-tests--with-project root
+    (let ((buffer (termdex-tests--terminal root)))
+      (should (termdex-tests--quiet buffer))
+      (termdex-tests--with-cleanup 1
+        (termdex-cleanup-now)
+        (should (buffer-live-p buffer))
+        (termdex-tests--pause 1.2)
+        (termdex-cleanup-now)
+        (should-not (buffer-live-p buffer))))))
+
+(termdex-tests--deftest termdex-cleanup-restarts-the-clock-on-output ()
+  "Output puts a terminal's idle period back to zero.
+The wait after it speaks runs past the threshold on purpose: surviving
+then is the clock having restarted, not the deadline not yet having
+arrived."
+  (termdex-tests--with-project root
+    (let ((buffer (termdex-tests--terminal root)))
+      (should (termdex-tests--quiet buffer))
+      (termdex-tests--with-cleanup 1
+        (let ((start (current-time)))
+          (termdex-cleanup-now)
+          (should (termdex-tests--spoke buffer "echo hello\n"))
+          (while (time-less-p nil (time-add start 1.5))
+            (accept-process-output nil 0.05))
+          (termdex-cleanup-now)
+          (should (buffer-live-p buffer)))))))
+
+(termdex-tests--deftest termdex-cleanup-spares-the-terminals-it-must ()
+  "Busy, backgrounded, displayed and excluded terminals survive a sweep.
+All four in one sweep, next to a terminal with no protection at all:
+the control dying is what shows the sweep ran and reached them."
+  (termdex-tests--with-project root
+    (let ((control (termdex-tests--terminal root))
+          (busy (termdex-tests--terminal root))
+          (background (termdex-tests--terminal root))
+          (displayed (termdex-tests--terminal root))
+          (excluded (termdex-tests--terminal root)))
+      (termdex-tests--type busy "sleep 60\n")
+      (should (equal (termdex-tests--busy busy "sleep") "sleep"))
+      ;; A backgrounded job reads as idle -- there is still a prompt -- so
+      ;; only the shell's children give it away.
+      (termdex-tests--type background "sleep 60 &\n")
+      (should (termdex-tests--wait
+               (lambda ()
+                 (termdex--children
+                  (termdex-terminal-shell (termdex--probe background))))))
+      (should (termdex-tests--idle background))
+      (with-current-buffer excluded (setq-local termdex-exclude t))
+      (save-window-excursion
+        (should (display-buffer displayed))
+        (should (get-buffer-window displayed t))
+        (dolist (buffer (list control busy background displayed excluded))
+          (should (termdex-tests--quiet buffer)))
+        (termdex-tests--with-cleanup 1
+          (termdex-cleanup-now)
+          (termdex-tests--pause 1.2)
+          (termdex-cleanup-now)))
+      (should-not (buffer-live-p control))
+      (should (buffer-live-p busy))
+      (should (buffer-live-p background))
+      (should (buffer-live-p displayed))
+      (should (buffer-live-p excluded)))))
+
+(termdex-tests--deftest termdex-cleanup-obeys-the-option-at-every-sweep ()
+  "Nil closes nothing, and the option is read per sweep rather than cached.
+The same terminal, already past its deadline, survives the sweep with
+the option nil and is closed by the next one with it restored."
+  (termdex-tests--with-project root
+    (let ((buffer (termdex-tests--terminal root)))
+      (should (termdex-tests--quiet buffer))
+      (termdex-tests--with-cleanup 1
+        (termdex-cleanup-now)
+        (termdex-tests--pause 1.2)
+        (setq termdex-cleanup-idle-seconds nil)
+        (termdex-cleanup-now)
+        (should (buffer-live-p buffer))
+        (setq termdex-cleanup-idle-seconds 1)
+        (termdex-cleanup-now)
+        (should-not (buffer-live-p buffer))))))
+
+(termdex-tests--deftest termdex-cleanup-sweeps-at-most-once-an-interval ()
+  "The timer's entry point is rate limited; `termdex-cleanup-now' is not.
+Without the limit the idle timer would sweep every few seconds while
+you sat reading the screen."
+  (termdex-tests--with-project root
+    (let ((buffer (termdex-tests--terminal root)))
+      (should (termdex-tests--quiet buffer))
+      (termdex-tests--with-cleanup 1
+        (termdex-cleanup-now)
+        (termdex-tests--pause 1.2)
+        (termdex--cleanup-maybe-sweep)
+        (should (buffer-live-p buffer))
+        (termdex-cleanup-now)
+        (should-not (buffer-live-p buffer))))))
+
+(ert-deftest termdex-cleanup-mode-owns-exactly-one-timer ()
+  "The mode installs one idle timer, never two, and removes it again.
+Needs no terminal: this is about the timer list."
+  (let ((was termdex-cleanup-mode))
+    (unwind-protect
+        (progn
+          (termdex-cleanup-mode 1)
+          (should (memq termdex--cleanup-timer timer-idle-list))
+          (termdex-cleanup-mode 1)
+          (should (= 1 (seq-count
+                        (lambda (timer)
+                          (eq (timer--function timer)
+                              #'termdex--cleanup-maybe-sweep))
+                        timer-idle-list)))
+          (termdex-cleanup-mode -1)
+          (should-not termdex--cleanup-timer)
+          (should-not (seq-some
+                       (lambda (timer)
+                         (eq (timer--function timer)
+                             #'termdex--cleanup-maybe-sweep))
+                       timer-idle-list)))
+      (termdex-cleanup-mode (if was 1 -1)))))
+
 ;;; termdex-tests.el ends here
