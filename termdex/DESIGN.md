@@ -542,6 +542,20 @@ thing to have on a key.
 State: one timer, cancelled by `termdex-unload-function` alongside the
 dashboard's.
 
+### Validated against the implementation
+
+Two notes from building it:
+
+- **The probe now carries the current shell's pid** (a `shell` slot on
+  `termdex-terminal`, nil when remote). The background-job check needs it, and
+  it is a fact the probe already walked the process tree to find — the
+  alternative was walking it a second time from the sweep.
+- **Reloading is still a non-event.** `emacs-tools-reload` switches the feature's
+  minor modes off, unloads, loads — and the file's own `(termdex-cleanup-mode 1)`
+  turns the mode on before the reloader switches it on again. That is harmless
+  because starting the timer cancels any previous one first; checked directly,
+  there is exactly one sweep timer before and after a reload.
+
 ## Buffer naming
 
 Requirement: buffer names match the terminal title. Experiment 4 shows
