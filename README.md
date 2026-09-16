@@ -553,6 +553,7 @@ project it was born in, the way `projectile-run-vterm` and friends tie it.
 | `termdex-switch` | Pick from every terminal, annotated with directory and what it is running. |
 | `termdex-switch-project` | The same, restricted to this project. |
 | `termdex-list` | A dashboard: every terminal, its directory, whether it is busy, and what it is running. `RET` switch, `o` other window, `k` kill, `+` new terminal there, `g` refresh. |
+| `termdex-cleanup-now` | Close every terminal that has gone quiet, without waiting for the timer that normally does it. |
 
 `termdex-switch` toggles the way `C-x b` does: `RET` takes you to the most
 recent *other* terminal, and pressing it again brings you back.
@@ -588,6 +589,33 @@ so the number is always the population `termdex-switch` would offer.
 The glyph is `termdex-indicator-glyph`: set it to plain ASCII (`">_"`) for a
 TTY whose fonts cannot show the emoji, or to a terminal icon of your choice
 with a Nerd Font installed.
+
+#### Closing terminals that have gone quiet
+
+On by default. A terminal that has done nothing for half an hour is closed, so a
+long-running Emacs does not silt up with shells sitting at a prompt in
+directories you stopped working in days ago.
+
+```elisp
+(setq termdex-cleanup-idle-seconds (* 2 60 60))  ; two hours instead
+(setq termdex-cleanup-idle-seconds nil)          ; or never close anything
+(termdex-cleanup-mode -1)                        ; same, by switching it off
+```
+
+A terminal is never closed while it is **busy**, while its shell has a
+**background job** (`sleep 60 &` leaves a prompt, so it looks idle — but killing
+the buffer would take the job with it), while it is **displayed** in any window
+of any frame, or when it is **remote**, since nothing local can tell what a
+shell across an `ssh` is doing. Excluded terminals (below) are never touched at
+all. Anything that protects a terminal also restarts its clock: a job that ran
+for two hours leaves the terminal idle from when it *finished*.
+
+Every terminal that gets closed says so in the echo area, because there is one
+case termdex cannot see: a shell blocked in a builtin such as `read` — sitting
+at an unanswered prompt of its own — looks idle to `/proc`, and can be closed.
+
+The sweep runs from an idle timer, so it never interrupts your typing, and at
+most once a minute. `M-x termdex-cleanup-now` runs one immediately.
 
 #### Excluding terminals someone else drives
 
