@@ -1,4 +1,4 @@
-# Open: giving one region a different wrap width from another
+# Resolved: giving one region a different wrap width from another
 
 **Raised:** 2026-09-02, from "can tables be excluded from `visual-fill-column`
 in `markdown-ts-mode`?" — a full-screen window whose tables were being clipped
@@ -15,9 +15,15 @@ source, variable pitch) becomes a new way for it to break. The question is back
 to the original framing: keep `visual-fill-column`, and let tables and other
 wide blocks **out of** its measure.
 
-**Candidate answer: margin spill** — see the section of that name below. The
-mechanism is verified end to end against real `md-table-align` output. It has
-not been designed or built yet.
+**Resolved:** 2026-09-17. **Margin spill** — see the section of that name
+below. Keep the margins, and render the part of a table row that does not fit
+the text area in the right margin, where a `display` spec is allowed to go.
+Built into `md-table-align` (`md-table-align-spill`); see "Margin spill" in
+[md-table-align/DESIGN.md](../md-table-align/DESIGN.md).
+
+`md-prose-fill` is **retired**: the question it existed to answer has a better
+answer, and its own approach — rebuilding the line breaker for all prose — was
+glitchy in live use in exactly the way that predicts.
 
 ## Why the question has no direct answer
 
@@ -39,9 +45,11 @@ recorded for wrapping: Emacs has no per-line or per-region wrapping control.
 
 ## What is established — do not re-derive
 
-All measured in a real TTY frame, 60 columns, `visual-line-mode` +
-`visual-wrap-prefix-mode`, on a list item so there is a prefix to preserve.
-Probes are `hacks/prose-fill-probe{,2,3}.el`.
+Facts about the **retired** injected-break approach, kept because they are
+properties of Emacs rather than of the package that used them. All measured in
+a real TTY frame, 60 columns, `visual-line-mode` + `visual-wrap-prefix-mode`,
+on a list item so there is a prefix to preserve. Probes are
+`hacks/prose-fill-probe{,2,3}.el`.
 
 | # | Question | Result |
 |---|----------|--------|
@@ -60,7 +68,10 @@ Probes are `hacks/prose-fill-probe{,2,3}.el`.
 Finding 6 is the one worth keeping: "make the display engine wrap for you" looks
 like the elegant answer and fails in a way that is easy to miss in a screenshot.
 
-## The consequence that makes this cheap
+## The consequence that made the retired approach cheap
+
+History, kept because it is the one thing margin spill gives up: the fill was
+priced per window resize, and spilling is not.
 
 The fill width is an **absolute column**, not a function of the window. So —
 unlike `visual-fill-column`, which recomputes margins on every window-state

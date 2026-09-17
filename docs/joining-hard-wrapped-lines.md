@@ -1,9 +1,15 @@
-# Open: joining hard-wrapped lines in md-prose-fill
+# Moot: joining hard-wrapped lines in md-prose-fill
 
 **Raised:** 2026-09-02, from the first render of `md-prose-fill` against a
 Markdown file rather than a chat transcript.
-**Status:** open, deliberately deferred. Nothing is broken; the fill is
-raggedier than it needs to be on source that is already hard wrapped.
+**Status:** moot since 2026-09-17. `md-prose-fill` is retired — the width
+question it answered is now answered by margin spill in `md-table-align`
+instead, so there is no fill left to make ragged. See
+[per-region-wrap-width.md](per-region-wrap-width.md).
+
+Kept for the verified facts below about `display`-property line joining and
+`visual-wrap-prefix-mode`'s handling of end-of-line display specs, which are
+properties of Emacs rather than of the retired package.
 
 ## The question
 
