@@ -824,11 +824,24 @@ outside is hidden; otherwise the row is laid out in full and may wrap."
 (defun md-table-align--spill-face (face)
   "Return FACE as a margin string should carry it.
 A margin string takes every attribute it does not specify from the
-`margin' face, so `default' is appended to stand behind it."
+`margin' face, so `default' is appended to stand behind it.
+
+Nothing in a copy may go unfaced, padding least of all.  In the text area
+a `display' string with no face of its own renders in the face of the
+text it replaces; in a margin there is no such text, so it would fall
+back to `margin' -- the buffer's default face, which under
+`mixed-pitch-mode' is the *proportional* one.  A run of padding would
+then be narrower than the same run of columns in the text area, and the
+copy would drift left of the grid it belongs to."
   (cond ((null face) 'default)
         ((keywordp (car-safe face)) (list face 'default))
         ((listp face) (append face '(default)))
         (t (list face 'default))))
+
+(defun md-table-align--spill-pad (width unit face)
+  "Return WIDTH pixels of padding as FACE-carrying spaces, UNIT wide each."
+  (propertize (make-string (max 0 (round (/ (float width) unit))) ?\s)
+              'face (md-table-align--spill-face face)))
 
 (defun md-table-align--spill-space (spec x unit)
   "Return the pixel a `space' display SPEC starting at pixel X reaches.
@@ -855,7 +868,8 @@ can fall anywhere in it."
         (if (and (consp spec) (eq (car spec) 'space))
             (let ((end (md-table-align--spill-space spec x unit)))
               (push (list :x x :end end
-                          :text (make-string (max 0 (round (/ (float (- end x)) unit))) ?\s))
+                          :text (md-table-align--spill-pad (- end x) unit
+                                                           (or own face)))
                     pieces)
               (setq x end))
           (let ((end (+ x (* unit (string-width (substring string i (1+ i)))))))
@@ -867,12 +881,16 @@ can fall anywhere in it."
       (setq i (1+ i)))
     (cons (nreverse pieces) x)))
 
-(defun md-table-align--flatten (bol eol unit)
+(defun md-table-align--flatten (bol eol unit face)
   "Return what the line between BOL and EOL renders as, piece by piece.
 
 Each piece is a plist of `:beg' and `:end-pos' -- the buffer span it came
 from -- `:x' and `:end' in pixels from the start of the text area, and
-the `:text' a copy of it should show."
+the `:text' a copy of it should show.
+
+FACE is the table's own face, which stands behind every piece that
+specifies none: the copy has to render in the face the pixel targets were
+measured in, or its columns are not the table's columns."
   (let ((pos bol) (x 0) (pieces nil))
     (while (< pos eol)
       ;; Strings shown in front of the text here, which is where every
@@ -881,7 +899,7 @@ the `:text' a copy of it should show."
         (when-let* (((eql (overlay-start ov) pos))
                     (string (overlay-get ov 'before-string)))
           (let ((flat (md-table-align--flatten-string
-                       string x unit (get-char-property pos 'face))))
+                       string x unit (or (get-char-property pos 'face) face))))
             (dolist (piece (car flat))
               (push (append (list :beg pos :end-pos pos) piece) pieces))
             (setq x (cdr flat)))))
@@ -896,15 +914,16 @@ the `:text' a copy of it should show."
             (cond
              ((stringp spec)
               (let ((flat (md-table-align--flatten-string
-                           spec x unit (get-char-property pos 'face))))
+                           spec x unit (or (get-char-property pos 'face) face))))
                 (dolist (piece (car flat))
                   (push (append (list :beg pos :end-pos end) piece) pieces))
                 (setq x (cdr flat))))
              ((and (consp spec) (eq (car spec) 'space))
               (let ((to (md-table-align--spill-space spec x unit)))
                 (push (list :beg pos :end-pos end :x x :end to
-                            :text (make-string
-                                   (max 0 (round (/ (float (- to x)) unit))) ?\s))
+                            :text (md-table-align--spill-pad
+                                   (- to x) unit
+                                   (or (get-char-property pos 'face) face)))
                       pieces)
                 (setq x to))))
             (setq pos end)))
@@ -914,7 +933,7 @@ the `:text' a copy of it should show."
                         :text (propertize
                                (buffer-substring-no-properties pos (1+ pos))
                                'face (md-table-align--spill-face
-                                      (get-char-property pos 'face))))
+                                      (or (get-char-property pos 'face) face))))
                   pieces)
             (setq x end pos (1+ pos)))))))
     (nreverse pieces)))
@@ -960,11 +979,12 @@ very thing spilling exists to prevent."
     (overlay-put ov 'md-table-align-spill t)
     ov))
 
-(defun md-table-align--spill-row (bol eol head unit)
+(defun md-table-align--spill-row (bol eol head unit face)
   "Render what the line between BOL and EOL puts past HEAD in the margin.
-UNIT is the pixel width of one character.  Returns the margin string, or
-nil when the line ends inside the text area and nothing has to spill."
-  (let* ((pieces (md-table-align--flatten bol eol unit))
+UNIT is the pixel width of one character and FACE the table's own face.
+Returns the margin string, or nil when the line ends inside the text area
+and nothing has to spill."
+  (let* ((pieces (md-table-align--flatten bol eol unit face))
          (tail (seq-drop-while (lambda (p) (<= (plist-get p :end) head)) pieces)))
     (when tail
       (let* ((beg (plist-get (car tail) :beg))
@@ -1008,7 +1028,8 @@ nil when the line ends inside the text area and nothing has to spill."
           (goto-char pipe)
           (md-table-align--spill-row (line-beginning-position)
                                      (line-end-position)
-                                     head (plist-get ctx :unit)))))))
+                                     head (plist-get ctx :unit)
+                                     (plist-get ctx :face)))))))
 
 (defun md-table-align--measure-table (node)
   "Return the layout context for the table at NODE, or nil if it has no rows.
@@ -1026,6 +1047,10 @@ clipping."
                         :indent (md-table-align--indent-pixels rows)
                         :unit unit
                         :fixed-pitch (md-table-align--fixed-pitch-p node)
+                        ;; The face every width here was measured in; see
+                        ;; `md-table-align--glyph-width'.  A margin copy has to
+                        ;; render in it or it is not on the table's grid.
+                        :face (get-text-property (treesit-node-start node) 'face)
                         :pipe (md-table-align--glyph-width node "|")
                         :ellipsis (md-table-align--glyph-width
                                    node md-table-align-ellipsis))))

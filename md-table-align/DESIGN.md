@@ -1560,3 +1560,26 @@ measure passes and `split-at` counts unchanged, and two extra
 - **The layout key's first element became a list** of width and margin, so a
   geometry-only re-fit still keeps the metrics caches: `md-table-align--refit`
   drops them when anything in the key's `cdr` changes.
+
+- **Padding in a copy went out unfaced**, and that is not cosmetic. The design
+  says faces are copied per piece; the implementation did so for characters and
+  emitted stretches as bare spaces. In the text area a `display` string with no
+  face renders in the face of the text it replaces, so this is invisible there
+  — but a margin has no such text, and an unfaced string falls back to the
+  `margin` face, which stands on the buffer's `default`. Under
+  `mixed-pitch-mode` that is the *proportional* face while the table is fixed
+  pitch, so every run of padding came out narrower than the columns it
+  continued, and rows carrying more padding than text sat left of the rest.
+
+  Reported from a GUI screenshot (`hacks/align-spill.png`), where the header
+  and the rows cut inside a cell's *text* lined up with each other and the rows
+  cut inside its *padding* did not. Scrolling the table to its right-hand end
+  hid it, since a table ending inside the text area has no copy to misplace.
+
+  Every piece now takes the face measurement was made in — the table's own, via
+  the new `:face` in the layout context, with a cell's face taking precedence —
+  and `md-table-align--spill-pad` is the one place padding is built.
+
+  A terminal cannot show this: every face is one column wide there, so the
+  test asserts the property instead, that no character of a copy goes out with
+  `default` alone behind it. It fails against the previous code.

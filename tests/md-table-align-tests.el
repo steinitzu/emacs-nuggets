@@ -1373,6 +1373,20 @@ it does not run the window-change hooks, so the re-fit is called by hand."
               out)))
     (mapcar #'cdr (sort out :key #'car))))
 
+(defun md-table-align-tests--row-faces ()
+  "Return the face each table row renders in, in buffer order.
+Taken at the row's own first pipe: a header row is faced differently from
+a body row, and a copy has to match the row it continues."
+  (save-excursion
+    (goto-char (point-min))
+    (let (out)
+      (while (not (eobp))
+        (when-let* ((pipe (save-excursion
+                            (search-forward "|" (line-end-position) t))))
+          (push (get-char-property (1- pipe) 'face) out))
+        (forward-line 1))
+      (nreverse out))))
+
 (defun md-table-align-tests--spilled-p (pos)
   "Return non-nil when POS is inside text that renders in the margin."
   (seq-some (lambda (ov) (and (overlay-get ov 'md-table-align-spill)
@@ -1464,6 +1478,75 @@ spilling exists to prevent."
       (md-table-align-tests--with-margins 24
         (should (equal (md-table-align-tests--screen-lines) '(1 1 1 1)))
         (should-not (md-table-align-tests--clips))))))
+
+(defun md-table-align-tests--tripled-width (string)
+  "Measure STRING as if one character were three pixels wide.
+
+In a GUI a character is many pixels wide and the text area is not a whole
+number of them across, so the split between text area and margin falls
+*inside* a character.  On a terminal a pixel is a column and that can
+never happen, which hides a whole class of bug: rows placing their margin
+copy from wherever their own text happened to be cut, rather than on the
+table's grid, so the copies disagree with each other by a character."
+  (* 3 (string-width string)))
+
+(defun md-table-align-tests--pipe-indices (string)
+  "Return the index of every `|' in STRING."
+  (let ((out nil) (i 0))
+    (while (setq i (string-search "|" string i))
+      (push i out)
+      (setq i (1+ i)))
+    (nreverse out)))
+
+(ert-deftest md-table-align-test-spill-copies-share-one-grid ()
+  "Margin copies line up with each other, whatever each row was cut inside.
+
+Some rows are cut inside a cell's text and others inside its padding.  If
+a copy is laid out from its own cut rather than from a position the whole
+table shares, the columns in the margin disagree by a character — which
+is what a GUI shows and a terminal cannot."
+  (md-table-align-tests--with-frame-width 200
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (setq-local md-table-align-pixel-width-function
+                  #'md-table-align-tests--tripled-width)
+      (md-table-align-tests--enable)
+      (md-table-align-tests--with-margins 99
+        (let* ((copies (md-table-align-tests--spill-strings))
+               (indices (mapcar #'md-table-align-tests--pipe-indices copies)))
+          (should (= (length copies) 4))
+          (should (car indices))
+          (dolist (row (cdr indices))
+            (should (equal row (car indices)))))))))
+
+(ert-deftest md-table-align-test-spill-copies-are-faced-like-the-table ()
+  "Every character of a copy carries the table's face, padding included.
+
+In the text area a `display' string with no face of its own renders in
+the face of the text it replaces.  A margin has no such text, so an
+unfaced copy falls back to the buffer's default face — the *proportional*
+one under `mixed-pitch-mode', while the table is fixed pitch.  Padding
+would then be narrower in the margin than the columns it continues, and
+rows carrying more padding than text would sit left of the rest.  Widths
+are all 1 on a terminal, so only the faces themselves can be asserted."
+  (md-table-align-tests--with-frame-width md-table-align-tests--spill-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (md-table-align-tests--with-margins 20
+        (let ((copies (md-table-align-tests--spill-strings))
+              (faces (md-table-align-tests--row-faces)))
+          (should copies)
+          (should (= (length copies) (length faces)))
+          (seq-mapn
+           (lambda (copy row-face)
+             ;; `markdown-ts-mode' faces its tables, so this is not vacuous.
+             (should row-face)
+             (should (> (length copy) 0))
+             (dotimes (i (length copy))
+               (let ((face (ensure-list (get-text-property i 'face copy))))
+                 ;; `default' is what stands behind the `margin' face; on its
+                 ;; own it means the piece went out unfaced, which is the bug.
+                 (should (seq-remove (lambda (f) (eq f 'default)) face)))))
+           copies faces))))))
 
 (ert-deftest md-table-align-test-spill-needs-a-margin ()
   "With no margin there is nothing to spill into, and nothing changes."
