@@ -88,6 +88,25 @@ there is nothing new to learn: the viewport follows point, honouring
 \\[scroll-right] move it explicitly."
   :type 'boolean)
 
+(defcustom md-table-align-spill t
+  "Non-nil means a table may render into the window's right margin.
+
+`visual-fill-column-mode' and `olivetti-mode' give prose a comfortable
+measure by setting window margins, which come out of the window's text
+area -- so a table is fitted to the narrowed width and a wide one is
+clipped, however much screen there is beside it.
+
+Ordinary text never renders in a margin, but a `display' spec can, so the
+part of a row that does not fit the text area is hidden there and
+re-emitted as a string in the margin, continuing the row.  Prose keeps
+the narrow measure it was given; only rows too wide for it are affected.
+
+Requires `md-table-align-hscroll', which is what keeps point inside the
+text area -- Emacs cannot draw the cursor in a margin.  Tables rendering
+in a proportional face are never spilled: every space `display' spec is
+inert inside a margin string, so their padding could not be reproduced."
+  :type 'boolean)
+
 (defcustom md-table-align-ellipsis "…"
   "String marking table content clipped away by the window's edge."
   :type 'string)
@@ -493,6 +512,34 @@ changes, so moving between windows re-fits to whichever you are in."
   (when-let* ((window (md-table-align--window)))
     (window-body-width window t)))
 
+(defun md-table-align--margin-pixels ()
+  "Return the width in pixels of the right margin of the fitted window.
+Nil when no window shows the buffer.  Margins are measured in the frame's
+canonical characters, whatever face the buffer renders in."
+  (when-let* ((window (md-table-align--window)))
+    (* (or (cdr (window-margins window)) 0)
+       (frame-char-width (window-frame window)))))
+
+(defun md-table-align--fixed-pitch-p (node)
+  "Return non-nil when the table at NODE renders in a fixed-pitch face.
+Two glyphs at opposite ends of the width range are measured the way
+everything else here is measured, so face remapping counts."
+  (= (md-table-align--glyph-width node "l")
+     (md-table-align--glyph-width node "W")))
+
+(defun md-table-align--spill-pixels (ctx)
+  "Return the pixels of right margin the table under CTX may render into.
+
+Zero unless every condition `md-table-align-spill' names holds: the
+option is on, there is a margin to spill into, the table is fixed pitch,
+and scrolling is available to keep point inside the text area."
+  (or (when-let* (((and md-table-align-spill md-table-align-hscroll))
+                  ((plist-get ctx :fixed-pitch))
+                  (pixels (md-table-align--margin-pixels))
+                  ((> pixels 0)))
+        pixels)
+      0))
+
 (defun md-table-align--table-width (ctx)
   "Return the pixel width the table described by CTX renders at.
 
@@ -511,7 +558,16 @@ grammar gives no way to express."
 
 The result is a plist of `:offset' (clamped so scrolling cannot run past
 the table's right edge), `:budget' -- the pixels left for the table --
-`:lead' and `:trail' for the clipped-edge indicators, and `:maxoff'.
+`:head', `:lead' and `:trail' for the clipped-edge indicators, and
+`:maxoff'.
+
+`:budget' is what the table may render into, which under
+`md-table-align-spill' includes the right margin.  `:head' is the part of
+that inside the text area: where the spill splits each row, and the
+viewport point is kept within, since Emacs cannot draw the cursor in a
+margin.  Without spilling the two are equal and everything below reduces
+to fitting the text area, which is what this did before margins came into
+it.
 
 Nil when nothing should be clipped: no window to measure against, or
 scrolling turned off.  The indicators are folded into the budget rather
@@ -522,27 +578,42 @@ one."
     (let* ((unit (plist-get ctx :unit))
            (ell (if md-table-align-hscroll-indicator (plist-get ctx :ellipsis) 0))
            (width (plist-get ctx :table-width))
+           (spill (md-table-align--spill-pixels ctx))
            ;; Reserve one character cell: a wrapped line spends one on the
            ;; continuation glyph, and it absorbs rounding at the window edge.
-           (available (- avail unit))
+           ;; On a terminal that column is reserved even when everything past
+           ;; it is hidden, which is the seam a spilled row is shifted across.
+           (head-avail (- avail unit))
+           (available (+ head-avail spill))
            ;; At the rightmost offset a lead indicator is showing, so that is
            ;; the budget the limit has to be computed against.  Choosing it
            ;; this way makes the clamp a fixed point: laying out at `maxoff'
            ;; reproduces exactly this budget, and the table's right edge lands
            ;; exactly on the viewport's.
-           (maxoff (if (<= width available) 0 (max 0 (- width (- available ell)))))
+           ;;
+           ;; Against the *head*, not the whole budget: the limit's job is to
+           ;; let point reach the last column, and point can only stand in the
+           ;; text area.  A table that fits the full width still scrolls once
+           ;; point moves into the part rendered in the margin -- and only
+           ;; then, since an offset belongs to the table point is in.
+           (maxoff (if (<= width head-avail) 0 (max 0 (- width (- head-avail ell)))))
            (o (max 0 (min offset maxoff)))
            (lead (if (> o 0) ell 0))
            (trail (if (> (- width o) (- available lead)) ell 0))
-           (budget (- available lead trail)))
+           (budget (- available lead trail))
+           ;; A trail indicator sits at the right edge of what renders, which
+           ;; is inside the margin when spilling and inside the text area
+           ;; otherwise.
+           (head (if (> spill 0) (- head-avail lead) budget)))
       ;; A window with no room for even a couple of characters of table would
       ;; clip it to nothing.  Leaving it to wrap is the better failure: it is
       ;; what happened before any of this existed, and it hides nothing.
-      (when (>= budget (* 2 unit))
+      (when (>= head (* 2 unit))
         (list :offset o
               :lead lead
               :trail trail
               :budget budget
+              :head head
               :maxoff maxoff)))))
 
 (defun md-table-align--content-offset (align width cell-width)
@@ -740,6 +811,205 @@ outside is hidden; otherwise the row is laid out in full and may wrap."
                                  (plist-get ctx :unit) (null prev))
           (setq prev (plist-get step :end)))))))
 
+;;;; Margin spill
+;;
+;; A row wider than the text area is split: the head stays real buffer text,
+;; the tail is hidden and re-emitted as a string in the right margin, which is
+;; the one place a `display' spec can render outside the text area.  What the
+;; tail says is taken from what the laid-out row *renders* -- stretch glyphs,
+;; display strings, hidden spans and all -- rather than rebuilt from the row
+;; plan, because by then its cells may carry display properties belonging to
+;; other packages.  See "Margin spill" in DESIGN.md.
+
+(defun md-table-align--spill-face (face)
+  "Return FACE as a margin string should carry it.
+A margin string takes every attribute it does not specify from the
+`margin' face, so `default' is appended to stand behind it."
+  (cond ((null face) 'default)
+        ((keywordp (car-safe face)) (list face 'default))
+        ((listp face) (append face '(default)))
+        (t (list face 'default))))
+
+(defun md-table-align--spill-space (spec x unit)
+  "Return the pixel a `space' display SPEC starting at pixel X reaches.
+UNIT is the pixel width of one character.  `md-table-align--pad' emits
+the `(PIXELS)' form of `:align-to'; the others are handled for the sake
+of specs this package did not write."
+  (let ((align (plist-get (cdr spec) :align-to))
+        (width (plist-get (cdr spec) :width)))
+    (cond ((and (consp align) (null (cdr align))) (max x (car align)))
+          ((numberp align) (max x (* align (frame-char-width))))
+          ((and (consp width) (null (cdr width))) (+ x (car width)))
+          ((numberp width) (+ x (* width unit)))
+          (t (+ x unit)))))
+
+(defun md-table-align--flatten-string (string x unit face)
+  "Return (PIECES . END) for display STRING laid out from pixel X.
+FACE stands in where STRING specifies none -- a `display' string carries
+the face of the text it replaces.  One piece per character, so a split
+can fall anywhere in it."
+  (let ((pieces nil) (i 0) (n (length string)))
+    (while (< i n)
+      (let ((spec (get-text-property i 'display string))
+            (own (get-text-property i 'face string)))
+        (if (and (consp spec) (eq (car spec) 'space))
+            (let ((end (md-table-align--spill-space spec x unit)))
+              (push (list :x x :end end
+                          :text (make-string (max 0 (round (/ (float (- end x)) unit))) ?\s))
+                    pieces)
+              (setq x end))
+          (let ((end (+ x (* unit (string-width (substring string i (1+ i)))))))
+            (push (list :x x :end end
+                        :text (propertize (substring-no-properties string i (1+ i))
+                                          'face (md-table-align--spill-face (or own face))))
+                  pieces)
+            (setq x end))))
+      (setq i (1+ i)))
+    (cons (nreverse pieces) x)))
+
+(defun md-table-align--flatten (bol eol unit)
+  "Return what the line between BOL and EOL renders as, piece by piece.
+
+Each piece is a plist of `:beg' and `:end-pos' -- the buffer span it came
+from -- `:x' and `:end' in pixels from the start of the text area, and
+the `:text' a copy of it should show."
+  (let ((pos bol) (x 0) (pieces nil))
+    (while (< pos eol)
+      ;; Strings shown in front of the text here, which is where every
+      ;; zero-width `md-table-align--pad' stretch lives.
+      (dolist (ov (overlays-in pos (min eol (1+ pos))))
+        (when-let* (((eql (overlay-start ov) pos))
+                    (string (overlay-get ov 'before-string)))
+          (let ((flat (md-table-align--flatten-string
+                       string x unit (get-char-property pos 'face))))
+            (dolist (piece (car flat))
+              (push (append (list :beg pos :end-pos pos) piece) pieces))
+            (setq x (cdr flat)))))
+      (let ((spec (get-char-property pos 'display)))
+        (cond
+         ((invisible-p pos)
+          (setq pos (min eol (next-single-char-property-change
+                              pos 'invisible nil eol))))
+         (spec
+          (let ((end (min eol (next-single-char-property-change
+                               pos 'display nil eol))))
+            (cond
+             ((stringp spec)
+              (let ((flat (md-table-align--flatten-string
+                           spec x unit (get-char-property pos 'face))))
+                (dolist (piece (car flat))
+                  (push (append (list :beg pos :end-pos end) piece) pieces))
+                (setq x (cdr flat))))
+             ((and (consp spec) (eq (car spec) 'space))
+              (let ((to (md-table-align--spill-space spec x unit)))
+                (push (list :beg pos :end-pos end :x x :end to
+                            :text (make-string
+                                   (max 0 (round (/ (float (- to x)) unit))) ?\s))
+                      pieces)
+                (setq x to))))
+            (setq pos end)))
+         (t
+          (let ((end (+ x (* unit (char-width (char-after pos))))))
+            (push (list :beg pos :end-pos (1+ pos) :x x :end end
+                        :text (propertize
+                               (buffer-substring-no-properties pos (1+ pos))
+                               'face (md-table-align--spill-face
+                                      (get-char-property pos 'face))))
+                  pieces)
+            (setq x end pos (1+ pos)))))))
+    (nreverse pieces)))
+
+(defun md-table-align--spill-string (tail head unit)
+  "Return the margin copy of the pieces in TAIL, which start at pixel HEAD.
+A piece straddling the split keeps only the part past it, so the copy
+begins exactly where the text area stopped.  UNIT is one character."
+  (mapconcat
+   (lambda (piece)
+     (let ((x (plist-get piece :x))
+           (end (plist-get piece :end))
+           (text (plist-get piece :text)))
+       (cond ((>= x head) text)
+             ((> end head)
+              (let ((keep (max 0 (round (/ (float (- end head)) unit)))))
+                (substring text (max 0 (- (length text) keep)))))
+             (t ""))))
+   tail ""))
+
+(defun md-table-align--spill-head-string (pieces head unit)
+  "Return what PIECES render before pixel HEAD, for the text area to keep.
+The mirror of `md-table-align--spill-string': a piece straddling the
+split keeps the part in front of it.  A stretch glyph is the usual one,
+and left whole it would reach past the text area and wrap the line -- the
+very thing spilling exists to prevent."
+  (mapconcat
+   (lambda (piece)
+     (let ((x (plist-get piece :x))
+           (end (plist-get piece :end))
+           (text (plist-get piece :text)))
+       (cond ((<= end head) text)
+             ((< x head)
+              (substring text 0 (min (length text)
+                                     (max 0 (round (/ (float (- head x)) unit))))))
+             (t ""))))
+   pieces ""))
+
+(defun md-table-align--spill-overlay (beg end)
+  "Return a spill overlay over BEG to END, tagged for clearing."
+  (let ((ov (make-overlay beg end)))
+    (overlay-put ov 'md-table-align t)
+    (overlay-put ov 'md-table-align-spill t)
+    ov))
+
+(defun md-table-align--spill-row (bol eol head unit)
+  "Render what the line between BOL and EOL puts past HEAD in the margin.
+UNIT is the pixel width of one character.  Returns the margin string, or
+nil when the line ends inside the text area and nothing has to spill."
+  (let* ((pieces (md-table-align--flatten bol eol unit))
+         (tail (seq-drop-while (lambda (p) (<= (plist-get p :end) head)) pieces)))
+    (when tail
+      (let* ((beg (plist-get (car tail) :beg))
+             ;; A `display' string straddling the split is one buffer span:
+             ;; hiding from its start would take the head's part of it too.
+             (kept (seq-filter (lambda (p) (and (eql (plist-get p :beg) beg)
+                                                (< (plist-get p :x) head)))
+                               pieces))
+             (split (if kept (plist-get (car tail) :end-pos) beg))
+             (string (md-table-align--spill-string tail head unit)))
+        (when (> (length string) 0)
+          (when (> split beg)
+            (let ((ov (md-table-align--spill-overlay beg split)))
+              (overlay-put ov 'evaporate t)
+              (overlay-put ov 'priority 10)
+              (overlay-put ov 'display
+                           (md-table-align--spill-head-string
+                            kept head unit))))
+          (let ((ov (md-table-align--spill-overlay split eol)))
+            (overlay-put ov 'evaporate t)
+            ;; Not `invisible': a `display' overlay starting at the same
+            ;; position is handled first and would render anyway.  Outranking
+            ;; the alignment overlays is what takes them out of the text area.
+            (overlay-put ov 'priority 10)
+            (overlay-put ov 'display ""))
+          ;; An empty overlay, so it cannot `evaporate' and cannot be hidden
+          ;; by the `display' spec that starts further along the line.
+          (overlay-put (md-table-align--spill-overlay bol bol) 'before-string
+                       (propertize " " 'display
+                                   `((margin right-margin) ,string)))
+          string)))))
+
+(defun md-table-align--spill-rows (ctx)
+  "Spill every row of the table under CTX that overflows the text area."
+  (when-let* ((view (plist-get ctx :view))
+              (head (plist-get view :head))
+              ((> (plist-get view :budget) head)))
+    (dolist (row (plist-get ctx :rows))
+      (when-let* ((pipe (car (plist-get row :pipes))))
+        (save-excursion
+          (goto-char pipe)
+          (md-table-align--spill-row (line-beginning-position)
+                                     (line-end-position)
+                                     head (plist-get ctx :unit)))))))
+
 (defun md-table-align--measure-table (node)
   "Return the layout context for the table at NODE, or nil if it has no rows.
 Widths are measured before any overlay exists -- the region is swept
@@ -755,6 +1025,7 @@ clipping."
                         :aligns (md-table-align--alignments rows (length widths))
                         :indent (md-table-align--indent-pixels rows)
                         :unit unit
+                        :fixed-pitch (md-table-align--fixed-pitch-p node)
                         :pipe (md-table-align--glyph-width node "|")
                         :ellipsis (md-table-align--glyph-width
                                    node md-table-align-ellipsis))))
@@ -826,7 +1097,11 @@ data rows to make records of falls back to the horizontal layout."
                             :view (md-table-align--viewport
                                    ctx (md-table-align--offset-of node)))))
         (dolist (row (plist-get ctx :rows))
-          (md-table-align--layout-row row ctx))))))
+          (md-table-align--layout-row row ctx))
+        ;; After layout, not during it: what spills is what the finished row
+        ;; renders as, including the display properties other packages put
+        ;; inside its cells.
+        (md-table-align--spill-rows ctx)))))
 
 ;;;; Vertical records view
 ;;
@@ -1082,7 +1357,7 @@ Shared by the two halves of point-following, which have to agree on it:
 `md-table-align--desired-offset' scrolls when point is within the margin
 of an edge, and `md-table-align--point-into-view' has to place point
 outside that band or the scroll it was called for is undone at once."
-  (min (* (max 0 hscroll-margin) unit) (/ (plist-get view :budget) 3)))
+  (min (* (max 0 hscroll-margin) unit) (/ (plist-get view :head) 3)))
 
 (defun md-table-align--desired-offset (x view unit)
   "Return the offset of VIEW adjusted to keep grid column X in sight.
@@ -1093,7 +1368,9 @@ then moves by `hscroll-step' -- centring X when that is zero, as Emacs
 does.  A fixed step is not always enough to reach X, so it falls back to
 centring rather than creeping one step per command."
   (let* ((offset (plist-get view :offset))
-         (budget (plist-get view :budget))
+         ;; The head, not the whole budget: point has to end up somewhere the
+         ;; cursor can be drawn, which is the text area.
+         (budget (plist-get view :head))
          (maxoff (plist-get view :maxoff))
          (margin (md-table-align--margin view unit))
          (clamp (lambda (o) (max 0 (min maxoff (round o)))))
@@ -1226,7 +1503,7 @@ point off the first column would be gratuitous."
               (offset (plist-get view :offset))
               (margin (md-table-align--margin view (plist-get ctx :unit)))
               (lo (+ offset (if (> offset 0) margin 0)))
-              (hi (- (+ offset (plist-get view :budget))
+              (hi (- (+ offset (plist-get view :head))
                      (if (< offset (plist-get view :maxoff)) margin 0)))
               (visible (md-table-align--clip-steps
                         (md-table-align--row-plan row ctx) lo hi)))
@@ -1426,9 +1703,18 @@ written into `:align-to' are frozen at layout time.
 `buffer-invisibility-spec' participates for the same reason:
 `markdown-ts-toggle-hide-markup' works by toggling a member of it, and
 with `md-table-inline-mode' giving cells real markup, that toggle
-changes what every marked-up cell measures."
+changes what every marked-up cell measures.
+
+The right margin joins the width, and for the same reason: under
+`md-table-align-spill' it is part of what a table is laid out against,
+and `visual-fill-column-mode' grows the margin rather than the text area
+when a window is widened -- a geometry change the text width alone does
+not report.  Both sit in the first element, so a re-fit for geometry
+alone still keeps the metrics caches."
   (when-let* ((width (md-table-align--available-width)))
-    (list (and md-table-align-hscroll width)
+    (list (and md-table-align-hscroll
+               (list width (and md-table-align-spill
+                                (md-table-align--margin-pixels))))
           face-remapping-alist
           buffer-invisibility-spec)))
 
