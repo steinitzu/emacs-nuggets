@@ -1631,6 +1631,28 @@ character and the question cannot arise."
             (dolist (row (cdr indices))
               (should (equal row (car indices))))))))))
 
+(ert-deftest md-table-align-test-spill-fitting-table-does-not-scroll ()
+  "A table rendering in full has nothing to scroll: the margin shows the rest.
+
+It is still short of `:maxoff', which reaches far enough for point to
+stand in the last column, so nothing but the clipping itself says to stay
+put.  Like any other table that fits, this one absorbs the key rather
+than letting it scroll the window: see
+`md-table-align-test-table-that-fits-does-not-scroll'."
+  (md-table-align-tests--with-frame-width md-table-align-tests--spill-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (md-table-align-tests--with-margins 20
+        (let ((before (md-table-align-tests--spill-strings)))
+          (should before)
+          (md-table-align-tests--goto-table)
+          (md-table-align-hscroll-left 6)
+          (redisplay t)
+          (should (equal (md-table-align-tests--spill-strings) before))
+          ;; Absorbed rather than passed on: falling through would have left
+          ;; `scroll-left' to scroll the window instead.
+          (should (= (window-hscroll) 0)))))))
+
 (ert-deftest md-table-align-test-spill-needs-a-margin ()
   "With no margin there is nothing to spill into, and nothing changes."
   (md-table-align-tests--with-frame-width md-table-align-tests--spill-frame

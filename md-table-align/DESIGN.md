@@ -1606,3 +1606,16 @@ measure passes and `split-at` counts unchanged, and two extra
   `md-table-align-pixel-width-function` and asserts the copies share one grid
   after a scroll, not only at rest — alongside two round-trip tests, out to the
   far end and back, for point-following and for `C-x <` / `C-x >`.
+
+- **A table rendering in full does not scroll**, though `:maxoff` reaches past
+  it. The two are not in conflict: `:maxoff` is computed against `:head` so
+  that *point* can reach the last column (v9, "the cursor stays in the text
+  area"), and point-following still moves such a table. An explicit `C-x <` is
+  not point moving, and scrolling a table already shown in full could only take
+  a column away at the left to reveal nothing at the right. The command absorbs
+  the key and does nothing, as it already did for a table that fits the text
+  area.
+
+  This needs a clipped-or-not answer that does not come from `:trail`, which is
+  zero whenever `md-table-align-hscroll-indicator` is off, so the viewport
+  reports `:clipped` separately and `:trail` is derived from it.

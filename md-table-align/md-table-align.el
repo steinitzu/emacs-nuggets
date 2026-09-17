@@ -559,7 +559,9 @@ grammar gives no way to express."
 The result is a plist of `:offset' (clamped so scrolling cannot run past
 the table's right edge), `:budget' -- the pixels left for the table --
 `:head', `:lead' and `:trail' for the clipped-edge indicators,
-`:quantum' for the granularity `:offset' moves in, and `:maxoff'.
+`:clipped' for whether anything is hidden past the right edge whether or
+not an indicator says so, `:quantum' for the granularity `:offset' moves
+in, and `:maxoff'.
 
 `:budget' is what the table may render into, which under
 `md-table-align-spill' includes the right margin.  `:head' is the part of
@@ -612,7 +614,11 @@ one."
            (maxoff (* quantum (floor limit quantum)))
            (o (max 0 (min maxoff (* quantum (round offset quantum)))))
            (lead (if (> o 0) ell 0))
-           (trail (if (> (- width o) (- available lead)) ell 0))
+           ;; Kept apart from `trail': with the indicators off there is no
+           ;; indicator to read the clipping off, and the scrolling commands
+           ;; still have to know whether anything is hidden.
+           (clipped (> (- width o) (- available lead)))
+           (trail (if clipped ell 0))
            (budget (- available lead trail))
            ;; A trail indicator sits at the right edge of what renders, which
            ;; is inside the margin when spilling and inside the text area
@@ -627,6 +633,7 @@ one."
               :trail trail
               :budget budget
               :head head
+              :clipped clipped
               :quantum quantum
               :maxoff maxoff)))))
 
@@ -1569,8 +1576,17 @@ command it displaced, as it does outside a table."
            (delta (* sign (if columns
                               (* columns unit)
                             (max unit (- budget (* 2 unit))))))
-           (want (max 0 (min (plist-get view :maxoff)
-                             (+ (plist-get view :offset) delta)))))
+           ;; Leftwards only while something is hidden past the right edge.
+           ;; Under `md-table-align-spill' a table can render in full and
+           ;; still be short of `:maxoff', which reaches far enough for point
+           ;; to stand in the last column -- but point is not what is moving
+           ;; here, and scrolling a table already shown in full could only
+           ;; take a column away.  Rightwards needs no such guard: the clamp
+           ;; to zero is already it.
+           (want (if (and (> sign 0) (not (plist-get view :clipped)))
+                     (plist-get view :offset)
+                   (max 0 (min (plist-get view :maxoff)
+                               (+ (plist-get view :offset) delta))))))
       (unless (eql want (plist-get view :offset))
         (md-table-align--set-offset node want)
         (md-table-align--point-into-view
