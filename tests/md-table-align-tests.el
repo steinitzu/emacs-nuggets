@@ -1548,6 +1548,89 @@ are all 1 on a terminal, so only the faces themselves can be asserted."
                  (should (seq-remove (lambda (f) (eq f 'default)) face)))))
            copies faces))))))
 
+(ert-deftest md-table-align-test-spill-survives-a-scroll-round-trip ()
+  "Scrolling out to the end and back leaves the copies exactly as they were.
+Faces included: a copy rebuilt without them renders its padding in the
+buffer's default face, which is how the misalignment comes back."
+  (md-table-align-tests--with-frame-width md-table-align-tests--spill-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (md-table-align-tests--with-margins 20
+        (let ((before (md-table-align-tests--spill-strings)))
+          (should before)
+          ;; Out to the right-hand end, the way point-following takes it there.
+          (goto-char (point-min))
+          (should (search-forward "done" nil t))
+          (goto-char (match-beginning 0))
+          (md-table-align--follow-point)
+          (redisplay t)
+          ;; And back.
+          (goto-char (point-min))
+          (md-table-align--follow-point)
+          (redisplay t)
+          (let ((after (md-table-align-tests--spill-strings)))
+            (should (equal (mapcar #'substring-no-properties after)
+                           (mapcar #'substring-no-properties before)))
+            (should (equal after before))))))))
+
+(ert-deftest md-table-align-test-spill-survives-an-explicit-scroll-round-trip ()
+  "\\[scroll-left] out to the end and back leaves the copies as they were."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      ;; 48 columns of table against 30 of text area and 10 of margin, so
+      ;; there is something left to scroll.
+      (md-table-align-tests--with-margins 10
+        (let ((before (md-table-align-tests--spill-strings)))
+          (should before)
+          (md-table-align-tests--goto-table)
+          (dotimes (_ 6) (md-table-align-hscroll-left 6))
+          (redisplay t)
+          (dotimes (_ 6) (md-table-align-hscroll-right 6))
+          (redisplay t)
+          (should (equal (md-table-align-tests--spill-strings) before)))))))
+
+(ert-deftest md-table-align-test-spill-copies-share-one-grid-when-scrolled ()
+  "The copies agree with each other at every offset, not only at rest."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (md-table-align-tests--with-margins 10
+        (md-table-align-tests--goto-table)
+        (dotimes (_ 5)
+          (md-table-align-hscroll-left 3)
+          (redisplay t)
+          (let ((indices (mapcar #'md-table-align-tests--pipe-indices
+                                 (md-table-align-tests--spill-strings))))
+            (should indices)
+            (dolist (row (cdr indices))
+              (should (equal row (car indices))))))))))
+
+(ert-deftest md-table-align-test-spill-grid-holds-when-scrolled-off-grid ()
+  "Scrolling moves the table by pixels, not by whole characters.
+
+A scroll offset is a pixel count — `md-table-align--desired-offset'
+centres and rounds — so after one the table's columns no longer sit on
+character boundaries measured from the window edge.  The copies still
+have to agree with each other.  Only a character wider than one pixel can
+show this, hence the tripled width; on a terminal every offset is a whole
+character and the question cannot arise."
+  (md-table-align-tests--with-frame-width 100
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (setq-local md-table-align-pixel-width-function
+                  #'md-table-align-tests--tripled-width)
+      (md-table-align-tests--enable)
+      (md-table-align-tests--with-margins 30
+        (md-table-align-tests--goto-table)
+        (dotimes (_ 6)
+          (md-table-align-hscroll-left 2)
+          (redisplay t)
+          (let ((indices (mapcar #'md-table-align-tests--pipe-indices
+                                 (md-table-align-tests--spill-strings))))
+            (should indices)
+            (dolist (row (cdr indices))
+              (should (equal row (car indices))))))))))
+
 (ert-deftest md-table-align-test-spill-needs-a-margin ()
   "With no margin there is nothing to spill into, and nothing changes."
   (md-table-align-tests--with-frame-width md-table-align-tests--spill-frame

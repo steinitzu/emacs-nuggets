@@ -558,8 +558,8 @@ grammar gives no way to express."
 
 The result is a plist of `:offset' (clamped so scrolling cannot run past
 the table's right edge), `:budget' -- the pixels left for the table --
-`:head', `:lead' and `:trail' for the clipped-edge indicators, and
-`:maxoff'.
+`:head', `:lead' and `:trail' for the clipped-edge indicators,
+`:quantum' for the granularity `:offset' moves in, and `:maxoff'.
 
 `:budget' is what the table may render into, which under
 `md-table-align-spill' includes the right margin.  `:head' is the part of
@@ -596,8 +596,21 @@ one."
            ;; text area.  A table that fits the full width still scrolls once
            ;; point moves into the part rendered in the margin -- and only
            ;; then, since an offset belongs to the table point is in.
-           (maxoff (if (<= width head-avail) 0 (max 0 (- width (- head-avail ell)))))
-           (o (max 0 (min offset maxoff)))
+           ;; A spilled table scrolls in whole characters.  The offset is a
+           ;; pixel count, and the head can render at any pixel -- but the copy
+           ;; in the margin is a string, laid out from the margin's edge in
+           ;; whole characters, with no way to express a fraction of one.  At a
+           ;; fractional offset the two drift apart by that fraction, on every
+           ;; column of every row.  Quantising is also what this claimed to do
+           ;; all along: scrolling "mirrors what a `truncate-lines' buffer
+           ;; already does", and Emacs scrolls those by columns.  It is safe
+           ;; precisely when spilling is, since both need a fixed pitch.
+           (quantum (if (> spill 0) unit 1))
+           (limit (if (<= width head-avail) 0 (max 0 (- width (- head-avail ell)))))
+           ;; Down, so the clamp stays a fixed point; the ellipsis reserve is
+           ;; wider than the character this gives up.
+           (maxoff (* quantum (floor limit quantum)))
+           (o (max 0 (min maxoff (* quantum (round offset quantum)))))
            (lead (if (> o 0) ell 0))
            (trail (if (> (- width o) (- available lead)) ell 0))
            (budget (- available lead trail))
@@ -614,6 +627,7 @@ one."
               :trail trail
               :budget budget
               :head head
+              :quantum quantum
               :maxoff maxoff)))))
 
 (defun md-table-align--content-offset (align width cell-width)
@@ -1398,7 +1412,9 @@ centring rather than creeping one step per command."
          (budget (plist-get view :head))
          (maxoff (plist-get view :maxoff))
          (margin (md-table-align--margin view unit))
-         (clamp (lambda (o) (max 0 (min maxoff (round o)))))
+         ;; Whole characters while spilling; see `md-table-align--viewport'.
+         (quantum (or (plist-get view :quantum) 1))
+         (clamp (lambda (o) (max 0 (min maxoff (* quantum (round o quantum))))))
          (centre (lambda () (funcall clamp (- x (/ budget 2)))))
          (step (cond ((not (numberp hscroll-step)) nil)
                      ((floatp hscroll-step)

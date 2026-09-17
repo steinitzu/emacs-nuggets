@@ -1583,3 +1583,26 @@ measure passes and `split-at` counts unchanged, and two extra
   A terminal cannot show this: every face is one column wide there, so the
   test asserts the property instead, that no character of a copy goes out with
   `default` alone behind it. It fails against the previous code.
+
+- **A spilled table's offset is quantised to whole characters.** An offset is a
+  pixel count, and v4's "continuous and column-granular" scrolling let it be
+  any pixel: `md-table-align--desired-offset` centres point in the viewport and
+  rounds. The head renders at whatever pixel it is given, but a margin copy is
+  a *string*, laid out from the margin's edge in whole characters, with no way
+  to express a fraction of one. At a fractional offset the head and every copy
+  drift apart by that fraction — the same misalignment as the padding bug
+  above, reappearing after any scroll and gone again at offset zero.
+
+  So `:quantum` is a character cell while spilling and a pixel otherwise, and
+  both clamps — the viewport's and `md-table-align--desired-offset`'s — round
+  to it. This costs nothing the design promised: "column-granular" already
+  meant character columns, and quantising is safe exactly where spilling is,
+  since both require a fixed pitch. `:maxoff` rounds *down* so the clamp stays
+  a fixed point; the ellipsis reserve is wider than the character given up.
+
+  Reported from a GUI, as "perfect on load, wonky after a scroll". The suite
+  could not see it: a terminal pixel *is* a column, so every offset there is
+  already whole. The test that catches it fakes a three-pixel character with
+  `md-table-align-pixel-width-function` and asserts the copies share one grid
+  after a scroll, not only at rest — alongside two round-trip tests, out to the
+  far end and back, for point-following and for `C-x <` / `C-x >`.
