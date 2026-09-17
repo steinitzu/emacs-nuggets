@@ -65,3 +65,27 @@ Emacs 31.0.90, frame 400x59, fixture: 162 lines, max line 885
 | resize vertical (3 window ops) | 0.100 | 0.073 | 707 | 16 | 5 | 0 |
 | page through vertical | 0.299 | 0.218 | 3063 | 35 | 24 | 0 |
 
+## 2026-09-17 — 494d8c1
+
+Margin spill (v9).  The fixture is benched without margins, so nothing
+spills here and the point of the run is that the ordinary path did not
+get more expensive.  `layout-table`, measure passes and `split-at` are
+unchanged; `string-pixel-width` gains **two calls per table
+measurement** — `md-table-align--fixed-pitch-p` measuring `l` against
+`W` — which the metrics cache then holds with the rest of the context.
+
+Wall and gc times ran roughly 2x the previous entry across every
+scenario, vertical rows included, which is the sandbox this was measured
+in rather than a change in the code; the call counts are the signal.
+
+Emacs 31.0.90, frame 400x59, fixture: 162 lines, max line 885
+
+| scenario | wall s | gc s | string-pixel-width | layout-table | measure passes | split-at |
+|---|---|---|---|---|---|---|
+| open | 0.302 | 0.190 | 2926 | 13 | 13 | 132 |
+| resize (3 window ops) | 0.645 | 0.482 | 4884 | 37 | 7 | 396 |
+| page through | 0.528 | 0.398 | 5124 | 26 | 23 | 240 |
+| toggle vertical (8 tables) | 0.073 | 0.058 | 56 | 8 | 0 | 0 |
+| resize vertical (3 window ops) | 0.221 | 0.167 | 717 | 16 | 5 | 0 |
+| page through vertical | 0.626 | 0.479 | 3111 | 35 | 24 | 0 |
+

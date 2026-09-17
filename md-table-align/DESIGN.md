@@ -1514,3 +1514,49 @@ not installed.
 - A proportional table does not spill, faked with a
   `md-table-align-pixel-width-function` that measures `W` wider than `l`.
 - A table wider than the whole window still clips and still scrolls.
+
+### Validation against implementation (v9)
+
+Built as designed. The split of the viewport into `:budget` and `:head` carried
+the whole cursor problem, and the three point-following functions needed one
+word changed each. Nine tests, all of the design's list plus the one the
+deviation below forced; the suite runs 225.
+
+Confirmed in a real terminal against real `visual-fill-column-mode`
+(`hacks/spill-live.el`, captured with `hacks/margin-spill-probe.sh`): prose
+wrapping at 50 with tables running to the window edge at 80, a table wider than
+the window still clipping with its ellipsis, and point on a cell rendering in
+the margin scrolling the table until that cell is back in the text area.
+
+Cost, measured with `make bench` on the margin-less fixture: `layout-table`,
+measure passes and `split-at` counts unchanged, and two extra
+`string-pixel-width` calls per table measurement for the fixed-pitch probe.
+
+#### Deviations
+
+- **The head of a straddling span needed its own truncation.** The design says
+  the higher-priority overlay renders "just its head portion", and the first
+  implementation built that string with the same function that cuts the tail,
+  asking it for everything from pixel zero. That returns the piece *whole* — so
+  a pad stretch straddling the split kept its full width, reached past the text
+  area, and wrapped the row, which is the one thing spilling exists to prevent.
+  `md-table-align--spill-head-string` is the mirror of
+  `md-table-align--spill-string` and cuts at the split.
+
+  Found by looking at a rendered terminal, not by the suite: the fixture's
+  split fell between two cells, where the bug is invisible. The regression test
+  sets a 24-column margin so the split lands *inside* a pad, and fails without
+  the fix.
+
+- **`:fixed-pitch` is measured once per table and cached in the layout
+  context**, rather than asked per row. It belongs with the other measurements
+  the metrics cache holds, and the cache is already keyed on what faces the
+  cells carry and dropped when `face-remapping-alist` changes.
+
+- **The "no room to stand" guard moved from `:budget` to `:head`.** With
+  spilling the budget can be comfortable while the text area is not, and the
+  guard's question is whether there is room for the cursor.
+
+- **The layout key's first element became a list** of width and margin, so a
+  geometry-only re-fit still keeps the metrics caches: `md-table-align--refit`
+  drops them when anything in the key's `cdr` changes.
