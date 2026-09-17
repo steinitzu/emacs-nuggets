@@ -1346,3 +1346,171 @@ The default-gap arithmetic moves everywhere: fixture value column 6 → 8
 continuation line lands at the value column; the prefix's pipe, like the
 label-line pipes, is unreachable by `posn-at-point`, so a white-box check
 asserts the value overlay's `wrap-prefix` carries it.
+## Margin spill: escaping `visual-fill-column` (v9)
+
+A buffer under `visual-fill-column-mode` (or `olivetti-mode`) gives prose a
+comfortable measure by setting **window margins**. Margins come out of the
+window's text area, so `md-table-align--available-width` — the whole budget
+everything here is fitted to — is the *narrowed* one. On a full-screen frame
+with an 80-column measure, a table that would have fitted is clipped to half
+the screen and has to be scrolled. That is the complaint this revision exists
+to answer, and it is the one v3 recorded as unanswerable ("what was asked for,
+and why it can't be done").
+
+It is still true that width is a property of the window and no region of the
+buffer can opt out of it. But there is a way for a table to *render* outside
+the text area. Ordinary text never appears in a margin — a
+`((margin right-margin) STRING)` display spec does, on the same screen row as
+the text carrying it. So:
+
+- the part of a row that fits renders in the text area, as real buffer text;
+- the rest is hidden there, and re-emitted as a string in the right margin,
+  starting at the margin's first column, so it continues the head.
+
+Prose is untouched: `visual-fill-column` narrows it, Emacs wraps it, and
+`visual-wrap-prefix-mode` still applies to it. Only table rows wider than the
+text area pay anything.
+
+The mechanism was validated end to end before this design, against real
+`visual-fill-column-mode`, with the screen captured from a terminal so the
+evidence includes what the margins show. The probes are
+`hacks/margin-spill-probe.{el,sh}` and `hacks/margin-spill-table.el`; the
+findings, including the alternatives that failed, are in
+[docs/per-region-wrap-width.md](../docs/per-region-wrap-width.md). The four
+that shape this design:
+
+| Fact | Consequence here |
+|:-----|:-----------------|
+| A stretch glyph cannot push text past the text area (`:align-to right-margin` clamps) | The tail has to be a *copy* in a margin string; it cannot be the text itself |
+| Space specs are inert **inside** a margin string — `:align-to` and `:width` both render as one space | Padding in the tail must be literal spaces, so spill needs a **fixed-pitch** table |
+| `invisible` loses to a `display` overlay starting at the same position | The tail is hidden with `display ""` at a higher `priority`, not with `invisible` |
+| On a TTY the text area's last column is reserved for the continuation glyph, even when everything after it is hidden | The split is one column short of the text area, leaving a one-column **seam** |
+
+### The budget, split in two
+
+Two numbers replace the one v3 and v4 shared:
+
+- **`:budget`** — what the table may *render* into: text area **plus the right
+  margin**. This is what clipping and the ellipsis indicators are computed
+  against, so a table that fits in the full width is no longer clipped at all.
+- **`:head`** — what the table may render into *inside the text area*. This is
+  where the split falls, and it is also the viewport point must stay within.
+
+With spill off the two are equal and every formula reduces to what v4 already
+did, which is what keeps this from being a second code path.
+
+### The cursor stays in the text area
+
+Emacs cannot draw the cursor in a margin, so point on a spilled cell would
+render collapsed onto the split column — the lie that v4's point-following
+exists to prevent. The fix is to keep point-following exactly as it is and
+point it at `:head` instead of `:budget`: `md-table-align--desired-offset`,
+`md-table-align--margin` and `md-table-align--point-into-view` all measure
+against the head, and `:maxoff` is computed from the head too.
+
+So moving point into a cell that is currently spilled scrolls the table until
+that cell is back inside the text area, exactly as moving into a clipped cell
+scrolls it today. The table stays full width throughout; only its offset
+changes. Nothing flaps when merely *reading* a table, because an offset is only
+ever computed for the table point is in (v4, "scope of an offset").
+
+This is why **spill requires `md-table-align-hscroll`**. With scrolling off
+there is no viewport to keep point in, and point in a spilled cell would render
+in the wrong place with no way to recover.
+
+### The tail is flattened from what renders, not rebuilt from the plan
+
+The row plan knows every step's x position and text, so it looks like the
+cheapest source for the margin copy. It is the wrong one: by the time a row is
+laid out, its cells may carry `display` properties from `md-table-inline`,
+`md-bare-url` or `md-file-anchor`, and `invisible` from
+`markdown-ts-toggle-hide-markup`. Only the *rendered* result is right.
+
+So the tail is produced by walking the laid-out line and flattening what it
+renders into pixels: buffer characters, overlay `before-string`s, `display`
+strings, stretch glyphs (`:align-to` in pixels, which is what every
+`md-table-align--pad` emits) and hidden spans. The walk also picks up this
+package's own clip overlays for free, so a table wider than the *whole* window
+still clips and still shows its ellipsis — now at the far right of the margin.
+
+Faces are copied per piece, with `default` appended, because a margin string
+takes any attribute it does not specify from the `margin` face (NEWS.31), which
+is not what a table cell should inherit.
+
+A `display` string straddling the split — a delimiter row's run of dashes is
+one — cannot simply be hidden from its start, or the head loses the part that
+belongs to it. That span gets a higher-priority overlay rendering just its head
+portion, and hiding starts after it.
+
+### Fixed pitch only
+
+Since padding inside the margin string can only be literal spaces, a
+proportional table cannot be spilled: its tail would be ragged. Spill is
+therefore skipped unless the table's own face measures fixed-pitch, tested the
+way everything else here is measured — `md-table-align--glyph-width` of a
+narrow and a wide glyph, compared. A proportional table keeps v4 behavior
+exactly. `mixed-pitch-mode` is the common case, and it is already why
+`face-remapping-alist` is in the layout key.
+
+### Invalidation
+
+Margins participate in `md-table-align--available-width`, which is already the
+first element of `md-table-align--layout-key`, so a margin change re-fits with
+no new trigger — including `visual-fill-column`'s own adjustments.
+
+One ordering caveat: `visual-fill-column` sets margins from
+`window-configuration-change-hook` and `window-state-change-functions`, the
+same hooks the re-fit runs on, and hook order follows the order the two modes
+were switched on. If the re-fit runs first it lays out against the old margins.
+`md-table-align--post-command` re-checks the key on the next command, which is
+the existing backstop for exactly this class of staleness (v4.2), so the worst
+case is one stale frame rather than a wrong layout.
+
+### Interface
+
+| Name | Default | Meaning |
+|:-----|:--------|:--------|
+| `md-table-align-spill` | `t` | Let a table use the window margins when `visual-fill-column-mode` or similar has narrowed the text area. |
+
+No new faces: the copy carries the faces the source renders in.
+
+### Known limitations (v9)
+
+- **The right margin only.** With `visual-fill-column-center-text` there is a
+  left margin too, and the same mechanism works there (verified), but a head
+  spilled left makes the *start* of every row a copy, which is where point
+  usually is. Tables therefore start at the prose's left edge and grow right,
+  which is also how they read.
+- **A one-column seam on a TTY**, from the reserved continuation column. The
+  tail is shifted right across it rather than dropping the column that would
+  land there, so nothing is lost. A GUI with `fringes-outside-margins`
+  (`visual-fill-column`'s default) should have no seam; unverified, as this
+  sandbox has no display.
+- **The copy is static.** Faces are copied when the row is laid out, so
+  `hl-line`, the region, and isearch highlighting do not show on spilled text.
+  Isearch can still *match* there, and point-following brings the match into
+  the text area, since a match moves point.
+- **Another package writing to the right margin** on a table row (flymake's
+  margin indicators, say) concatenates with the tail in buffer order and pushes
+  it out of line. The left margin is the crowded one, which is a second reason
+  to spill right only.
+
+### Testing
+
+In a TTY frame, margins set with `set-window-margins` — which is all
+`visual-fill-column` does — so the suite does not depend on the package, plus
+one test that drives `visual-fill-column-mode` for real and skips when it is
+not installed.
+
+- A table that fits the full window but not the text area renders **every row
+  on one screen line**, with its last pipe present in a margin string and *no*
+  ellipsis anywhere — the v4 behavior this revision replaces.
+- Prose in the same buffer still wraps inside the measure, which is the whole
+  point of keeping the margins.
+- The margin copy carries the cell text the head does not show.
+- Point into a spilled cell leaves point rendered **inside the text area**
+  (`posn-area` nil, column below the text area's width).
+- Without margins nothing spills: the package's overlay set is unchanged.
+- A proportional table does not spill, faked with a
+  `md-table-align-pixel-width-function` that measures `W` wider than `l`.
+- A table wider than the whole window still clips and still scrolls.
