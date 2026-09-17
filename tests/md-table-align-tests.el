@@ -1320,3 +1320,205 @@ pass whether or not anything was invalidated."
         (md-table-align--post-command)
         (redisplay t)
         (should-not (equal (md-table-align-tests--data-rows) before))))))
+
+;;;; Margin spill
+;;
+;; `visual-fill-column-mode' narrows a window by setting margins, which come
+;; out of the text area -- so a table is fitted to the prose measure and a wide
+;; one is clipped however much screen sits beside it.  Under
+;; `md-table-align-spill' the part of a row that does not fit the text area is
+;; hidden there and re-emitted in the right margin.
+;;
+;; Margins are set with `set-window-margins' below, which is all
+;; `visual-fill-column' itself does; one test drives the real package.
+
+(defconst md-table-align-tests--spill-frame 60
+  "Frame width for the spill tests.
+The `--wide' fixture needs 48 columns, so it fits this frame with room to
+spare, and does not fit the 40-column text area a 20-column margin leaves.")
+
+(defconst md-table-align-tests--spill-prose
+  "prose before the table
+| Name | Description | Status |
+|------|-------------|--------|
+| alpha | first item description here | open |
+| beta | second item description | done |
+lorem ipsum dolor sit amet conse ctetur adipi scing elit sed do eiusm tempor incid
+")
+
+(defmacro md-table-align-tests--with-margins (right &rest body)
+  "Run BODY with the window's right margin RIGHT columns wide.
+`set-window-margins' is exactly what `visual-fill-column-mode' does, and
+it does not run the window-change hooks, so the re-fit is called by hand."
+  (declare (indent 1) (debug t))
+  `(unwind-protect
+       (progn
+         (set-window-margins nil 0 ,right)
+         (md-table-align--refit)
+         (redisplay t)
+         ,@body)
+     (set-window-margins nil 0 0)
+     (md-table-align--refit)
+     (redisplay t)))
+
+(defun md-table-align-tests--spill-strings ()
+  "Return the margin copy of each spilled row, in buffer order."
+  (let (out)
+    (dolist (ov (overlays-in (point-min) (point-max)))
+      (when-let* (((overlay-get ov 'md-table-align-spill))
+                  (string (overlay-get ov 'before-string)))
+        ;; The spec is ((margin right-margin) COPY).
+        (push (cons (overlay-start ov)
+                    (cadr (get-text-property 0 'display string)))
+              out)))
+    (mapcar #'cdr (sort out :key #'car))))
+
+(defun md-table-align-tests--spilled-p (pos)
+  "Return non-nil when POS is inside text that renders in the margin."
+  (seq-some (lambda (ov) (and (overlay-get ov 'md-table-align-spill)
+                              (equal (overlay-get ov 'display) "")))
+            (overlays-at pos)))
+
+(defun md-table-align-tests--screen-lines-of (string)
+  "Return the number of screen lines the line holding STRING occupies."
+  (save-excursion
+    (goto-char (point-min))
+    (should (search-forward string nil t))
+    (count-screen-lines (line-beginning-position) (line-end-position))))
+
+(ert-deftest md-table-align-test-spill-renders-a-wide-table-in-full ()
+  "A table too wide for the text area still fits the window, so it all shows."
+  (md-table-align-tests--with-frame-width md-table-align-tests--spill-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (md-table-align-tests--with-margins 20
+        (should (= (window-body-width) 40))
+        ;; Every row on one screen line, nothing clipped away, and each row
+        ;; carrying the copy that renders in the margin.
+        (should (equal (md-table-align-tests--screen-lines) '(1 1 1 1)))
+        (should-not (md-table-align-tests--clips))
+        (should (= (length (md-table-align-tests--spill-strings)) 4))))))
+
+(ert-deftest md-table-align-test-spill-is-what-the-margin-cannot-fit ()
+  "Without spilling, the same table in the same window is clipped."
+  (md-table-align-tests--with-frame-width md-table-align-tests--spill-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (let ((md-table-align-spill nil))
+        (md-table-align-tests--enable)
+        (md-table-align-tests--with-margins 20
+          (should (md-table-align-tests--clips))
+          (should-not (md-table-align-tests--spill-strings)))))))
+
+(ert-deftest md-table-align-test-spill-copies-the-text-past-the-edge ()
+  "The margin shows the columns the text area had no room for."
+  (md-table-align-tests--with-frame-width md-table-align-tests--spill-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (md-table-align-tests--with-margins 20
+        (let ((header (car (md-table-align-tests--spill-strings))))
+          ;; The header's last column, and the border closing the row.
+          (should (string-match-p "Status" header))
+          (should (string-suffix-p "|" header)))))))
+
+(ert-deftest md-table-align-test-spill-leaves-prose-in-the-measure ()
+  "Prose keeps the narrow measure the margins were set for."
+  (md-table-align-tests--with-frame-width md-table-align-tests--spill-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--spill-prose
+      (md-table-align-tests--enable)
+      (let ((wide (md-table-align-tests--screen-lines-of "lorem")))
+        (md-table-align-tests--with-margins 20
+          ;; The table got wider; the prose next to it did not.
+          (should (equal (md-table-align-tests--screen-lines) '(1 1 1 1)))
+          (should (> (md-table-align-tests--screen-lines-of "lorem") wide)))))))
+
+(ert-deftest md-table-align-test-spill-keeps-point-in-the-text-area ()
+  "Emacs cannot draw the cursor in a margin, so the viewport follows point."
+  (md-table-align-tests--with-frame-width md-table-align-tests--spill-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (md-table-align-tests--with-margins 20
+        (goto-char (point-min))
+        (should (search-forward "done" nil t))
+        (goto-char (match-beginning 0))
+        ;; That cell renders in the margin until point follows.
+        (should (md-table-align-tests--spilled-p (point)))
+        (md-table-align--follow-point)
+        (redisplay t)
+        (should-not (md-table-align-tests--spilled-p (point)))
+        (let ((posn (posn-at-point)))
+          (should posn)
+          (should-not (posn-area posn))
+          (should (< (car (posn-col-row posn)) (window-body-width))))))))
+
+(ert-deftest md-table-align-test-spill-splits-a-stretch-glyph ()
+  "A pad straddling the split keeps its head only, or it reaches past the edge.
+
+A 24-column margin leaves a 36-column text area, which puts the split
+inside the padding that follows \"second item description\" — one buffer
+span rendering on both sides of it.  Kept whole in the text area, that
+stretch runs past the window edge and wraps the row, which is the failure
+spilling exists to prevent."
+  (md-table-align-tests--with-frame-width md-table-align-tests--spill-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (md-table-align-tests--with-margins 24
+        (should (equal (md-table-align-tests--screen-lines) '(1 1 1 1)))
+        (should-not (md-table-align-tests--clips))))))
+
+(ert-deftest md-table-align-test-spill-needs-a-margin ()
+  "With no margin there is nothing to spill into, and nothing changes."
+  (md-table-align-tests--with-frame-width md-table-align-tests--spill-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (should-not (md-table-align-tests--spill-strings))
+      (should-not (md-table-align-tests--clips)))))
+
+(defun md-table-align-tests--proportional-width (string)
+  "Measure STRING with `W' wider than other glyphs, as a proportional font does."
+  (if (string-empty-p string)
+      0
+    (+ (string-pixel-width string (current-buffer))
+       (seq-count (lambda (c) (eq c ?W)) string))))
+
+(ert-deftest md-table-align-test-spill-skips-a-proportional-table ()
+  "Padding in a margin copy can only be literal spaces, so it must be monospace."
+  (md-table-align-tests--with-frame-width md-table-align-tests--spill-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (setq-local md-table-align-pixel-width-function
+                  #'md-table-align-tests--proportional-width)
+      (md-table-align-tests--enable)
+      (md-table-align-tests--with-margins 20
+        (should-not (md-table-align-tests--spill-strings))
+        ;; Still fitted to the text area, the way it was before spilling.
+        (should (md-table-align-tests--clips))))))
+
+(ert-deftest md-table-align-test-spill-still-clips-past-the-window ()
+  "A table wider than text area plus margin keeps its viewport and ellipsis."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (md-table-align-tests--with-margins 10
+        ;; 48 columns of table against 30 of text area and 10 of margin.
+        (should (md-table-align-tests--spill-strings))
+        (should (md-table-align-tests--clips))
+        (should (equal (md-table-align-tests--screen-lines) '(1 1 1 1)))))))
+
+(ert-deftest md-table-align-test-spill-under-visual-fill-column ()
+  "The package this exists for, driven for real."
+  (skip-unless (require 'visual-fill-column nil t))
+  (md-table-align-tests--with-frame-width md-table-align-tests--spill-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (unwind-protect
+          (progn
+            (setq-local visual-fill-column-width 40)
+            (visual-fill-column-mode 1)
+            (md-table-align--refit)
+            (redisplay t)
+            (should (> (or (cdr (window-margins)) 0) 0))
+            (should (equal (md-table-align-tests--screen-lines) '(1 1 1 1)))
+            (should-not (md-table-align-tests--clips))
+            (should (md-table-align-tests--spill-strings)))
+        (visual-fill-column-mode -1)
+        (md-table-align--refit)
+        (redisplay t)))))
