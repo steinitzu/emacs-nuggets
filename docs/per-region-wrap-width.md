@@ -1,12 +1,23 @@
-# Resolved: giving one region a different wrap width from another
+# Open: giving one region a different wrap width from another
 
 **Raised:** 2026-09-02, from "can tables be excluded from `visual-fill-column`
 in `markdown-ts-mode`?" — a full-screen window whose tables were being clipped
 to half the screen because the prose measure had taken the other half.
 
-**Resolved:** 2026-09-02. Answer: **invert the mechanism.** Stop narrowing the
+**First answer:** 2026-09-02. **Invert the mechanism.** Stop narrowing the
 window and narrow the *prose* instead, with a display-only line break. Designed
 and implemented as `md-prose-fill`; see `md-prose-fill/DESIGN.md`.
+
+**Reopened:** 2026-09-17. In live use `md-prose-fill` is glitchy, and the
+approach is judged a dead end: it rebuilds the line breaker for *all* prose,
+and every feature that touches prose (hidden text, code spans, hard-wrapped
+source, variable pitch) becomes a new way for it to break. The question is back
+to the original framing: keep `visual-fill-column`, and let tables and other
+wide blocks **out of** its measure.
+
+**Candidate answer: margin spill** — see the section of that name below. The
+mechanism is verified end to end against real `md-table-align` output. It has
+not been designed or built yet.
 
 ## Why the question has no direct answer
 
@@ -67,3 +78,87 @@ column, at which point the breaks are dropped and the window edge takes over.
 - **Shrinking the table's face** to fit more columns into the narrowed area
   (`md-table-align/DESIGN.md` "direction 4"). Partial relief, and does not
   answer the question.
+
+## Margin spill (2026-09-17)
+
+Width is still a window property, and buffer text still cannot render in a
+margin. But a `((margin right-margin) STRING)` display spec *can*, on the same
+screen row as the text carrying it. So keep the margins. Let a wide line's
+**head** render in the text area as real buffer text, and hide its **tail**
+there. Then re-emit the tail as a string in the right margin, starting at the
+margin's first column so it continues the head.
+
+Prose is untouched: `visual-fill-column` narrows it and Emacs wraps it, and
+`visual-wrap-prefix-mode` still applies. Only lines wider than the text area
+pay anything, and those lines are rare.
+
+### What is established — do not re-derive
+
+TTY frame, 80 columns, margins 0/30 (text area 50), captured with
+`screen -X hardcopy` so the evidence includes what the margins show. Probes:
+`hacks/margin-spill-probe.{el,sh}` for the mechanism and
+`hacks/margin-spill-table.el` for the end-to-end check.
+
+| # | Question | Result |
+|---|----------|--------|
+| 1 | Can a stretch glyph push text past the text area into the margin? | **No.** `:align-to right-margin` and `:align-to (+ right 10)` both clamp at the text-area edge, and the next character wraps |
+| 2 | Does a right-margin string on an overlay `before-string` at bol render on that line's first screen row, flush with the text area? | **Yes.** Head in columns 0–49, tail from column 50, one screen row |
+| 3 | Left margin, for `visual-fill-column-center-text`? | **Yes.** With margins 15/15, a `(margin left-margin)` head followed by the text area reads as one row from column 0 |
+| 4 | Is a margin string clipped at the margin's width? | Yes, silently |
+| 5 | Do space specs work *inside* a margin string? | **No.** `:align-to`, `:width N` and `:width (N)` all render as one space. Padding in the tail must be literal characters, so the spilled part only lines up exactly in a fixed-pitch face |
+| 6 | Can two windows with different margins each get their own split? | **Yes.** Give the overlays a `window` property. Verified with 0/30 and 0/10 windows on one buffer |
+| 7 | On a TTY, can the head use all of `window-body-width`? | **No.** The text area's last column is kept for the continuation glyph, even when everything after it is hidden. Split at `window-max-chars-per-line`, which leaves a **one-column seam**. Shifting the tail one column right across the seam loses nothing. Dropping that column misaligns nothing but loses a character |
+| 8 | Does `invisible` hide a tail that starts where a `display` overlay starts? | **No.** `display` is handled first, so the display string still renders and wraps onto a new row. Hide with a `display ""` overlay at a higher `priority` than the ones it covers |
+| 9 | Does it work against real `md-table-align` output? | **Yes.** Make `md-table-align--available-width` add the right margin. Then flatten each row as it renders (stretches to spaces, display strings, `before-string` pads) and split it. Header, delimiter, data rows, and a table wider than the whole window (clipped with the ellipsis) all render correctly across 80 columns, while prose wraps at 50 |
+| 10 | A display string straddling the split (a delimiter's dashes)? | Must be cut in two. Put a higher-priority overlay on the span that shows only the head part, and hide from the span's end |
+| 11 | Where does point render on a spilled cell? | **Collapsed** onto the split column. The same collapse as any `display`-hidden span. The cursor cannot be drawn in a margin |
+| 12 | What does a click in the margin report? | `posn-area` `right-margin`, and `posn-object` is `(STRING . INDEX)`. Knowing the piece each string index came from maps a click to the exact buffer position |
+| 13 | Two packages both put a right-margin string on one line? | They are **concatenated** in buffer order (`OTHERours`). Another margin user on a table row would push the tail out of line |
+| 14 | Does the buffer change? | No. Copy and yank see the source text |
+
+### What it would cost
+
+- **Point on a spilled cell is invisible** (11). This is the main design
+  question. `md-table-align` already tracks the table at point. The candidates
+  are to un-spill that one table while point is in it, so it falls back to the
+  scrolling viewport inside the text area, or to accept it for reading-mode
+  buffers. Un-spilling only affects that table, which is what the rejected
+  margin-flapping idea could not do.
+- **Fixed pitch for the tail** (5). A variable-pitch table can't be padded
+  exactly in the margin. In a GUI, a blank image of exact pixel width might
+  pad it, since the manual says margin specs take images. **Untested:** this
+  sandbox has no GUI.
+- **GUI geometry is unverified.** With a fringe there is no continuation
+  column to lose, but the fringe sits *between* the text area and the margin
+  unless `fringes-outside-margins` is non-nil, which `visual-fill-column` sets by
+  default. Expect no seam in that configuration, but this has not been
+  checked.
+- **The tail is a copy.** It gets faces copied at build time, but not
+  `hl-line`, region highlighting, isearch highlighting or anything else that
+  overlays the source later. Per NEWS.31, margin strings take any face
+  attribute they don't specify from the `margin` face, so copied faces must
+  be complete.
+- **One window per layout**, the same limit `md-table-align` already has (6
+  makes per-window spill possible, but its alignment overlays are shared by
+  the buffer).
+- **Other margin users** on the same row break alignment (13). The left
+  margin is the crowded one (flymake, diff-hl). Spilling **right only** avoids
+  most conflicts. It also reads naturally: tables start at the prose's left
+  edge and run to the window edge.
+- **Refit trigger.** The split depends on margin widths, which
+  `visual-fill-column` changes on window-state changes. The layout key has to
+  include them, and the refit has to run after `visual-fill-column` has set
+  them.
+
+### Two ways to build it
+
+- **Inside `md-table-align`.** The row plan already knows every step's x
+  position and text, so it can emit the head overlays and the margin string
+  directly without flattening anything. It is the cheapest and most accurate
+  option, but it only covers tables.
+- **A generic spill pass** over any line the tree-sitter policy marks as a
+  block: table rows, code-block lines. It flattens whatever the line renders
+  as, which is what `hacks/margin-spill-table.el` does. For code, only lines
+  that fit in text area plus margin should spill. Clipping longer ones would
+  hide characters with no way to reach them, which
+  `seeing-elided-table-text.md` ruled out. Those lines keep wrapping.
