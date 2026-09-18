@@ -1555,6 +1555,177 @@ the copy holds several columns, where the error accumulates."
             (dolist (row (cdr indices))
               (should (equal row (car indices))))))))))
 
+(defun md-table-align-tests--pipe-grid ()
+  "Return each row's pipe positions on the table's own grid, in pixels.
+The grid is what the table would render on in an unbounded window, which
+is what both halves of a spilled row have to agree with."
+  (save-excursion
+    (md-table-align-tests--goto-table)
+    (let* ((node (md-table-align--table-at (point)))
+           (ctx (md-table-align--metrics node)))
+      (mapcar (lambda (row)
+                (seq-keep (lambda (step)
+                            (and (eq (plist-get step :kind) 'pipe)
+                                 (plist-get step :x)))
+                          (md-table-align--row-plan row ctx)))
+              (plist-get ctx :rows)))))
+
+(defun md-table-align-tests--head-pipe-columns ()
+  "Return the pipes the text area still shows, as (INDEX . COLUMN) per row.
+INDEX numbers the pipes of the row from the left, so a pipe still has a
+name once clipping has taken its neighbours away; COLUMN is where it
+renders.  A pipe hidden by clipping, or spilled into the margin, renders
+nowhere and is left out."
+  (save-excursion
+    (goto-char (point-min))
+    (let (rows)
+      (while (not (eobp))
+        (let* ((eol (line-end-position))
+               (pipe-row (save-excursion (search-forward "|" eol t)))
+               (index -1)
+               (cols nil))
+          (while (search-forward "|" eol t)
+            (let ((pos (1- (point))))
+              (setq index (1+ index))
+              (unless (or (md-table-align-tests--clipped-p pos)
+                          (md-table-align-tests--spilled-p pos))
+                (push (cons index (md-table-align-tests--column pos)) cols))))
+          (when pipe-row (push (nreverse cols) rows)))
+        (forward-line 1))
+      (nreverse rows))))
+
+(defun md-table-align-tests--should-share-the-seam ()
+  "Assert that every pipe of every row stands on the one grid.
+
+A pipe the text area shows renders at its grid position plus a shift the
+whole viewport shares.  A copy renders from the text area's right edge
+whatever its own row was cut inside, so its pipes have to come out at
+that same shift -- plus only what redisplay keeps back at the edge for a
+continuation glyph.  Anything else and the row is in two pieces."
+  ;; One character is one column on a terminal, so a pixel is a column.
+  (let ((reserve (md-table-align--continuation-reserve 1))
+        (edge (window-body-width))
+        (grids (md-table-align-tests--pipe-grid))
+        (heads (md-table-align-tests--head-pipe-columns))
+        (copies (md-table-align-tests--spill-strings))
+        (shift nil))
+    (should (= (length grids) (length heads)))
+    (should (= (length grids) (length copies)))
+    (seq-mapn
+     (lambda (grid head copy)
+       ;; The head and the margin hold one unbroken run of the row's pipes --
+       ;; everything between them renders in one or the other -- so the
+       ;; copy's first pipe is the one after the head's last.
+       (should head)
+       (let* ((next (1+ (car (car (last head)))))
+              (in-margin (let ((i -1))
+                           (mapcar (lambda (column)
+                                     (setq i (1+ i))
+                                     (cons (+ next i) (+ edge column)))
+                                   (md-table-align-tests--pipe-indices copy)))))
+         (should in-margin)
+         (dolist (pipe (append head in-margin))
+           (let ((x (nth (car pipe) grid))
+                 (column (cdr pipe)))
+             (should x)
+             ;; A pipe in the margin is allowed the reserved column, and
+             ;; nothing besides.
+             (let ((this (- column x (if (>= column edge) reserve 0))))
+               (setq shift (or shift this))
+               (should (= this shift)))))))
+     grids heads copies)))
+
+(ert-deftest md-table-align-test-spill-copy-continues-the-head ()
+  "A copy's columns carry on from the head's, at rest.
+
+The margin finishes the table here, so nothing is clipped and the copies
+hold everything the text area had no room for."
+  (md-table-align-tests--with-frame-width md-table-align-tests--spill-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (md-table-align-tests--with-margins 20
+        (should-not (md-table-align-tests--clips))
+        (md-table-align-tests--should-share-the-seam)))))
+
+(ert-deftest md-table-align-test-spill-copy-continues-the-head-scrolled ()
+  "And they carry on from it once the row has been scrolled.
+
+A lead indicator moves the head's half of the grid to the right, and the
+split between head and margin used to move with it -- so every scroll put
+the margin a further character out of line, the fault showing up only
+after the table had been scrolled and never on the way in.
+
+The window is narrow enough here that even the margin cannot finish the
+table: a table shown in full declines to scroll, and one scrolled to its
+last column has nothing left to spill."
+  (md-table-align-tests--with-frame-width 44
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (md-table-align-tests--enable)
+      (md-table-align-tests--with-margins 10
+        (should (md-table-align-tests--clips))
+        (md-table-align-tests--scroll 2)
+        (should (> md-table-align--hscroll 0))
+        (md-table-align-tests--should-share-the-seam)))))
+
+(defun md-table-align-tests--seam ()
+  "Return what the seam of the table at point looks like: a plist to assert on.
+`:edge' is where the margin copy begins, `:split' where the head stops,
+`:grid-phase' the remainder by which the copy's first pixel misses a
+column boundary, and `:columns' how many columns each copy should hold
+for the copies to account for the whole of every row."
+  (md-table-align-tests--goto-table)
+  (let* ((node (md-table-align--table-at (point)))
+         (ctx (md-table-align--metrics node))
+         (view (md-table-align--viewport ctx (md-table-align--offset-of node)))
+         (unit (plist-get ctx :unit))
+         (shift (md-table-align--shift view))
+         (edge (md-table-align--available-width)))
+    (list :edge edge
+          :split (+ (plist-get view :offset) (plist-get view :head) shift)
+          :grid-phase (mod (- edge (plist-get ctx :indent) shift) unit)
+          :clipped (plist-get view :clipped)
+          :columns (/ (- (+ (plist-get ctx :table-width) shift)
+                         (+ (plist-get view :offset) (plist-get view :head) shift))
+                      unit))))
+
+(ert-deftest md-table-align-test-spill-seam-lands-on-a-column-boundary ()
+  "The pixel a copy begins at is a column boundary of the head's grid.
+
+A copy is a string laid out from the text area's right edge in whole
+characters, and a string cannot be nudged by a fraction of one.  So
+unless the grid has a column boundary exactly at that edge -- which is a
+property of the window, not of the table -- every column in the margin
+stands a fraction of a character off the ones it continues.  A terminal
+cannot show this: there a character is one pixel and every edge is a
+boundary already."
+  (md-table-align-tests--with-frame-width 200
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (setq-local md-table-align-pixel-width-function
+                  #'md-table-align-tests--off-pixel-width)
+      (md-table-align-tests--enable)
+      (dolist (margin '(48 74 80 86 92 98 104 110))
+        (md-table-align-tests--with-margins margin
+          ;; Cumulative: at rest, then scrolled, then scrolled again -- a lead
+          ;; indicator appears with the first of those and moves the head's
+          ;; half of the grid under the copies.
+          (dolist (columns '(0 2 5))
+            (unless (zerop columns)
+              (md-table-align-tests--scroll columns))
+            (let ((seam (md-table-align-tests--seam))
+                  (copies (md-table-align-tests--spill-strings)))
+              (should (zerop (plist-get seam :grid-phase)))
+              ;; The head stops at that edge, less the reserved column.
+              (should (= (plist-get seam :split)
+                         (- (plist-get seam :edge)
+                            (md-table-align--continuation-reserve
+                             (md-table-align-tests--off-pixel-width " ")))))
+              ;; And what it stopped short of is all in the copies: a split
+              ;; cut early leaves every copy holding a column too many.
+              (should copies)
+              (unless (plist-get seam :clipped)
+                (dolist (copy copies)
+                  (should (= (length copy) (plist-get seam :columns))))))))))))
+
 (ert-deftest md-table-align-test-off-pixel-columns-are-whole-characters ()
   "A fixed-pitch table's grid is whole characters, whatever the font measures.
 
