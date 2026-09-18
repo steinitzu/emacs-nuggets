@@ -549,6 +549,23 @@ canonical characters, whatever face the buffer renders in."
     (* (or (cdr (window-margins window)) 0)
        (frame-char-width (window-frame window)))))
 
+(defun md-table-align--continuation-reserve (unit)
+  "Return the pixels at the text area's right edge redisplay keeps for itself.
+
+A line that carries on past the window has to say so somewhere.  Where
+the window has a right fringe, that is where the indicator goes and the
+text area can be filled to its last pixel.  Without one -- a terminal, or
+a GUI window with its fringes turned off -- the last column is kept back,
+and a line filling the text area exactly wraps onto a second screen line.
+
+This is the one thing between a spilled row and a seamless join: the
+margin copy begins where the text area ends, so a column held back here
+is a column of blank at the seam."
+  (if (when-let* ((window (md-table-align--window)))
+        (> (nth 1 (window-fringes window)) 0))
+      0
+    unit))
+
 (defun md-table-align--fixed-pitch-p (node)
   "Return non-nil when the table at NODE renders in a fixed-pitch face.
 Two glyphs at opposite ends of the width range are measured the way
@@ -588,9 +605,16 @@ grammar gives no way to express."
 The result is a plist of `:offset' (clamped so scrolling cannot run past
 the table's right edge), `:budget' -- the pixels left for the table --
 `:head', `:lead' and `:trail' for the clipped-edge indicators,
-`:clipped' for whether anything is hidden past the right edge whether or
-not an indicator says so, `:quantum' for the granularity `:offset' moves
-in, and `:maxoff'.
+`:phase' -- what the whole grid is shifted right by, so that a column
+boundary lands on the text area's edge -- `:clipped' for whether anything
+is hidden past the right edge whether or not an indicator says so,
+`:quantum' for the granularity `:offset' moves in, and `:maxoff'.
+
+`:budget' and `:head' are widths in the table's own coordinates, measured
+from `:offset'; a step at grid X renders at X plus
+`md-table-align--shift'.  The split between text area and margin is
+therefore at `:head' plus that shift -- which is the text area's right
+edge exactly, `:phase' being what makes it a column boundary.
 
 `:budget' is what the table may render into, which under
 `md-table-align-spill' includes the right margin.  `:head' is the part of
@@ -609,12 +633,31 @@ one."
     (let* ((unit (plist-get ctx :unit))
            (ell (if md-table-align-hscroll-indicator (plist-get ctx :ellipsis) 0))
            (width (plist-get ctx :table-width))
-           (spill (md-table-align--spill-pixels ctx))
+           ;; Whole characters of margin: a copy is a string, so a fraction of
+           ;; a character at the margin's outer edge is width no column can be
+           ;; put in.
+           (spill (let ((px (md-table-align--spill-pixels ctx)))
+                    (* unit (floor px unit))))
+           ;; The copy of a spilled row starts at the text area's right edge,
+           ;; in whole characters, and a string cannot be nudged by a fraction
+           ;; of one.  So the join is seamless only if the table's grid has a
+           ;; column boundary exactly at that edge, which is a property of the
+           ;; window rather than of the table: shift the whole grid right by
+           ;; the remainder, less than one character, and it does.
+           (phase (if (> spill 0)
+                      (mod (- avail (plist-get ctx :indent)) unit)
+                    0))
            ;; Reserve one character cell: a wrapped line spends one on the
            ;; continuation glyph, and it absorbs rounding at the window edge.
-           ;; On a terminal that column is reserved even when everything past
-           ;; it is hidden, which is the seam a spilled row is shifted across.
-           (head-avail (- avail unit))
+           ;; A spilled row is the one case where that column can be had back
+           ;; -- see `md-table-align--continuation-reserve' -- and it is worth
+           ;; having back, because the copy starts at the text area's edge
+           ;; whatever the head did, so a column kept here is blank at the
+           ;; seam and every column past it stands a character off the grid.
+           (head-avail (- avail phase
+                          (if (> spill 0)
+                              (md-table-align--continuation-reserve unit)
+                            unit)))
            (available (+ head-avail spill))
            ;; At the rightmost offset a lead indicator is showing, so that is
            ;; the budget the limit has to be computed against.  Choosing it
@@ -662,9 +705,20 @@ one."
               :trail trail
               :budget budget
               :head head
+              :phase phase
               :clipped clipped
               :quantum quantum
               :maxoff maxoff)))))
+
+(defun md-table-align--shift (view)
+  "Return the pixels a step's grid position is shifted by to render under VIEW.
+Scrolling moves the grid left by the offset, a lead indicator moves what
+is left of it right, and `:phase' aligns the whole thing to the text
+area's right edge.  Nil VIEW -- an unclipped table -- shifts nothing."
+  (if view
+      (+ (plist-get view :phase)
+         (- (plist-get view :lead) (plist-get view :offset)))
+    0))
 
 (defun md-table-align--content-offset (align width cell-width unit)
   "Return leading padding for CELL-WIDTH text in a WIDTH column under ALIGN.
@@ -834,7 +888,6 @@ When CTX carries a `:view', the row is clipped to it and everything
 outside is hidden; otherwise the row is laid out in full and may wrap."
   (let* ((view (plist-get ctx :view))
          (offset (if view (plist-get view :offset) 0))
-         (lead (if view (plist-get view :lead) 0))
          (steps (md-table-align--row-plan row ctx))
          (visible (if view
                       (md-table-align--clip-steps
@@ -848,14 +901,14 @@ outside is hidden; otherwise the row is laid out in full and may wrap."
         (when view (md-table-align--hide bol eol (> offset 0)))
       (let ((cut (plist-get (car visible) :beg))
             (cutr (plist-get (car (last visible)) :end))
-            (shift (- lead offset))
+            (shift (md-table-align--shift view))
             (prev nil))
         (when view
           ;; Everything outside the viewport is one contiguous buffer prefix
           ;; and one contiguous suffix -- different ones on every row, since
           ;; the grid position of a buffer position depends on the row's own
           ;; cell contents.
-          (md-table-align--hide bol cut (> lead 0))
+          (md-table-align--hide bol cut (> (plist-get view :lead) 0))
           (md-table-align--hide cutr eol (> (plist-get view :trail) 0)))
         ;; With the clipped text rendering at zero width, what is left lays
         ;; out compactly, so every step sits left of its target and each
@@ -1076,14 +1129,22 @@ and nothing has to spill."
   "Spill every row of the table under CTX that overflows the text area."
   (when-let* ((view (plist-get ctx :view))
               (head (plist-get view :head))
-              ((> (plist-get view :budget) head)))
+              ((> (plist-get view :budget) head))
+              ;; `:head' is a width on the grid; the rows are flattened as
+              ;; they render, from the text area's left edge, so the split
+              ;; has to be converted to that.  Leaving it on the grid cuts
+              ;; every row a lead indicator's width early -- and the copy,
+              ;; which begins where the text area ends whatever the head did,
+              ;; then stands a character clear of the row it continues.
+              (split (+ (plist-get view :offset) head
+                        (md-table-align--shift view))))
     (dolist (row (plist-get ctx :rows))
       (when-let* ((pipe (car (plist-get row :pipes))))
         (save-excursion
           (goto-char pipe)
           (md-table-align--spill-row (line-beginning-position)
                                      (line-end-position)
-                                     head (plist-get ctx :unit)
+                                     split (plist-get ctx :unit)
                                      (plist-get ctx :face)))))))
 
 (defun md-table-align--measure-table (node)
