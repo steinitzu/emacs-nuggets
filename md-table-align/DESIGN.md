@@ -1418,6 +1418,12 @@ scrolls it today. The table stays full width throughout; only its offset
 changes. Nothing flaps when merely *reading* a table, because an offset is only
 ever computed for the table point is in (v4, "scope of an offset").
 
+**Amended (v9.2).** Not when the table is rendering in full at offset zero:
+there is nothing hidden to scroll to, and a table that is already all there
+moving out from under the cursor reads as flinching. Point in a spilled cell
+renders at the split instead. See `md-table-align--shown-in-full-p` and the
+deviation below.
+
 This is why **spill requires `md-table-align-hscroll`**. With scrolling off
 there is no viewport to keep point in, and point in a spilled cell would render
 in the wrong place with no way to recover.
@@ -1722,3 +1728,23 @@ measure passes and `split-at` counts unchanged, and two extra
   boundary` asserts the two pixel facts a terminal cannot produce, under the
   fractional-advance measurement, swept over eight margins and three offsets:
   the edge is a column boundary, and the split is that edge less the reserve.
+
+- **A table rendering in full does not follow point either.** The design has
+  point-following fetch a spilled cell back into the text area, and the
+  companion deviation above stopped `C-x <` from moving such a table. Point was
+  the remaining way to move it, and with the default `hscroll-step` of zero
+  that means *centring*: a table with nothing hidden anywhere jumping half a
+  viewport because the cursor reached a cell the margin was showing. The reason
+  for following — that the cursor would otherwise lie about where point is —
+  is real, but it is a smaller lie than the table moving out from under it, and
+  it is confined to cells that are on screen anyway.
+
+  So `md-table-align--shown-in-full-p` gates the follow: offset zero and
+  nothing clipped. Both halves matter. A scrolled table hides text off its
+  *left* edge whether or not anything is clipped on the right, and point must
+  still be kept out of that, so the guard asks for a table at rest and not
+  merely an unclipped one.
+
+  Two existing tests moved to a window too narrow for even the margin to finish
+  the table, where following still has work to do; without that they would have
+  gone quietly vacuous rather than failed.

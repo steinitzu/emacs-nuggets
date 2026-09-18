@@ -193,10 +193,12 @@ The prose stops at column 50; the tables run to the window edge. Nothing about
 the buffer changes — this is display only, like everything else here.
 
 It follows the same rules as scrolling, and composes with it: a table wider
-than the *whole* window still clips and scrolls. Because Emacs cannot draw the
-cursor in a margin, moving point onto a cell that is rendering there scrolls the
-table until that cell is back in the text area, exactly as moving onto a clipped
-cell does.
+than the *whole* window still clips and scrolls, and moving point onto a cell
+that has been clipped away scrolls the table until that cell is back. A table
+the margin shows in full holds still instead — nothing of it is hidden, so
+there is nothing to scroll to. Emacs cannot draw the cursor in a margin, so
+point on one of those cells renders at the window's text edge rather than under
+itself.
 
 Two things switch it off:
 
@@ -206,9 +208,10 @@ Two things switch it off:
   Padding inside a margin can only be literal spaces, so such a table would come
   out ragged; it keeps the text area to itself instead.
 
-On a terminal there is a one-column seam where the text area ends, because
-Emacs reserves that column for the line-continuation glyph. Nothing is lost to
-it: the margin copy starts just past it.
+Where a window has no right fringe — a terminal, or a GUI with the fringes
+turned off — there is a one-column seam at the end of the text area, because
+Emacs keeps that column for the line-continuation glyph. Nothing is lost to it:
+the margin copy starts just past it. With a fringe there is no seam.
 
 #### Vertical display
 
