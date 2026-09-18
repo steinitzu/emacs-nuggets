@@ -446,6 +446,35 @@ The `:cells' list is indexed by column and holds nil for empty columns."
 
 ;;;; Layout
 
+(defun md-table-align--quantise (pixels unit)
+  "Return PIXELS rounded up to a whole number of UNIT-wide characters."
+  (* unit (ceiling pixels unit)))
+
+(defun md-table-align--quantise-widths (rows unit)
+  "Round every cell width in ROWS up to a whole character.  Returns ROWS.
+
+A margin copy can only be built from literal spaces -- a stretch glyph
+inside a margin string collapses to one column, whatever width it asks
+for -- so every run of padding in a copy is a pixel width divided by
+UNIT.  Unless the grid is whole characters that division rounds, each row
+rounds its own padding its own way, and the copies drift apart by up to a
+character.
+
+A terminal cannot show this: there one character is one pixel and every
+width divides exactly.  A GUI font whose advance is not a whole pixel --
+fractional display scaling is the usual way to get one -- makes a cell of
+ten characters wider than ten single characters, and then nothing
+divides.
+
+Only for a fixed-pitch table, which is the only kind that can spill
+anyway, and where a whole-character grid is what the table already looks
+like it has."
+  (dolist (row rows rows)
+    (dolist (cell (plist-get row :cells))
+      (when cell
+        (plist-put cell :width
+                   (md-table-align--quantise (plist-get cell :width) unit))))))
+
 (defun md-table-align--column-widths (rows unit)
   "Return a vector of target content widths in pixels for the columns of ROWS.
 UNIT is the pixel width of one space, used as the minimum column width.
@@ -637,11 +666,16 @@ one."
               :quantum quantum
               :maxoff maxoff)))))
 
-(defun md-table-align--content-offset (align width cell-width)
-  "Return leading padding for CELL-WIDTH text in a WIDTH column under ALIGN."
+(defun md-table-align--content-offset (align width cell-width unit)
+  "Return leading padding for CELL-WIDTH text in a WIDTH column under ALIGN.
+
+Centring halves the slack, which is the one place a whole-character grid
+can produce half a character, so it rounds down to UNIT -- the extra half
+goes to the right of the text, where the column's own padding already
+is."
   (pcase align
     ('right (max 0 (- width cell-width)))
-    ('center (/ (max 0 (- width cell-width)) 2))
+    ('center (* unit (/ (max 0 (- width cell-width)) (* 2 unit))))
     (_ 0)))
 
 (defun md-table-align--pipe-width (ctx pos)
@@ -715,7 +749,7 @@ row, and the alignment the package exists to provide collapses."
              ((> end beg)
               (push (list :kind 'content :beg beg :end end
                           :x (+ x pad (md-table-align--content-offset
-                                       (aref aligns i) width cell-width))
+                                       (aref aligns i) width cell-width unit))
                           :width cell-width)
                     steps)))
             (setq x (+ x inner))))
@@ -1061,20 +1095,30 @@ clipping."
   (let ((rows (md-table-align--parse-table node)))
     (when (cdr rows)
       (let* ((unit (md-table-align--glyph-width node " "))
+             (fixed (md-table-align--fixed-pitch-p node))
+             ;; Every pixel of a fixed-pitch table's grid is a whole character,
+             ;; so that a margin copy -- literal spaces, and nothing else is
+             ;; available -- can reproduce it exactly.  See
+             ;; `md-table-align--quantise-widths'.
+             (whole (lambda (px) (if fixed (md-table-align--quantise px unit) px)))
+             (rows (if fixed (md-table-align--quantise-widths rows unit) rows))
              (widths (md-table-align--column-widths rows unit))
              (ctx (list :rows rows
                         :widths widths
                         :aligns (md-table-align--alignments rows (length widths))
-                        :indent (md-table-align--indent-pixels rows)
+                        :indent (funcall whole (md-table-align--indent-pixels rows))
                         :unit unit
-                        :fixed-pitch (md-table-align--fixed-pitch-p node)
+                        :fixed-pitch fixed
                         ;; The face every width here was measured in; see
                         ;; `md-table-align--glyph-width'.  A margin copy has to
                         ;; render in it or it is not on the table's grid.
                         :face (get-text-property (treesit-node-start node) 'face)
-                        :pipe (md-table-align--glyph-width node "|")
-                        :ellipsis (md-table-align--glyph-width
-                                   node md-table-align-ellipsis))))
+                        :pipe (funcall whole (md-table-align--glyph-width node "|"))
+                        ;; On the grid too: an indicator shifts every step of
+                        ;; the row it appears on by its own width.
+                        :ellipsis (funcall whole
+                                           (md-table-align--glyph-width
+                                            node md-table-align-ellipsis)))))
         (plist-put ctx :table-width (md-table-align--table-width ctx))))))
 
 (defconst md-table-align--measured-properties

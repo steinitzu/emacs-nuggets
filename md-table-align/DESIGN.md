@@ -1452,6 +1452,23 @@ narrow and a wide glyph, compared. A proportional table keeps v4 behavior
 exactly. `mixed-pitch-mode` is the common case, and it is already why
 `face-remapping-alist` is in the layout key.
 
+"Can only be literal spaces" is measured, not assumed
+(`hacks/margin-stretch-probe.el`): a `:width` stretch inside a margin string
+renders as **one column**, in either the bare or the `(N)` pixel form, whatever
+width it asks for. The margin is the one place this package cannot express a
+position in pixels.
+
+That has a consequence the rest of the layout does not have: **a spilled
+table's grid must be whole characters**, because the copy can only reproduce it
+by counting them. A fixed-pitch font need not have a whole-pixel advance —
+fractional display scaling is the usual way to get one — and then a cell of ten
+characters is wider than ten single characters, every run of padding is a pixel
+width that does not divide, and each row rounds its own padding its own way.
+So `md-table-align--quantise-widths` rounds every cell up to a whole character,
+and the indent, the pipe and the ellipsis go through the same rounding. The
+cost is under one character of extra padding per column, and only for a table
+whose font is already lying about its width.
+
 ### Invalidation
 
 Margins participate in `md-table-align--available-width`, which is already the
@@ -1606,6 +1623,20 @@ measure passes and `split-at` counts unchanged, and two extra
   `md-table-align-pixel-width-function` and asserts the copies share one grid
   after a scroll, not only at rest — alongside two round-trip tests, out to the
   far end and back, for point-following and for `C-x <` / `C-x >`.
+
+- **The grid is quantised to whole characters** (see "Fixed pitch only"). The
+  copies were placed by dividing a pixel width by one character, which is exact
+  on a terminal and not in a GUI whose font advance is fractional: rows cut
+  inside padding rounded one way, rows cut inside text another, and the copies
+  came out in a staircase, each about a character from the next.
+
+  Reported from a GUI screenshot, after the offset quantisation below had
+  already landed and not fixed it — the offset was never the problem, the grid
+  was. The suite could not see it for the same reason it could not see the
+  offset bug, and the fix is the same trick: measure with a font whose advance
+  is not a whole pixel (`md-table-align-tests--off-pixel-width`, ten characters
+  to 34 pixels where one is 3) and sweep the margin, since only some splits
+  expose it. Eight of the swept widths drift without the quantised grid.
 
 - **A table rendering in full does not scroll**, though `:maxoff` reaches past
   it. The two are not in conflict: `:maxoff` is computed against `:head` so

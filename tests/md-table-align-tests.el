@@ -1518,6 +1518,65 @@ is what a GUI shows and a terminal cannot."
           (dolist (row (cdr indices))
             (should (equal row (car indices)))))))))
 
+(defun md-table-align-tests--off-pixel-width (string)
+  "Measure STRING at an advance that is not a whole number of pixels.
+
+One character rounds to 3 pixels but ten characters are 34, not 30 —
+which is what a GUI font gives under fractional display scaling, and what
+a terminal can never give, since there one character is one pixel and
+every width divides exactly.  Without it a cell is always a whole number
+of characters wide by construction, and the rounding in the spill path
+has nothing to round."
+  (round (* 3.4 (string-width string))))
+
+(ert-deftest md-table-align-test-spill-copies-share-one-grid-off-pixel ()
+  "The copies agree even when the font's advance does not divide the grid.
+
+A margin copy is built from literal spaces — a stretch glyph inside a
+margin string collapses to a single column whatever width it asks for —
+so every run of padding in a copy is a pixel width divided by one
+character.  Unless the grid is whole characters that division rounds, and
+each row rounds its own padding its own way: the copies come out a
+character apart from each other, in a staircase.
+
+Only some splits expose it, so the margin is swept.  Every width below
+drifts without the quantised grid, and a few of them are wide enough that
+the copy holds several columns, where the error accumulates."
+  (md-table-align-tests--with-frame-width 200
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (setq-local md-table-align-pixel-width-function
+                  #'md-table-align-tests--off-pixel-width)
+      (md-table-align-tests--enable)
+      (dolist (margin '(48 74 80 86 92 98 104 110))
+        (md-table-align-tests--with-margins margin
+          (let* ((copies (md-table-align-tests--spill-strings))
+                 (indices (mapcar #'md-table-align-tests--pipe-indices copies)))
+            (should copies)
+            (dolist (row (cdr indices))
+              (should (equal row (car indices))))))))))
+
+(ert-deftest md-table-align-test-off-pixel-columns-are-whole-characters ()
+  "A fixed-pitch table's grid is whole characters, whatever the font measures.
+
+This is what makes the copies reproducible: every pixel the margin has to
+divide by a character divides exactly."
+  (md-table-align-tests--with-frame-width 200
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (setq-local md-table-align-pixel-width-function
+                  #'md-table-align-tests--off-pixel-width)
+      (md-table-align-tests--enable)
+      (md-table-align-tests--goto-table)
+      (let* ((node (md-table-align--table-at (point)))
+             (ctx (md-table-align--metrics node))
+             (unit (plist-get ctx :unit)))
+        (should (plist-get ctx :fixed-pitch))
+        (should (> unit 1))
+        (dolist (key '(:indent :pipe :ellipsis))
+          (should (zerop (mod (plist-get ctx key) unit))))
+        (seq-doseq (width (plist-get ctx :widths))
+          (should (zerop (mod width unit))))
+        (should (zerop (mod (plist-get ctx :table-width) unit)))))))
+
 (ert-deftest md-table-align-test-spill-copies-are-faced-like-the-table ()
   "Every character of a copy carries the table's face, padding included.
 
