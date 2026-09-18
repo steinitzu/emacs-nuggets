@@ -1384,7 +1384,7 @@ that shape this design:
 | A stretch glyph cannot push text past the text area (`:align-to right-margin` clamps) | The tail has to be a *copy* in a margin string; it cannot be the text itself |
 | Space specs are inert **inside** a margin string — `:align-to` and `:width` both render as one space | Padding in the tail must be literal spaces, so spill needs a **fixed-pitch** table |
 | `invisible` loses to a `display` overlay starting at the same position | The tail is hidden with `display ""` at a higher `priority`, not with `invisible` |
-| On a TTY the text area's last column is reserved for the continuation glyph, even when everything after it is hidden | The split is one column short of the text area, leaving a one-column **seam** |
+| Where a window has no right fringe — every TTY, and a GUI with fringes off — the text area's last column is reserved for the continuation glyph, even when everything after it is hidden | The split is one column short of the text area there, leaving a one-column **seam**; a fringed window is filled to its last pixel and has none |
 
 ### The budget, split in two
 
@@ -1395,6 +1395,10 @@ Two numbers replace the one v3 and v4 shared:
   against, so a table that fits in the full width is no longer clipped at all.
 - **`:head`** — what the table may render into *inside the text area*. This is
   where the split falls, and it is also the viewport point must stay within.
+
+Both are widths on the table's own grid, measured from `:offset`. Where a row
+is *cut* is that width in rendered pixels, which is `md-table-align--shift`
+away; getting those two confused is the seam deviation below.
 
 With spill off the two are equal and every formula reduces to what v4 already
 did, which is what keeps this from being a second code path.
@@ -1498,11 +1502,12 @@ No new faces: the copy carries the faces the source renders in.
   spilled left makes the *start* of every row a copy, which is where point
   usually is. Tables therefore start at the prose's left edge and grow right,
   which is also how they read.
-- **A one-column seam on a TTY**, from the reserved continuation column. The
+- **A one-column seam where the window has no right fringe** — every TTY, and a
+  GUI with the fringes turned off — from the reserved continuation column. The
   tail is shifted right across it rather than dropping the column that would
-  land there, so nothing is lost. A GUI with `fringes-outside-margins`
-  (`visual-fill-column`'s default) should have no seam; unverified, as this
-  sandbox has no display.
+  land there, so nothing is lost. A window with a right fringe has no seam at
+  all: see the seam deviation below, which is where this stopped being a TTY
+  fact.
 - **The copy is static.** Faces are copied when the row is laid out, so
   `hl-line`, the region, and isearch highlighting do not show on spilled text.
   Isearch can still *match* there, and point-following brings the match into
@@ -1650,3 +1655,70 @@ measure passes and `split-at` counts unchanged, and two extra
   This needs a clipped-or-not answer that does not come from `:trail`, which is
   zero whenever `md-table-align-hscroll-indicator` is off, so the viewport
   reports `:clipped` separately and `:trail` is derived from it.
+
+- **The seam was three separate errors, and only the first was on the list.**
+  The design's one-column seam is real but is the smallest of them, and the
+  other two are what a GUI was actually showing: a copy standing clear of the
+  row it continues, further out after every scroll.
+
+  1. **The split was handed over in the wrong coordinates.** `:head` is a width
+     *on the grid*, measured from `:offset`, but the rows are flattened as they
+     *render*, from the text area's left edge, and `md-table-align--spill-rows`
+     passed one straight to the other. The two agree only while nothing is
+     shifted — which is to say at offset zero, with no lead indicator. Scroll
+     once and the indicator shifts the head's half of the grid right by a
+     character while the split stays put, so every row is cut a character early
+     and every copy stands a character further out. Scroll again and it does
+     not compound, but it never comes back either, which is why this read as
+     "fine on load, wrong afterwards". `md-table-align--shift` is now the one
+     place grid coordinates become rendered ones, and both `--layout-row` and
+     `--spill-rows` go through it.
+
+  2. **The text area's right edge has to be a column boundary.** A copy is laid
+     out from that edge in whole characters, so unless the grid has a boundary
+     exactly there, every column in the margin stands a fraction of a character
+     off the ones it continues — and the fraction is a property of the *window*,
+     which no amount of quantising the table can fix. The viewport therefore
+     carries a `:phase`: the remainder, under one character, that the whole grid
+     is shifted right by so that the edge lands on a boundary. It costs a few
+     pixels of indent that nothing can see.
+
+     This is the third bug of exactly this shape (padding faces, the offset,
+     the grid) and the last place a pixel width was divided by a character and
+     rounded. There are none left: with the phase in, the split falls *on* a
+     boundary, so the rounding in `md-table-align--spill-string` and its mirror
+     has nothing to round.
+
+  3. **The reserved column is a question about fringes, not about terminals.**
+     A line that carries on past the window has to say so somewhere: in the
+     right fringe where there is one, and otherwise in the last column of the
+     text area. So the reserve belongs to windows without a right fringe —
+     every terminal, and a GUI window with the fringes turned off — and a
+     fringed GUI window can be filled to its last pixel, which is what makes
+     the seam disappear entirely rather than merely land on the grid.
+     `md-table-align--continuation-reserve` asks `window-fringes`; the
+     measurement behind it is that a line of exactly `window-body-width`
+     characters takes two screen lines on a TTY and the same line one short
+     takes one.
+
+  Reported from a GUI, again, as alignment going wonky after a scroll on a
+  table that fits the window — and diagnosed from *its* pixels, since a
+  terminal shows none of this: there a character is one pixel, so the phase is
+  always zero, and the reserve is always a column. The probe is
+  `hacks/seam-probe.el`, which reports the grid column each copy begins at
+  against the pixel it renders at; before the fix that gap was 2, 3 or 4 pixels
+  of a 3-pixel character at rest and 5 to 7 after a scroll, and it is zero at
+  every offset and every margin now, or exactly one character where a window
+  has no fringe to put its continuation glyph in.
+
+  Two tests. `md-table-align-test-spill-copy-continues-the-head` (and its
+  `-scrolled' twin) works in real terminal geometry: every pipe the text area
+  shows, and every pipe in a copy, has to sit at its grid position plus one
+  shift the whole row shares, the copies allowed the reserved column and
+  nothing besides. The scrolled twin needs a window too narrow for even the
+  margin to finish the table — a table shown in full declines to scroll, and
+  one scrolled to its last column has nothing left to spill, so the obvious
+  setup tests nothing. `md-table-align-test-spill-seam-lands-on-a-column-
+  boundary` asserts the two pixel facts a terminal cannot produce, under the
+  fractional-advance measurement, swept over eight margins and three offsets:
+  the edge is a column boundary, and the split is that edge less the reserve.
