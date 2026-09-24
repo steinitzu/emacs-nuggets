@@ -341,10 +341,11 @@ O(log chars) measurements."
           (setq hi (1- mid)))))
     lo))
 
-(defun md-table-align--hide (beg end indicate)
+(defun md-table-align--hide (beg end indicate &optional x)
   "Render the buffer text between BEG and END as nothing.
 With INDICATE, it renders as `md-table-align-ellipsis' instead, so the
-edge reads as clipped rather than as the end of the row.
+edge reads as clipped rather than as the end of the row.  With X too,
+the indicator stands at pixel X rather than wherever the row stopped.
 
 This is what keeps a clipped row on one screen line: text left outside
 the viewport would still be laid out, and would still wrap."
@@ -355,6 +356,10 @@ the viewport would still be laid out, and would still wrap."
       ;; takes text away rather than moving it.
       (overlay-put ov 'md-table-align-clip t)
       (overlay-put ov 'evaporate t)
+      ;; A stretch inside the `display' string would be inert, so it rides
+      ;; in front of it, the way `md-table-align--inject' pairs them.
+      (when (and indicate x)
+        (overlay-put ov 'before-string (md-table-align--stretch x)))
       (overlay-put ov 'display (if indicate md-table-align-ellipsis ""))
       ;; Clipped text stays readable without scrolling to it: both
       ;; `display-local-help' and a mouse hover surface `help-echo'.
@@ -909,7 +914,14 @@ outside is hidden; otherwise the row is laid out in full and may wrap."
           ;; the grid position of a buffer position depends on the row's own
           ;; cell contents.
           (md-table-align--hide bol cut (> (plist-get view :lead) 0))
-          (md-table-align--hide cutr eol (> (plist-get view :trail) 0)))
+          ;; The right-hand indicator stands at the viewport's edge on every
+          ;; row, not after whatever the row last showed.  A row whose next
+          ;; step starts past the edge -- a short header cell in a wide
+          ;; column -- would otherwise end mid-table with `Change…', reading
+          ;; as a truncated word, and under spilling it would stop in the
+          ;; text area with nothing past it to put in the margin.
+          (md-table-align--hide cutr eol (> (plist-get view :trail) 0)
+                                (+ offset (plist-get view :budget) shift)))
         ;; With the clipped text rendering at zero width, what is left lays
         ;; out compactly, so every step sits left of its target and each
         ;; stretch glyph still only ever pushes forward -- which is the
@@ -1187,6 +1199,15 @@ and nothing has to spill."
             ;; the alignment overlays is what takes them out of the text area.
             (overlay-put ov 'priority 10)
             (overlay-put ov 'display ""))
+          ;; Hiding the text does not hide the strings in front of it: those
+          ;; belong to other overlays, and priority only settles which
+          ;; `display' wins.  Past the split they are in the copy already, and
+          ;; left in place a stretch among them would reach past the text area.
+          (dolist (ov (overlays-in split eol))
+            (when (and (overlay-get ov 'md-table-align)
+                       (not (overlay-get ov 'md-table-align-spill))
+                       (>= (overlay-start ov) split))
+              (overlay-put ov 'before-string nil)))
           ;; An empty overlay, so it cannot `evaporate' and cannot be hidden
           ;; by the `display' spec that starts further along the line.
           (overlay-put (md-table-align--spill-overlay bol bol) 'before-string
