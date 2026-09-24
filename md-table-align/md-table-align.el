@@ -1684,26 +1684,17 @@ centring rather than creeping one step per command."
                   (node (md-table-align--table-at pos)))
         (md-table-align--relayout node)))))
 
-(defun md-table-align--shown-in-full-p (view)
-  "Return non-nil when VIEW hides nothing: the whole table renders, at rest.
-
-Under `md-table-align-spill' some of it may be rendering in the margin,
-where Emacs cannot draw the cursor -- but a table that is already all
-there should not move to fetch that part into the text area, which reads
-as the table flinching away from the cursor.  The cost is that point in a
-spilled cell renders at the split rather than under itself.
-
-Only at rest: a non-zero offset means text really is hidden, off the left
-edge if not the right, and point has to be kept out of it."
-  (and (zerop (plist-get view :offset))
-       (not (plist-get view :clipped))))
-
 (defun md-table-align--scroll-into-view (node)
-  "Scroll the table at NODE, if need be, so that point is inside it."
+  "Scroll the table at NODE, if need be, so that point is inside it.
+
+Inside the text area, that is -- even for a table the margin is already
+showing in full.  Emacs cannot draw the cursor in a margin, and what the
+margin shows is a copy, not buffer text, so a cell left there can be
+neither seen under the cursor nor selected.  Moving the table is the
+price of reaching it, paid only when point goes there."
   (when-let* ((ctx (md-table-align--metrics node))
               (view (md-table-align--viewport
                      ctx (md-table-align--offset-of node)))
-              ((not (md-table-align--shown-in-full-p view)))
               (x (md-table-align--aligned-x ctx (point))))
     (let ((want (md-table-align--desired-offset x view (plist-get ctx :unit))))
       (unless (eql want (plist-get view :offset))
