@@ -1737,6 +1737,70 @@ a frame whose columns -- and so whose margins -- are 1."
                 (dolist (copy copies)
                   (should (= (length copy) (plist-get seam :columns))))))))))))
 
+(defconst md-table-align-tests--short-header
+  "prose before the table
+| Key | Note | Tail |
+|-----|------|------|
+| a | a considerably longer note that runs well past the window | x |
+| b | short | y |
+prose after the table
+"
+  "A wide column whose header cell is short.
+Clipped, the header's next step -- the pipe closing that column -- lies
+past the viewport, so the row shows nothing after `Note'.")
+
+(defun md-table-align-tests--trail-columns ()
+  "Return the column just past each row's right-hand clip indicator.
+That is the clip overlay reaching the end of its line.  Its start is no
+use: `posn-at-point' puts it where the strings in front of the indicator
+begin, and the stretch that moves the indicator is one of those.  The
+line's end renders straight after the indicator."
+  (save-excursion
+    (let (out)
+      (dolist (ov (overlays-in (point-min) (point-max)))
+        (goto-char (overlay-start ov))
+        (when (and (overlay-get ov 'md-table-align-clip)
+                   (= (overlay-end ov) (line-end-position)))
+          (push (cons (overlay-start ov)
+                      (md-table-align-tests--column (overlay-end ov)))
+                out)))
+      (mapcar #'cdr (sort out :key #'car)))))
+
+(ert-deftest md-table-align-test-trail-indicator-stands-at-the-edge ()
+  "Every clipped row shows its indicator in the same column, at the edge.
+
+It used to follow whatever the row showed last, so a short header cell
+in a wide column ended in `Note…' -- reading as a truncated word, in the
+middle of the table -- while the rows under it ran on to the edge."
+  (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--short-header
+      (md-table-align-tests--enable)
+      (let ((columns (md-table-align-tests--trail-columns)))
+        (should (= (length columns) 4))
+        (dolist (column (cdr columns))
+          (should (= column (car columns))))
+        ;; And that column is well clear of `Note'.
+        (should (> (car columns)
+                   (+ (md-table-align-tests--column-of "Note") (length "Note") 5)))))))
+
+(ert-deftest md-table-align-test-spill-short-header-reaches-the-margin ()
+  "A clipped header with a short cell spills into the margin like its rows.
+Stopping at its last visible text, it had nothing past the split to put
+there, so it ended in the text area while every other row ran on into
+the margin."
+  (md-table-align-tests--with-frame-width md-table-align-tests--spill-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--short-header
+      (md-table-align-tests--enable)
+      (md-table-align-tests--with-margins 10
+        (should (md-table-align-tests--clips))
+        (should (equal (md-table-align-tests--screen-lines) '(1 1 1 1)))
+        (let ((copies (md-table-align-tests--spill-strings)))
+          (should (= (length copies) 4))
+          ;; Each ends in the indicator, at the same column of the margin.
+          (dolist (copy copies)
+            (should (string-suffix-p md-table-align-ellipsis copy))
+            (should (= (length copy) (length (car copies))))))))))
+
 (ert-deftest md-table-align-test-off-pixel-columns-are-whole-characters ()
   "A fixed-pitch table's grid is whole characters, whatever the font measures.
 
