@@ -1861,6 +1861,66 @@ divide by a character divides exactly."
           (should (zerop (mod width unit))))
         (should (zerop (mod (plist-get ctx :table-width) unit)))))))
 
+(defun md-table-align-tests--table-font-width (string)
+  "Measure STRING at 3 pixels a character in a table face, 2 in any other.
+A stand-in for a GUI under `mixed-pitch-mode', where the table renders in
+its fixed-pitch face and anything else in the narrower proportional
+default."
+  (let ((width 0))
+    (dotimes (i (length string) width)
+      (setq width
+            (+ width
+               (if (memq 'markdown-ts-table
+                         (flatten-tree (get-text-property i 'face string)))
+                   3
+                 2))))))
+
+(defun md-table-align-tests--spill-state ()
+  "Return each spilled row's copy text and where its head stops showing it."
+  (let (out)
+    (dolist (ov (overlays-in (point-min) (point-max)))
+      (when (overlay-get ov 'md-table-align-spill)
+        (push (list (overlay-start ov)
+                    (if-let* ((string (overlay-get ov 'before-string)))
+                        (substring-no-properties
+                         (cadr (get-text-property 0 'display string)))
+                      (overlay-get ov 'display)))
+              out)))
+    (sort out :key #'car)))
+
+(ert-deftest md-table-align-test-spill-ignores-a-highlight-over-the-table ()
+  "A face an overlay lays over the table changes neither the split nor the copy.
+
+`markdown-ts-in-table-mode' covers the table point is in with an overlay
+faced `markdown-ts-in-table' -- a highlight, no font of its own.  Read
+with `get-char-property', that face stood in for the text's own, so the
+copy was measured and rendered in the buffer's default face: under
+`mixed-pitch-mode' the proportional one.  The head kept far more text
+than fitted and wrapped, and the margin came out in the wrong font --
+from the moment point entered the table, which is what scrolling does."
+  (md-table-align-tests--with-frame-width md-table-align-tests--spill-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--wide
+      (setq-local md-table-align-pixel-width-function
+                  #'md-table-align-tests--table-font-width)
+      (md-table-align-tests--enable)
+      (md-table-align-tests--with-margins 20
+        (let ((before (md-table-align-tests--spill-state))
+              (node (progn (md-table-align-tests--goto-table)
+                           (md-table-align--table-at (point)))))
+          (should before)
+          (markdown-ts-in-table-mode 1)
+          ;; The highlight is really there, over the table's text.
+          (should (seq-some (lambda (ov) (overlay-get ov 'markdown-ts-in-table))
+                            (overlays-at (point))))
+          (md-table-align--relayout node)
+          (redisplay t)
+          (should (equal (md-table-align-tests--spill-state) before))
+          (dolist (copy (md-table-align-tests--spill-strings))
+            (dotimes (i (length copy))
+              (let ((face (flatten-tree (get-text-property i 'face copy))))
+                (should (memq 'markdown-ts-table face))
+                (should-not (memq 'markdown-ts-in-table face))))))))))
+
 (ert-deftest md-table-align-test-spill-copies-are-faced-like-the-table ()
   "Every character of a copy carries the table's face, padding included.
 
