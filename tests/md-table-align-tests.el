@@ -1801,6 +1801,44 @@ the margin."
             (should (string-suffix-p md-table-align-ellipsis copy))
             (should (= (length copy) (length (car copies))))))))))
 
+(defconst md-table-align-tests--in-a-list
+  "- an item holding a table
+
+  | Name | Description | Status |
+  |------|-------------|--------|
+  | alpha | first item description here | open |
+  | beta | second item description | done |
+
+prose after the table
+"
+  "The wide table, inside a list item.
+There the `pipe_table' node starts at the first pipe, not at the start
+of its line.")
+
+(ert-deftest md-table-align-test-spill-relayout-leaves-no-stale-copies ()
+  "Laying a spilled table out again replaces its copies rather than adding to them.
+
+A copy rides on an empty overlay at its row's line start, and a table is
+cleared by sweeping its node's span.  In a list item the node starts at
+the first pipe, past the indentation, so the header's copy lay outside
+the sweep: every re-layout -- every scroll -- left one more behind, and
+the margin filled with stale text."
+  (md-table-align-tests--with-frame-width md-table-align-tests--spill-frame
+    (md-table-align-tests--with-buffer md-table-align-tests--in-a-list
+      (md-table-align-tests--enable)
+      (md-table-align-tests--with-margins 20
+        (let ((node (progn (md-table-align-tests--goto-table)
+                           (md-table-align--table-at (point)))))
+          ;; The case in point: the node starts after its line does.
+          (should (> (treesit-node-start node)
+                     (save-excursion (goto-char (treesit-node-start node))
+                                     (line-beginning-position))))
+          (should (= (length (md-table-align-tests--spill-strings)) 4))
+          (md-table-align--relayout node)
+          (md-table-align--relayout node)
+          (redisplay t)
+          (should (= (length (md-table-align-tests--spill-strings)) 4)))))))
+
 (ert-deftest md-table-align-test-off-pixel-columns-are-whole-characters ()
   "A fixed-pitch table's grid is whole characters, whatever the font measures.
 
