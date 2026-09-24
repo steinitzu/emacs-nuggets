@@ -1418,11 +1418,12 @@ scrolls it today. The table stays full width throughout; only its offset
 changes. Nothing flaps when merely *reading* a table, because an offset is only
 ever computed for the table point is in (v4, "scope of an offset").
 
-**Amended (v9.2).** Not when the table is rendering in full at offset zero:
-there is nothing hidden to scroll to, and a table that is already all there
-moving out from under the cursor reads as flinching. Point in a spilled cell
-renders at the split instead. See `md-table-align--shown-in-full-p` and the
-deviation below.
+**Amended (v9.2), then reversed.** v9.2 exempted a table rendering in full at
+offset zero, on the grounds that a table already all there moving out from
+under the cursor reads as flinching. In use that made the margin part of a table
+unreachable: no cursor there, and nothing to select, since the margin holds a
+copy rather than buffer text. Following point is back for every table; see the
+last deviation below.
 
 This is why **spill requires `md-table-align-hscroll`**. With scrolling off
 there is no viewport to keep point in, and point in a spilled cell would render
@@ -1736,7 +1737,8 @@ measure passes and `split-at` counts unchanged, and two extra
   fractional-advance measurement, swept over eight margins and three offsets:
   the edge is a column boundary, and the split is that edge less the reserve.
 
-- **A table rendering in full does not follow point either.** The design has
+- **A table rendering in full does not follow point either.** *(Reversed — see
+  the last entry.)* The design has
   point-following fetch a spilled cell back into the text area, and the
   companion deviation above stopped `C-x <` from moving such a table. Point was
   the remaining way to move it, and with the default `hscroll-step` of zero
@@ -1877,3 +1879,31 @@ measure passes and `split-at` counts unchanged, and two extra
   already recorded. The test turns the real `markdown-ts-in-table-mode` on and
   asserts the split and the copies come out as they did without it, under a
   width fake where only a table face measures a table character.
+
+- **A table rendering in full follows point again.** The v9.2 exemption kept a
+  fully-shown table still wherever point went, leaving point in a spilled cell
+  rendered at the split. That turned out to cost more than it saved: Emacs
+  cannot draw the cursor in a margin, and the margin holds a *copy*, so a cell
+  there could not be seen under the cursor or selected at all. Keeping the
+  whole table in view is still what matters most of the time — and it still
+  holds, since the table only moves once point comes within `hscroll-margin` of
+  the text area's edge — but when text in the margin has to be reached, it has
+  to be reachable.
+
+  The exemption was also partly a workaround. Following point scrolls, and the
+  layout did not survive scrolling: overlay faces leaking into the copy, stale
+  copies in list items, the header's indicator. With those fixed (the entries
+  above), there was no reason left to avoid it.
+
+  Following uses the ordinary rule, centring with the default `hscroll-step` of
+  0. A smaller step for this case was considered and not wanted: the jump is
+  the price of reaching margin text, which is the rare case. Moving back to the
+  start of the row, or out of the table, returns it to rest.
+  `md-table-align--shown-in-full-p` is gone, and its test is inverted:
+  `md-table-align-test-spill-full-table-follows-point-into-the-margin` moves
+  point into a margin cell, expects the table to scroll it into the text area,
+  and expects the copies back exactly as they were once point returns home.
+
+  `C-x <` on a table shown in full still does nothing: an explicit scroll is not
+  point moving, and scrolling a table already all there could only take a
+  column away.

@@ -194,11 +194,13 @@ the buffer changes — this is display only, like everything else here.
 
 It follows the same rules as scrolling, and composes with it: a table wider
 than the *whole* window still clips and scrolls, and moving point onto a cell
-that has been clipped away scrolls the table until that cell is back. A table
-the margin shows in full holds still instead — nothing of it is hidden, so
-there is nothing to scroll to. Emacs cannot draw the cursor in a margin, so
-point on one of those cells renders at the window's text edge rather than under
-itself.
+that has been clipped away scrolls the table until that cell is back. The same
+goes for a cell the margin is showing, even when the table fits: Emacs cannot
+draw the cursor in a margin, and what the margin shows is a copy rather than
+buffer text, so the cell is brought into the text area where you can see point
+and select. Move back to the start of the row, or leave the table, and it
+returns to rest. Until point comes within `hscroll-margin` of the text area's
+edge, the table holds still.
 
 Two things switch it off:
 
