@@ -1032,7 +1032,18 @@ of, or in front of, the buffer span.
 
 FACE is the table's own face, which stands behind every piece that
 specifies none: the copy has to render in the face the pixel targets were
-measured in, or its columns are not the table's columns."
+measured in, or its columns are not the table's columns.
+
+That is the text's own `face' property and never an overlay's.  The grid
+was measured from `buffer-substring', which carries no overlays, and an
+overlay face over a table is a highlight -- `hl-line', the region,
+`markdown-ts-in-table-mode' covering the table point is in -- with no
+font of its own.  Taken in place of the text's face, as
+`get-char-property' would take it, it hands the copy the buffer's default
+font: under `mixed-pitch-mode' a proportional one, narrower than the
+table, so the head keeps more than fits and wraps, and the margin copy
+comes out in the wrong font.  A highlight not reaching the copy is the
+static copy DESIGN.md already records."
   (let ((pos bol) (x 0) (pieces nil))
     (while (< pos eol)
       ;; Strings shown in front of the text here, which is where every
@@ -1041,7 +1052,7 @@ measured in, or its columns are not the table's columns."
         (when-let* (((eql (overlay-start ov) pos))
                     (string (overlay-get ov 'before-string)))
           (let ((flat (md-table-align--flatten-string
-                       string x unit (or (get-char-property pos 'face) face))))
+                       string x unit (or (get-text-property pos 'face) face))))
             (dolist (piece (car flat))
               (push (append (list :beg pos :end-pos pos :source 'before) piece)
                     pieces))
@@ -1057,7 +1068,7 @@ measured in, or its columns are not the table's columns."
             (cond
              ((stringp spec)
               (let ((flat (md-table-align--flatten-string
-                           spec x unit (or (get-char-property pos 'face) face))))
+                           spec x unit (or (get-text-property pos 'face) face))))
                 (dolist (piece (car flat))
                   (push (append (list :beg pos :end-pos end :source 'display) piece)
                         pieces))
@@ -1065,7 +1076,7 @@ measured in, or its columns are not the table's columns."
              ((and (consp spec) (eq (car spec) 'space))
               (let ((to (md-table-align--spill-space spec x unit)))
                 (push (list :kind 'pad :beg pos :end-pos end :x x :end to
-                            :face (or (get-char-property pos 'face) face))
+                            :face (or (get-text-property pos 'face) face))
                       pieces)
                 (setq x to))))
             (setq pos end)))
@@ -1078,11 +1089,11 @@ measured in, or its columns are not the table's columns."
           (let* ((end (min eol
                            (next-single-char-property-change pos 'display nil eol)
                            (next-single-char-property-change pos 'invisible nil eol)
-                           (next-single-char-property-change pos 'face nil eol)
+                           (next-single-property-change pos 'face nil eol)
                            (next-overlay-change pos)))
                  (piece (md-table-align--text-piece
                          (buffer-substring-no-properties pos end)
-                         (or (get-char-property pos 'face) face) x)))
+                         (or (get-text-property pos 'face) face) x)))
             (push (append (list :beg pos :end-pos end :source 'buffer) piece)
                   pieces)
             (setq x (plist-get piece :end) pos end))))))
