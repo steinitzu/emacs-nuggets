@@ -1819,3 +1819,37 @@ measure passes and `split-at` counts unchanged, and two extra
   `md-table-align-tests--tripled-width`, which is honest per glyph and still
   puts the text area's edge inside a character, which was the thing they were
   testing. It stays for the measurement-only quantisation test.
+
+- **The right-hand clip indicator stands at the viewport's edge on every row.**
+  It used to follow whatever the row showed last. Usually that is text cut at
+  the edge, so nobody noticed; but a short header cell in a wide column has
+  nothing between its text and the pipe closing the column, and that pipe lies
+  past the viewport, so the header ended mid-table in `Change…` — reading as a
+  truncated word. v4's own validation rendering shows it (`| Name  |
+  Description…`) and took it for intended. Under spilling it was worse than
+  cosmetic: the header stopped inside the text area, had nothing past the
+  split, and so got no margin copy while every row under it ran on into the
+  margin.
+
+  The clip overlay now carries a stretch to the edge as a `before-string`, since
+  a stretch inside its `display` string would be inert (the v5 lesson). That
+  exposed a second thing: hiding a spilled row's tail with a higher-priority
+  `display ""` does not hide *other overlays' strings* in front of that text —
+  priority settles which `display` wins, nothing more — so the stretch, already
+  copied into the margin, would still have reached past the text area.
+  `md-table-align--spill-row` now drops the `before-string` of this package's
+  overlays past the split once they are in the copy. The zero-width pads of
+  `|a|`-style cells were exposed to the same thing and are covered by it.
+
+  Found reproducing a GUI report in a terminal (`hacks/scroll-mess-probe.sh`):
+  the header was wrong at rest, not only after a scroll.
+
+- **A table is cleared from its first line's start, not its node's.** Inside a
+  list item or a blockquote the `pipe_table` node begins at the first pipe,
+  past the indentation. A row's margin copy rides on an *empty* overlay at its
+  line start, and `overlays-in` finds an empty overlay only inside the region
+  swept — so the header's copy outlived every re-layout, and each scroll added
+  another to the margin. `md-table-align--clear-table` sweeps from the line
+  start; both the jit-lock pass and `md-table-align--relayout` go through it.
+  A top-level table, indented or not, starts at its line start and was never
+  affected.
