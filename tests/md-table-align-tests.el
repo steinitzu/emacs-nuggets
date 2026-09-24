@@ -1448,9 +1448,9 @@ a body row, and a copy has to match the row it continues."
 (ert-deftest md-table-align-test-spill-keeps-point-in-the-text-area ()
   "Emacs cannot draw the cursor in a margin, so the viewport follows point.
 
-In a window too narrow for even the margin to finish the table: one that
-shows the table in full stays where it is instead, see
-`md-table-align-test-spill-full-table-does-not-follow-point'."
+In a window too narrow for even the margin to finish the table; one that
+shows the table in full follows too, see
+`md-table-align-test-spill-full-table-follows-point-into-the-margin'."
   (md-table-align-tests--with-frame-width md-table-align-tests--wide-frame
     (md-table-align-tests--with-buffer md-table-align-tests--wide
       (md-table-align-tests--enable)
@@ -1951,15 +1951,14 @@ are all 1 on a terminal, so only the faces themselves can be asserted."
                  (should (seq-remove (lambda (f) (eq f 'default)) face)))))
            copies faces))))))
 
-(ert-deftest md-table-align-test-spill-full-table-does-not-follow-point ()
-  "A table rendering in full stays put, wherever point goes in it.
+(ert-deftest md-table-align-test-spill-full-table-follows-point-into-the-margin ()
+  "Point in a cell the margin is showing brings it into the text area.
 
-Nothing of it is hidden -- the margin is showing the rest -- so scrolling
-to bring a spilled cell into the text area would move a table that is
-already all there, for no reading the cursor cannot give.  Point in a
-spilled cell renders at the split instead, which is the cost the table
-holding still is worth.  Its left edge is a different question: an offset
-means text really is hidden, and point is kept out of it as ever."
+The table is all there already, but a cell in the margin can be neither
+seen under the cursor nor selected: Emacs cannot draw the cursor in a
+margin, and the margin holds a copy, not buffer text.  So the table
+scrolls to fetch it -- and moving point back to the start puts it back
+at rest, its copies exactly as they were."
   (md-table-align-tests--with-frame-width md-table-align-tests--spill-frame
     (md-table-align-tests--with-buffer md-table-align-tests--wide
       (md-table-align-tests--enable)
@@ -1970,11 +1969,19 @@ means text really is hidden, and point is kept out of it as ever."
           (goto-char (point-min))
           (should (search-forward "done" nil t))
           (goto-char (match-beginning 0))
-          ;; The cell point is in renders in the margin, and goes on doing so.
           (should (md-table-align-tests--spilled-p (point)))
           (md-table-align--follow-point)
           (redisplay t)
-          (should (md-table-align-tests--spilled-p (point)))
+          (should (> md-table-align--hscroll 0))
+          (should-not (md-table-align-tests--spilled-p (point)))
+          (let ((posn (posn-at-point)))
+            (should posn)
+            (should-not (posn-area posn))
+            (should (< (car (posn-col-row posn)) (window-body-width))))
+          ;; And home again.
+          (beginning-of-line)
+          (md-table-align--follow-point)
+          (redisplay t)
           (should (zerop md-table-align--hscroll))
           (should (equal (md-table-align-tests--spill-strings) before)))))))
 
