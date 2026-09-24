@@ -1479,6 +1479,13 @@ and the indent, the pipe and the ellipsis go through the same rounding. The
 cost is under one character of extra padding per column, and only for a table
 whose font is already lying about its width.
 
+**Amended.** The premise above is wrong about fonts and right about cells.
+Emacs rounds every glyph's advance to a whole pixel (`lround` in
+`ftcrfont.c`), so text in one face is always a whole number of that face's
+characters wide, fractional scaling or not. What does put a cell off the grid
+is a cell holding a *second* font — a code span, most commonly — and the
+rounding is still needed for that. See the mixed-fonts deviation below.
+
 ### Invalidation
 
 Margins participate in `md-table-align--available-width`, which is already the
@@ -1748,3 +1755,67 @@ measure passes and `split-at` counts unchanged, and two extra
   Two existing tests moved to a window too narrow for even the margin to finish
   the table, where following still has work to do; without that they would have
   gone quietly vacuous rather than failed.
+
+- **The row is flattened by measuring it, because a table can hold two fonts.**
+  The design's flatten walk put every buffer character at one table character
+  (`unit × char-width`), which is only true when every cell renders in the
+  table's own face. With `md-table-inline-mode` a code span gets
+  `markdown-ts-code-span`, and in a GUI that can be a different font: fixed
+  pitch too, but a different pitch — about 16 pixels a character against the
+  table's 18 in the report. Counted as table characters, a cell full of code
+  looks wider than it renders, and two things go wrong:
+
+  1. **The row is cut early.** The walk thinks the text reaches the split
+     several characters before it does, so it hides them from the head and
+     leaves a gap in the text area — `InvalidCatalog      NameError`, a word
+     broken by blank space at the seam.
+  2. **The copy is padded to the wrong length.** Padding was worked out from
+     where the walk *thought* the text ended, and the copy then renders that
+     text at its real, narrower width. So a pipe after a code span in the
+     margin lands short of the grid: a header cell closing flush against its
+     text (`SQLAlchemyError?|`) where the rows below it close a character and
+     more further out.
+
+  Reported from a GUI screenshot (`hacks/align2.png`), where only rows holding
+  code were out, and each by an amount that grew with how much code the cell
+  held.
+
+  The fix is the one the design already stated and did not apply to the walk:
+  measure, don't count. `md-table-align--flatten` now yields runs — a stretch,
+  or text of one face between two things that could change how it renders — and
+  measures each run in the face its copy will carry, with the same width
+  function as everything else. The run straddling the split is cut between
+  characters by bisection (`md-table-align--split-piece`), so the head keeps
+  every character that fits and the gap at the seam is under one character of
+  whatever font was cut.
+
+  Padding in the copy is still whole spaces, since a margin can hold nothing
+  else, but it is now counted from where the copy has actually got to rather
+  than from each stretch's own width (`md-table-align--spill-text`). A pipe
+  after text that is not a whole number of table characters wide therefore
+  misses its grid position by *under half a character*, and the error does not
+  carry on to the pipe after it. That residue is the one thing left: a margin
+  string cannot express a fraction of a space, so exactness would need
+  something in the margin other than text.
+
+  Cost: one width measurement per run per spilled row per layout, where the
+  walk measured nothing before, plus a bisection for the row's straddling run.
+  Only spilled tables pay it; `make bench` runs without margins and is
+  unchanged.
+
+  The suite could not see this: a terminal renders every face one column wide.
+  The tests fake the font — `md-table-inline-tests--narrow-code-width` measures
+  a code span character at 2 pixels to the table's 3 — and sweep the margin so
+  the split falls in code, in table text and in padding, with markup shown and
+  hidden. They assert the head stops at the last character that fits, and that
+  every copied pipe is within half a character of the grid. Before the fix the
+  head stopped 26 pixels, about nine code characters, short.
+
+  **The off-pixel fake could not survive this.** It measured ten characters at
+  34 pixels and one at 3, which no font does (see the amendment under "Fixed
+  pitch only"). Nothing flattened with it before; now the walk does, and finds
+  it contradicting itself — a delimiter of *N* dashes, sized as *N* characters,
+  measures wider than *N* characters. The two spill tests that used it now use
+  `md-table-align-tests--tripled-width`, which is honest per glyph and still
+  puts the text area's edge inside a character, which was the thing they were
+  testing. It stays for the measurement-only quantisation test.
