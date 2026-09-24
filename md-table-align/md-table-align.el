@@ -290,6 +290,19 @@ renders in, not the frame's canonical character."
     (when (overlay-get ov 'md-table-align)
       (delete-overlay ov))))
 
+(defun md-table-align--clear-table (node)
+  "Delete the alignment overlays of the table at NODE.
+From the start of its first line, not of the node: inside a list item or
+a blockquote the node starts at the first pipe, past the indentation,
+and a row's margin copy rides on an empty overlay at its line start.
+`overlays-in' only finds an empty overlay inside the region, so the
+header's copy would outlive every re-layout and the margin would fill
+with stale ones, one more per scroll."
+  (md-table-align--clear-region
+   (save-excursion (goto-char (treesit-node-start node))
+                   (line-beginning-position))
+   (treesit-node-end node)))
+
 (defun md-table-align--stretch (x)
   "Return a one-space string rendering as a stretch glyph out to pixel X.
 The `(X)' list form of `:align-to' means pixels; a bare number would mean
@@ -1525,10 +1538,8 @@ not be loadable when this file is.")
              (> (hash-table-count md-table-align--metrics-caches) 256))
     (clrhash md-table-align--metrics-caches))
   (dolist (node (md-table-align--tables beg end))
-    (let ((tbeg (treesit-node-start node))
-          (tend (treesit-node-end node)))
-      (md-table-align--clear-region tbeg tend)
-      (md-table-align--layout-table node))))
+    (md-table-align--clear-table node)
+    (md-table-align--layout-table node)))
 
 (defun md-table-align--jit (beg end)
   "Alignment entry point for `jit-lock', covering BEG to END."
@@ -1637,10 +1648,8 @@ centring rather than creeping one step per command."
 
 (defun md-table-align--relayout (node)
   "Lay the table at NODE out again from scratch."
-  (let ((beg (treesit-node-start node))
-        (end (treesit-node-end node)))
-    (md-table-align--clear-region beg end)
-    (md-table-align--layout-table node)))
+  (md-table-align--clear-table node)
+  (md-table-align--layout-table node))
 
 (defun md-table-align--set-offset (node offset)
   "Lay the table at NODE out again, scrolled to OFFSET."
