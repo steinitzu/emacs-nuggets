@@ -1853,3 +1853,27 @@ measure passes and `split-at` counts unchanged, and two extra
   start; both the jit-lock pass and `md-table-align--relayout` go through it.
   A top-level table, indented or not, starts at its line start and was never
   affected.
+
+- **A copy takes the text's own face, never an overlay's.** The flatten walk
+  read faces with `get-char-property`, which returns an overlay's `face` in
+  preference to the text's. `markdown-ts-in-table-mode` lays an overlay faced
+  `markdown-ts-in-table` over the table point is in — a highlight, `:extend`
+  and nothing else — so from the moment point entered a table, every piece
+  of its copy was faced `(markdown-ts-in-table default)`: the buffer's default
+  font, which under `mixed-pitch-mode` is proportional. Measured in it, text
+  looked narrower than it renders, the head kept more than fitted and wrapped,
+  and the margin came out in the proportional font. Before the walk measured,
+  only the margin's font was wrong; measuring turned it into wrapping too.
+
+  Reported as "scrolling permanently breaks the alignment": scrolling is what
+  puts point in the table, and the overlay stays while point does. Diagnosed
+  from `hacks/spill-diagnose.el` run in the live session, whose copies section
+  showed the face on every piece — a terminal cannot, since every face is a
+  column wide there.
+
+  The walk now reads `get-text-property`, which is also what the grid was
+  measured with, since `buffer-substring` carries no overlays. A highlight
+  therefore does not reach the copy, which is the "copy is static" limitation
+  already recorded. The test turns the real `markdown-ts-in-table-mode` on and
+  asserts the split and the copies come out as they did without it, under a
+  width fake where only a table face measures a table character.
