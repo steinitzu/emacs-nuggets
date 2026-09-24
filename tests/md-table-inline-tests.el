@@ -201,6 +201,158 @@ key, so the post-command re-fit notices it."
     (dolist (row (md-table-align-tests--pipe-columns))
       (should (equal row md-table-inline-tests--hidden-grid)))))
 
+;;;; Spilling a table whose cells hold a second font
+
+(defconst md-table-inline-tests--code-spans
+  "prose before the table
+| Failure | Raised as | Wrapped? |
+|---------|-----------|----------|
+| DB down | `ConnectionRefusedError` | no |
+| Bad login | raw `PasswordError` / `CatalogError` | no |
+| Pool | `sqlalchemy.TimeoutError` | yes |
+prose after the table
+"
+  "A table whose cells mix the table's font with code spans.")
+
+(defun md-table-inline-tests--narrow-code-width (string)
+  "Measure STRING with code spans a pixel narrower than the rest of a table.
+
+A code span has a face of its own, and in a GUI that can be a different
+font from the table's -- fixed pitch as well, but not the same pitch.
+Each character of the table's font is 3 pixels here and each character
+of a code span 2, so a cell is no longer a count of table characters,
+and nothing that counts characters can say where its text ends.  Text
+the work buffer would hide measures nothing, as it does for real."
+  (let ((width 0))
+    (dotimes (i (length string) width)
+      (unless (get-text-property i 'invisible string)
+        (setq width
+              (+ width
+                 (* (char-width (aref string i))
+                    (if (memq 'markdown-ts-code-span
+                              (ensure-list (get-text-property i 'face string)))
+                        2
+                      3))))))))
+
+(defun md-table-inline-tests--spills-by-line ()
+  "Return (BOL COPY HIDDEN) for each spilled row, in buffer order.
+COPY is the margin string and HIDDEN where the text area stops showing
+the row."
+  (let ((rows (make-hash-table)))
+    (dolist (ov (overlays-in (point-min) (point-max)))
+      (when (overlay-get ov 'md-table-align-spill)
+        (let* ((bol (save-excursion (goto-char (overlay-start ov))
+                                    (line-beginning-position)))
+               (entry (or (gethash bol rows) (puthash bol (list nil nil) rows))))
+          (cond ((overlay-get ov 'before-string)
+                 (setcar entry (cadr (get-text-property
+                                      0 'display (overlay-get ov 'before-string)))))
+                ((equal (overlay-get ov 'display) "")
+                 (setcar (cdr entry) (overlay-start ov)))))))
+    (let (out)
+      (maphash (lambda (bol entry) (push (cons bol entry) out)) rows)
+      (sort out :key #'car))))
+
+(defun md-table-inline-tests--should-spill-by-measure (hide)
+  "Sweep the margin over the code-span table and check every spilled row.
+HIDE non-nil hides markup, so the backticks measure nothing.
+
+Two things per row.  The head stops where its text reaches the split:
+the last character it keeps ends at or before it, and the first it gives
+up would have crossed it.  And every pipe in the copy stands on the grid
+to within the half character that whole spaces cannot resolve -- the
+copy's pipes being the row's pipes the head gave up."
+  (md-table-align-tests--with-frame-width 200
+    (md-table-align-tests--with-buffer md-table-inline-tests--code-spans
+      (when hide
+        (setq-local markdown-ts-hide-markup t)
+        (markdown-ts--set-hide-markup t))
+      (setq-local md-table-align-pixel-width-function
+                  #'md-table-inline-tests--narrow-code-width)
+      (md-table-inline-tests--enable)
+      (md-table-align-tests--enable)
+      (let ((cut-inside-code 0))
+        ;; The table is about 160 pixels wide in this measure, so every one
+        ;; of these leaves it too wide for the text area and narrow enough
+        ;; for text area and margin together.
+        (dolist (margin (number-sequence 50 100 2))
+          (md-table-align-tests--with-margins margin
+            (md-table-align-tests--goto-table)
+            (let* ((node (md-table-align--table-at (point)))
+                   (ctx (md-table-align--metrics node))
+                   (unit (plist-get ctx :unit))
+                   (view (md-table-align--viewport ctx 0))
+                   (shift (md-table-align--shift view))
+                   (split (+ (plist-get view :offset) (plist-get view :head) shift))
+                   (spills (md-table-inline-tests--spills-by-line)))
+              (should (plist-get ctx :fixed-pitch))
+              (should-not (plist-get view :clipped))
+              (should spills)
+              (dolist (row (plist-get ctx :rows))
+                (let* ((pipes (plist-get row :pipes))
+                       (bol (save-excursion (goto-char (car pipes))
+                                            (line-beginning-position)))
+                       (spill (alist-get bol spills))
+                       (copy (car spill))
+                       (hidden (cadr spill))
+                       (steps (md-table-align--row-plan row ctx)))
+                  (when spill
+                    (should copy)
+                    (should hidden)
+                    (when-let* ((step (seq-find
+                                       (lambda (s)
+                                         (and (eq (plist-get s :kind) 'content)
+                                              (<= (plist-get s :beg) hidden)
+                                              (< hidden (plist-get s :end))))
+                                       steps)))
+                      (let ((x (+ (plist-get step :x) shift
+                                  (md-table-align--measure
+                                   (plist-get step :beg) hidden))))
+                        (when (memq 'markdown-ts-code-span
+                                    (md-table-inline-tests--faces-at hidden))
+                          (setq cut-inside-code (1+ cut-inside-code)))
+                        (should (<= x split))
+                        ;; What it gave up would have crossed the split.  A
+                        ;; hidden backtick measures nothing, so look past it.
+                        (should (> (+ x (md-table-align--measure
+                                         hidden (min (plist-get step :end)
+                                                     (+ hidden 2))))
+                                   split))))
+                    (let ((given-up (seq-filter (lambda (p) (>= p hidden)) pipes))
+                          (grid (seq-keep (lambda (s)
+                                            (and (eq (plist-get s :kind) 'pipe)
+                                                 (cons (plist-get s :beg)
+                                                       (plist-get s :x))))
+                                          steps))
+                          (indices (md-table-align-tests--pipe-indices copy)))
+                      (should (= (length indices) (length given-up)))
+                      (seq-mapn
+                       (lambda (i pipe)
+                         (let ((x (+ split (funcall md-table-align-pixel-width-function
+                                                    (substring copy 0 i))))
+                               (want (+ (alist-get pipe grid) shift)))
+                           (should (<= (abs (- x want)) (/ unit 2.0)))))
+                       indices given-up))))))))
+        ;; Not vacuous: some of those margins cut a row inside a code span.
+        (should (> cut-inside-code 0))))))
+
+(ert-deftest md-table-inline-test-spill-measures-what-the-cells-render-in ()
+  "A row is cut, and its copy padded, by what its text measures, not its length.
+
+Every other spill test has one font in the table, where a character count
+and a pixel width are the same thing times one character.  A code span
+this mode faces breaks that: it renders in a font of its own, and a row
+cut by counting characters is cut several characters early -- a gap
+inside a word at the seam -- while its copy is padded as if the text were
+wider than it is, so the pipes after it land off the grid by however much
+the two fonts disagree over the length of the cell.  The margin is swept
+so the split lands inside code, inside table text, and inside padding."
+  (md-table-inline-tests--should-spill-by-measure nil))
+
+(ert-deftest md-table-inline-test-spill-measures-past-hidden-markup ()
+  "The same, with the backticks hidden and measuring nothing."
+  (md-table-inline-tests--should-spill-by-measure t))
+
 (provide 'md-table-inline-tests)
 
 ;;; md-table-inline-tests.el ends here
