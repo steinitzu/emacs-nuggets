@@ -946,11 +946,6 @@ copy would drift left of the grid it belongs to."
         ((listp face) (append face '(default)))
         (t (list face 'default))))
 
-(defun md-table-align--spill-pad (width unit face)
-  "Return WIDTH pixels of padding as FACE-carrying spaces, UNIT wide each."
-  (propertize (make-string (max 0 (round (/ (float width) unit))) ?\s)
-              'face (md-table-align--spill-face face)))
-
 (defun md-table-align--spill-space (spec x unit)
   "Return the pixel a `space' display SPEC starting at pixel X reaches.
 UNIT is the pixel width of one character.  `md-table-align--pad' emits
@@ -964,37 +959,51 @@ of specs this package did not write."
           ((numberp width) (+ x (* width unit)))
           (t (+ x unit)))))
 
+(defun md-table-align--text-piece (string face x)
+  "Return a piece for STRING shown in FACE, rendering from pixel X.
+The piece's width is *measured*, in the face it will carry in a copy.
+Counting its characters instead assumes every one is as wide as the
+table's own, and a cell need not be in the table's font: a code span
+is in a font of its own, fixed pitch too but not necessarily the same
+pitch.  Counted, a row of those is cut characters early and its copy
+padded to the wrong length."
+  (let ((text (propertize (substring-no-properties string)
+                          'face (md-table-align--spill-face face))))
+    (list :kind 'text :text text :x x
+          :end (+ x (funcall md-table-align-pixel-width-function text)))))
+
 (defun md-table-align--flatten-string (string x unit face)
   "Return (PIECES . END) for display STRING laid out from pixel X.
 FACE stands in where STRING specifies none -- a `display' string carries
-the face of the text it replaces.  One piece per character, so a split
-can fall anywhere in it."
+the face of the text it replaces.  One piece per run of one face, which
+`md-table-align--split-piece' can cut anywhere."
   (let ((pieces nil) (i 0) (n (length string)))
     (while (< i n)
       (let ((spec (get-text-property i 'display string))
-            (own (get-text-property i 'face string)))
+            (own (get-text-property i 'face string))
+            (next (min (next-single-property-change i 'display string n)
+                       (next-single-property-change i 'face string n))))
         (if (and (consp spec) (eq (car spec) 'space))
             (let ((end (md-table-align--spill-space spec x unit)))
-              (push (list :x x :end end
-                          :text (md-table-align--spill-pad (- end x) unit
-                                                           (or own face)))
-                    pieces)
+              (push (list :kind 'pad :x x :end end :face (or own face)) pieces)
               (setq x end))
-          (let ((end (+ x (* unit (string-width (substring string i (1+ i)))))))
-            (push (list :x x :end end
-                        :text (propertize (substring-no-properties string i (1+ i))
-                                          'face (md-table-align--spill-face (or own face))))
-                  pieces)
-            (setq x end))))
-      (setq i (1+ i)))
+          (let ((piece (md-table-align--text-piece
+                        (substring string i next) (or own face) x)))
+            (push piece pieces)
+            (setq x (plist-get piece :end))))
+        (setq i next)))
     (cons (nreverse pieces) x)))
 
 (defun md-table-align--flatten (bol eol unit face)
   "Return what the line between BOL and EOL renders as, piece by piece.
 
 Each piece is a plist of `:beg' and `:end-pos' -- the buffer span it came
-from -- `:x' and `:end' in pixels from the start of the text area, and
-the `:text' a copy of it should show.
+from -- `:x' and `:end' in pixels from the start of the text area, and a
+`:kind'.  A `pad' is a stretch glyph, with the `:face' its padding shows
+in.  A `text' piece carries the `:text' a copy of it should show; with
+`:source' `buffer' that text is the buffer's own, one character for one
+position from `:beg', and otherwise it came from a string shown in place
+of, or in front of, the buffer span.
 
 FACE is the table's own face, which stands behind every piece that
 specifies none: the copy has to render in the face the pixel targets were
@@ -1009,7 +1018,8 @@ measured in, or its columns are not the table's columns."
           (let ((flat (md-table-align--flatten-string
                        string x unit (or (get-char-property pos 'face) face))))
             (dolist (piece (car flat))
-              (push (append (list :beg pos :end-pos pos) piece) pieces))
+              (push (append (list :beg pos :end-pos pos :source 'before) piece)
+                    pieces))
             (setq x (cdr flat)))))
       (let ((spec (get-char-property pos 'display)))
         (cond
@@ -1024,61 +1034,111 @@ measured in, or its columns are not the table's columns."
               (let ((flat (md-table-align--flatten-string
                            spec x unit (or (get-char-property pos 'face) face))))
                 (dolist (piece (car flat))
-                  (push (append (list :beg pos :end-pos end) piece) pieces))
+                  (push (append (list :beg pos :end-pos end :source 'display) piece)
+                        pieces))
                 (setq x (cdr flat))))
              ((and (consp spec) (eq (car spec) 'space))
               (let ((to (md-table-align--spill-space spec x unit)))
-                (push (list :beg pos :end-pos end :x x :end to
-                            :text (md-table-align--spill-pad
-                                   (- to x) unit
-                                   (or (get-char-property pos 'face) face)))
+                (push (list :kind 'pad :beg pos :end-pos end :x x :end to
+                            :face (or (get-char-property pos 'face) face))
                       pieces)
                 (setq x to))))
             (setq pos end)))
          (t
-          (let ((end (+ x (* unit (char-width (char-after pos))))))
-            (push (list :beg pos :end-pos (1+ pos) :x x :end end
-                        :text (propertize
-                               (buffer-substring-no-properties pos (1+ pos))
-                               'face (md-table-align--spill-face
-                                      (or (get-char-property pos 'face) face))))
+          ;; A run of plain text, measured whole: one measurement per face
+          ;; per cell rather than one per character.  It ends wherever
+          ;; anything that changes how the text renders could begin --
+          ;; another face, a `display' or `invisible' span, or an overlay
+          ;; that may carry a string of its own.
+          (let* ((end (min eol
+                           (next-single-char-property-change pos 'display nil eol)
+                           (next-single-char-property-change pos 'invisible nil eol)
+                           (next-single-char-property-change pos 'face nil eol)
+                           (next-overlay-change pos)))
+                 (piece (md-table-align--text-piece
+                         (buffer-substring-no-properties pos end)
+                         (or (get-char-property pos 'face) face) x)))
+            (push (append (list :beg pos :end-pos end :source 'buffer) piece)
                   pieces)
-            (setq x end pos (1+ pos)))))))
+            (setq x (plist-get piece :end) pos end))))))
     (nreverse pieces)))
 
-(defun md-table-align--spill-string (tail head unit)
-  "Return the margin copy of the pieces in TAIL, which start at pixel HEAD.
-A piece straddling the split keeps only the part past it, so the copy
-begins exactly where the text area stopped.  UNIT is one character."
-  (mapconcat
-   (lambda (piece)
-     (let ((x (plist-get piece :x))
-           (end (plist-get piece :end))
-           (text (plist-get piece :text)))
-       (cond ((>= x head) text)
-             ((> end head)
-              (let ((keep (max 0 (round (/ (float (- end head)) unit)))))
-                (substring text (max 0 (- (length text) keep)))))
-             (t ""))))
-   tail ""))
+(defun md-table-align--fit (text limit)
+  "Return how many leading characters of TEXT render within LIMIT pixels.
+Bisected, as in `md-table-align--split-at', since a wider prefix is
+never narrower."
+  (let ((lo 0) (hi (length text)))
+    (while (< lo hi)
+      (let ((mid (/ (+ lo hi 1) 2)))
+        (if (<= (funcall md-table-align-pixel-width-function (substring text 0 mid))
+                limit)
+            (setq lo mid)
+          (setq hi (1- mid)))))
+    lo))
 
-(defun md-table-align--spill-head-string (pieces head unit)
-  "Return what PIECES render before pixel HEAD, for the text area to keep.
-The mirror of `md-table-align--spill-string': a piece straddling the
-split keeps the part in front of it.  A stretch glyph is the usual one,
-and left whole it would reach past the text area and wrap the line -- the
-very thing spilling exists to prevent."
-  (mapconcat
-   (lambda (piece)
-     (let ((x (plist-get piece :x))
-           (end (plist-get piece :end))
-           (text (plist-get piece :text)))
-       (cond ((<= end head) text)
-             ((< x head)
-              (substring text 0 (min (length text)
-                                     (max 0 (round (/ (float (- head x)) unit))))))
-             (t ""))))
-   pieces ""))
+(defun md-table-align--split-piece (piece at)
+  "Return (BEFORE . AFTER), PIECE cut where it renders past pixel AT.
+Either may be nil.  A stretch is cut at the pixel; text only between
+characters, so the character straddling AT goes to AFTER whole -- it
+cannot be shown in the text area without reaching past it.  Buffer text
+cut this way moves AFTER's `:beg' to the first position it holds."
+  (let ((x (plist-get piece :x))
+        (end (plist-get piece :end)))
+    (cond
+     ((<= end at) (cons piece nil))
+     ((>= x at) (cons nil piece))
+     ((eq (plist-get piece :kind) 'pad)
+      (cons (plist-put (copy-sequence piece) :end at)
+            (plist-put (copy-sequence piece) :x at)))
+     (t
+      (let* ((text (plist-get piece :text))
+             (k (md-table-align--fit text (- at x))))
+        (if (zerop k)
+            (cons nil piece)
+          (let* ((mid (+ x (funcall md-table-align-pixel-width-function
+                                    (substring text 0 k))))
+                 (before (copy-sequence piece))
+                 (after (copy-sequence piece)))
+            (plist-put before :text (substring text 0 k))
+            (plist-put before :end mid)
+            (plist-put after :text (substring text k))
+            (plist-put after :x mid)
+            (when (eq (plist-get piece :source) 'buffer)
+              (plist-put before :end-pos (+ (plist-get piece :beg) k))
+              (plist-put after :beg (+ (plist-get piece :beg) k)))
+            (cons before after))))))))
+
+(defun md-table-align--spill-text (pieces x unit &optional limit)
+  "Return PIECES as one string, as it renders starting at pixel X.
+UNIT is the pixel width of one space in the table's face.
+
+Text goes in as it is and moves X on by its measured width.  A stretch
+cannot go in at all -- inside a margin string, and inside any `display'
+string, a space spec collapses to one column -- so each is written as
+spaces, as many as bring X nearest the pixel it was aiming for.
+Counting from where the string has actually got to, rather than from
+each stretch's own width, is what stops the rounding accumulating: a
+cell whose text is not a whole number of spaces wide costs the pipe
+after it less than half a space, and the pipe after that nothing.
+
+With LIMIT, no stretch runs X past that pixel."
+  (let ((out nil))
+    (dolist (piece pieces)
+      (if (eq (plist-get piece :kind) 'pad)
+          (let* ((to (if limit
+                         (min limit (plist-get piece :end))
+                       (plist-get piece :end)))
+                 (n (max 0 (round (- to x) unit))))
+            (when (and limit (> (+ x (* n unit)) limit))
+              (setq n (max 0 (floor (- limit x) unit))))
+            (push (propertize (make-string n ?\s)
+                              'face (md-table-align--spill-face
+                                     (plist-get piece :face)))
+                  out)
+            (setq x (+ x (* n unit))))
+        (push (plist-get piece :text) out)
+        (setq x (+ x (- (plist-get piece :end) (plist-get piece :x))))))
+    (apply #'concat (nreverse out))))
 
 (defun md-table-align--spill-overlay (beg end)
   "Return a spill overlay over BEG to END, tagged for clearing."
@@ -1093,24 +1153,33 @@ UNIT is the pixel width of one character and FACE the table's own face.
 Returns the margin string, or nil when the line ends inside the text area
 and nothing has to spill."
   (let* ((pieces (md-table-align--flatten bol eol unit face))
-         (tail (seq-drop-while (lambda (p) (<= (plist-get p :end) head)) pieces)))
-    (when tail
-      (let* ((beg (plist-get (car tail) :beg))
+         (before (seq-take-while (lambda (p) (<= (plist-get p :end) head)) pieces))
+         (rest (nthcdr (length before) pieces)))
+    (when rest
+      (let* ((cut (md-table-align--split-piece (car rest) head))
+             (before (if (car cut) (append before (list (car cut))) before))
+             (tail (cons (cdr cut) (cdr rest)))
+             (beg (plist-get (car tail) :beg))
              ;; A `display' string straddling the split is one buffer span:
              ;; hiding from its start would take the head's part of it too.
-             (kept (seq-filter (lambda (p) (and (eql (plist-get p :beg) beg)
-                                                (< (plist-get p :x) head)))
-                               pieces))
+             (kept (and (eq (plist-get (car tail) :source) 'display)
+                        (seq-filter (lambda (p)
+                                      (and (eq (plist-get p :source) 'display)
+                                           (eql (plist-get p :beg) beg)))
+                                    before)))
              (split (if kept (plist-get (car tail) :end-pos) beg))
-             (string (md-table-align--spill-string tail head unit)))
+             (string (md-table-align--spill-text tail head unit)))
         (when (> (length string) 0)
           (when (> split beg)
             (let ((ov (md-table-align--spill-overlay beg split)))
               (overlay-put ov 'evaporate t)
               (overlay-put ov 'priority 10)
+              ;; A stretch straddling the split keeps only its head: left
+              ;; whole it would reach past the text area and wrap the line,
+              ;; the very thing spilling exists to prevent.
               (overlay-put ov 'display
-                           (md-table-align--spill-head-string
-                            kept head unit))))
+                           (md-table-align--spill-text
+                            kept (plist-get (car kept) :x) unit head))))
           (let ((ov (md-table-align--spill-overlay split eol)))
             (overlay-put ov 'evaporate t)
             ;; Not `invisible': a `display' overlay starting at the same

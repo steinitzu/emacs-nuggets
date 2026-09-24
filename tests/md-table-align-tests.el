@@ -1524,35 +1524,40 @@ is what a GUI shows and a terminal cannot."
             (should (equal row (car indices)))))))))
 
 (defun md-table-align-tests--off-pixel-width (string)
-  "Measure STRING at an advance that is not a whole number of pixels.
+  "Measure STRING so that a cell need not be a whole number of characters.
 
-One character rounds to 3 pixels but ten characters are 34, not 30 —
-which is what a GUI font gives under fractional display scaling, and what
-a terminal can never give, since there one character is one pixel and
-every width divides exactly.  Without it a cell is always a whole number
-of characters wide by construction, and the rounding in the spill path
-has nothing to round."
+One character rounds to 3 pixels but ten characters are 34, not 30.  No
+font does this: Emacs rounds each glyph's advance to a whole pixel
+(`lround' in ftcrfont.c), so text of one face is always a whole number
+of its characters wide.  What *does* make a cell off the grid is a cell
+mixing fonts -- a code span in a table, say -- and this is a stand-in for
+that in a fixture of one face.
+
+For measurement only.  The spill path flattens the rendered row by
+measuring it, and against this it finds the fake contradicting itself: a
+delimiter of N dashes, sized as N characters, measures wider than N
+characters.  Spill tests use `md-table-align-tests--tripled-width', or a
+table that really does mix fonts."
   (round (* 3.4 (string-width string))))
 
-(ert-deftest md-table-align-test-spill-copies-share-one-grid-off-pixel ()
-  "The copies agree even when the font's advance does not divide the grid.
+(ert-deftest md-table-align-test-spill-copies-share-one-grid-swept ()
+  "The copies agree wherever the split falls.
 
 A margin copy is built from literal spaces — a stretch glyph inside a
 margin string collapses to a single column whatever width it asks for —
 so every run of padding in a copy is a pixel width divided by one
-character.  Unless the grid is whole characters that division rounds, and
-each row rounds its own padding its own way: the copies come out a
-character apart from each other, in a staircase.
+character.  If each row rounded its own padding its own way, the copies
+would come out a character apart from each other, in a staircase.
 
-Only some splits expose it, so the margin is swept.  Every width below
-drifts without the quantised grid, and a few of them are wide enough that
-the copy holds several columns, where the error accumulates."
+Only some splits expose it, so the margin is swept.  A character of the
+table is 3 pixels and a column of the frame 1, so the text area's edge
+falls inside a character for most of these."
   (md-table-align-tests--with-frame-width 200
     (md-table-align-tests--with-buffer md-table-align-tests--wide
       (setq-local md-table-align-pixel-width-function
-                  #'md-table-align-tests--off-pixel-width)
+                  #'md-table-align-tests--tripled-width)
       (md-table-align-tests--enable)
-      (dolist (margin '(48 74 80 86 92 98 104 110))
+      (dolist (margin '(58 74 80 86 92 98 104 110))
         (md-table-align-tests--with-margins margin
           (let* ((copies (md-table-align-tests--spill-strings))
                  (indices (mapcar #'md-table-align-tests--pipe-indices copies)))
@@ -1702,13 +1707,14 @@ unless the grid has a column boundary exactly at that edge -- which is a
 property of the window, not of the table -- every column in the margin
 stands a fraction of a character off the ones it continues.  A terminal
 cannot show this: there a character is one pixel and every edge is a
-boundary already."
+boundary already.  So a character is measured at 3 pixels here, against
+a frame whose columns -- and so whose margins -- are 1."
   (md-table-align-tests--with-frame-width 200
     (md-table-align-tests--with-buffer md-table-align-tests--wide
       (setq-local md-table-align-pixel-width-function
-                  #'md-table-align-tests--off-pixel-width)
+                  #'md-table-align-tests--tripled-width)
       (md-table-align-tests--enable)
-      (dolist (margin '(48 74 80 86 92 98 104 110))
+      (dolist (margin '(58 74 80 86 92 98 104 110))
         (md-table-align-tests--with-margins margin
           ;; Cumulative: at rest, then scrolled, then scrolled again -- a lead
           ;; indicator appears with the first of those and moves the head's
@@ -1723,7 +1729,7 @@ boundary already."
               (should (= (plist-get seam :split)
                          (- (plist-get seam :edge)
                             (md-table-align--continuation-reserve
-                             (md-table-align-tests--off-pixel-width " ")))))
+                             (md-table-align-tests--tripled-width " ")))))
               ;; And what it stopped short of is all in the copies: a split
               ;; cut early leaves every copy holding a column too many.
               (should copies)
