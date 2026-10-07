@@ -11,10 +11,11 @@
 ;;
 ;;     [builder.py:392-400](../src/builder.py#L392-L400)
 ;;     [notes](notes.md#deferred-decisions)
+;;     [diagnostics.sql](/home/me/notes/diagnostics.sql:12)
 ;;
 ;; -- open the file and jump to the anchored place on \\[push-button] or a
 ;; click, instead of visiting a buffer for a file literally named
-;; "builder.py#L392-L400".
+;; "builder.py#L392-L400" or "diagnostics.sql:12".
 ;;
 ;; `markdown-ts-mode' dispatches a link button's action on the URL string:
 ;; in-buffer #fragment, mailto:, URI scheme, and a final catch-all that
@@ -25,7 +26,9 @@
 ;; and interprets the anchor -- GitHub/GitLab-style line anchors jump to the
 ;; line (a range is momentarily highlighted); anything else is a heading
 ;; slug, resolved by upstream's own `markdown-ts--follow-fragment' when the
-;; target is a `markdown-ts-mode' buffer.  See DESIGN.md.
+;; target is a `markdown-ts-mode' buffer.  Compiler-style `path:392'
+;; suffixes, as coding agents write them, are taken over the same way.
+;; See DESIGN.md.
 ;;
 ;; Usage:
 ;;
@@ -59,6 +62,17 @@ Covers GitHub `L392', `L392-L400' and `L392C5-L400C10' (columns are
 ignored) and GitLab `L392-400'.  Case-sensitive: a lowercase `l' is a
 heading slug, not a line.")
 
+(defconst md-file-anchor--line-suffix-regexp
+  "\\`\\(.+?\\):\\([0-9]+\\)\\(?::[0-9]+\\|-\\([0-9]+\\)\\)?\\'"
+  "Regexp matching PATH plus a compiler-style line suffix.
+Covers `:392', `:392:5' (the column is ignored) and `:392-400'.  The
+shortest PATH wins, so `a:1:2' is line 1, column 2.")
+
+(defconst md-file-anchor--upstream-scheme-regexp "\\`[a-z]+:"
+  "Upstream's own URI scheme test, verbatim.
+A URL matching it is browsed by upstream, never visited, so a line
+suffix must not claim it: `tel:5551234' stays a phone number.")
+
 (defun md-file-anchor-split (url)
   "Split URL at its first `#' into a cons (PATH . ANCHOR).
 The `#' itself belongs to neither part.  URL without a `#' yields
@@ -80,6 +94,26 @@ not a line anchor -- a heading slug, by definition."
                       (string-to-number (match-string 2 anchor))
                     beg)))
         (cons (min beg end) (max beg end))))))
+
+(defun md-file-anchor-split-line-suffix (url)
+  "Split a compiler-style line suffix off URL into (PATH BEG . END), or nil.
+The suffix is `:392', `:392:5' or `:392-400'; a single line yields
+BEG = END and a reversed range is normalised.  Nil means URL is not a
+file path with a line suffix: it has no suffix, carries a `#' (the
+fragment shape takes precedence), its PATH part has a URI scheme -- as
+in `https://host:8080' -- or upstream would browse it as a scheme."
+  (let ((case-fold-search nil))
+    (when (and (stringp url)
+               (not (string-search "#" url))
+               (not (string-match-p md-file-anchor--upstream-scheme-regexp url))
+               (string-match md-file-anchor--line-suffix-regexp url))
+      (let* ((path (match-string 1 url))
+             (beg (string-to-number (match-string 2 url)))
+             (end (if (match-string 3 url)
+                      (string-to-number (match-string 3 url))
+                    beg)))
+        (unless (string-match-p md-file-anchor--scheme-regexp path)
+          (cons path (cons (min beg end) (max beg end))))))))
 
 (defun md-file-anchor--goto-lines (beg end)
   "Move to line BEG and momentarily highlight lines BEG through END.
@@ -108,32 +142,38 @@ open, which is the bulk of the value."
     (message "md-file-anchor: no way to resolve #%s in %s" anchor major-mode)))
 
 (defun md-file-anchor-visit (url)
-  "Open the file URL names, honouring a #line or #heading anchor.
+  "Open the file URL names, honouring a line suffix or #anchor.
 
 If URL names an existing file whole -- a filename really containing
-`#' -- it is opened verbatim, preserving what worked before this
-package.  Otherwise URL is split at its first `#'; the path part is
-found and the anchor interpreted: a line anchor jumps to the line, any
-other anchor is a heading slug, an empty anchor is just the file."
+`#' or `:' -- it is opened verbatim, preserving what worked before this
+package.  A `path:LINE' suffix jumps to the line.  Otherwise URL is
+split at its first `#'; the path part is found and the anchor
+interpreted: a line anchor jumps to the line, any other anchor is a
+heading slug, an empty anchor is just the file."
   (if (file-exists-p url)
       (find-file url)
-    (pcase-let ((`(,path . ,anchor) (md-file-anchor-split url)))
-      (find-file path)
-      (unless (member anchor '(nil ""))
-        (if-let* ((range (md-file-anchor-line-range anchor)))
-            (md-file-anchor--goto-lines (car range) (cdr range))
-          (md-file-anchor--goto-heading anchor))))))
+    (if-let* ((suffix (md-file-anchor-split-line-suffix url)))
+        (pcase-let ((`(,path ,beg . ,end) suffix))
+          (find-file path)
+          (md-file-anchor--goto-lines beg end))
+      (pcase-let ((`(,path . ,anchor) (md-file-anchor-split url)))
+        (find-file path)
+        (unless (member anchor '(nil ""))
+          (if-let* ((range (md-file-anchor-line-range anchor)))
+              (md-file-anchor--goto-lines (car range) (cdr range))
+            (md-file-anchor--goto-heading anchor)))))))
 
 (defun md-file-anchor--handles-p (url)
-  "Non-nil when URL is a scheme-less path carrying a `#' anchor.
+  "Non-nil when URL is a scheme-less path carrying an anchor or line suffix.
 Exactly the URLs upstream's dispatch would hand whole to `find-file'
 while this package can do better.  In-buffer `#fragment' links and URLs
 with a URI scheme are upstream's business."
   (let ((case-fold-search nil))
     (and (stringp url)
-         (not (string-prefix-p "#" url))
-         (not (string-match-p md-file-anchor--scheme-regexp url))
-         (string-search "#" url)
+         (or (and (not (string-prefix-p "#" url))
+                  (not (string-match-p md-file-anchor--scheme-regexp url))
+                  (string-search "#" url))
+             (md-file-anchor-split-line-suffix url))
          t)))
 
 (defun md-file-anchor--make-button (orig beg end url)
@@ -167,7 +207,8 @@ Upstream `markdown-ts-mode' passes a link destination like
 \"builder.py#L392-L400\" to `find-file' whole, visiting a buffer for a
 file of that literal name.  With this mode on, such a link opens
 builder.py and jumps to line 392, momentarily highlighting the range;
-\"notes.md#slug\" opens notes.md at that heading.  Links with a URI
+\"notes.md#slug\" opens notes.md at that heading; \"builder.py:392\"
+and \"builder.py:392-400\" work like the line anchor.  Links with a URI
 scheme, in-buffer #fragment links and plain file links are untouched.
 
 The mode is global because it works by advising a function, which is
