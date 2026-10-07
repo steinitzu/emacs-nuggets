@@ -261,6 +261,10 @@ Checked after implementing, against a real Emacs 31.0.90 in a TTY frame
 | Scheme'd URLs, in-buffer fragments and plain file links untouched | Holds — asserted per shape, mode on |
 | Mark is pushed before the jump | Holds — `(goto-char (mark t))` returns to the pre-jump line |
 | `font-lock-flush` heals already-fontified buffers both ways | Holds — enable heals, disable reverts, advice fully removed |
+| Upstream hands a `path:LINE` string to `find-file` whole | Holds — second canary, mode off |
+| Absolute `path:7`, `path:3-9` and `path:12:5` land and highlight | Holds — real `RET`, real files |
+| Ports, `urn:`, `tel:` and bare lowercase names are not taken over | Holds — pinned in the suffix grammar test |
+| A literal `colon.py:3` on disk opens verbatim | Holds |
 
 ### Deviations
 

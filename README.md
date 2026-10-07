@@ -397,6 +397,13 @@ anchor that is not a line reference is a heading slug: `[notes](notes.md#slug)`
 opens the file and jumps to the heading, resolved by `markdown-ts-mode`'s own
 fragment machinery.
 
+The compiler-style line suffix that coding agents write is handled the same
+way: `[diagnostics.sql](/home/me/notes/diagnostics.sql:12)` opens
+`diagnostics.sql` at line 12, and `file.py:12:5` (column ignored) and
+`file.py:392-400` work too. A bare all-lowercase name like `makefile:12` is
+the one exception — it reads as a URI scheme, as it does to `markdown-ts-mode`
+— but `./makefile:12` or `Makefile:12` opens the file.
+
 ```elisp
 (require 'md-file-anchor)
 (md-file-anchor-mode 1)
@@ -407,8 +414,8 @@ nothing buffer-local to switch on. There is nothing to customize.
 
 Everything else is untouched: links with a URI scheme keep browsing (a URL's
 `#fragment` stays with the URL), in-buffer `#heading` links keep jumping, plain
-file links keep opening, and a file whose name really does contain a `#` — if
-it exists on disk under that name — still opens verbatim.
+file links keep opening, and a file whose name really does contain a `#` or a
+`:12` suffix — if it exists on disk under that name — still opens verbatim.
 
 See [md-file-anchor/DESIGN.md](md-file-anchor/DESIGN.md) for the details.
 
