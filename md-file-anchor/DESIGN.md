@@ -78,7 +78,10 @@ case-sensitively lowercase, so upstream would route `HTTP://x/a#b` to
 *away* from the file branch — the defensible reading, and the divergence is
 unreachable from sanely-written Markdown.
 
-A scheme-less URL **without** `#` — the common `[x](file.md)` — is not
+Alternatively, the URL carries a compiler-style line suffix, `path:392`,
+under its own rules (see [Line suffixes](#line-suffixes)).
+
+A scheme-less URL with neither `#` nor a line suffix — the common `[x](file.md)` — is not
 handled; it passes through to upstream's `find-file`, byte-identical
 behaviour to today.
 
@@ -127,6 +130,46 @@ end-of-buffer stops at end-of-buffer — where `forward-line` stops — rather
 than erroring; the file is open either way. Anything the regexp rejects is
 a heading anchor by definition; there is no error case in classification.
 
+### Line suffixes
+
+Added later. Coding agents and compilers write file links the `grep -n` way —
+
+    [diagnostics.sql](/home/me/notes/diagnostics.sql:1)
+
+— with the line after a colon, and upstream hands those to `find-file` whole
+just the same, visiting an empty `diagnostics.sql:1`. So a second URL shape
+is taken over, with the same click-time behaviour as a line anchor:
+
+| Suffix | Meaning | Convention |
+|---|---|---|
+| `:392` | line 392 | grep, compilers |
+| `:392:5` | line 392, column ignored | compilers |
+| `:392-400` | lines 392–400 | agent transcripts |
+
+`md-file-anchor-split-line-suffix` parses `PATH:SUFFIX` with the shortest
+PATH that makes the rest a suffix, so `a:1:2` is line 1, column 2 — the
+compiler reading. Columns are ignored, as they are in `#L392C5`.
+
+The colon is what makes this shape harder than `#`: it is also the URI
+scheme delimiter, and `diagnostics.sql:1` is, character for character, a
+valid RFC 3986 URI whose scheme is `diagnostics.sql`. The whole-URL scheme
+test therefore cannot be used here. Instead, a URL is a file-with-suffix
+when:
+
+- it contains no `#` — a `#` puts the URL on the fragment path above,
+  which takes precedence;
+- the PATH part, suffix stripped, has no URI scheme (the RFC test again) —
+  so `https://host:8080` and `urn:isbn:0451450523` are not files;
+- the whole URL fails **upstream's own** scheme test, `` \`[a-z]+: `` — so
+  `tel:5551234`, which upstream browses, keeps browsing. This keeps the
+  package to its rule of only taking over URLs upstream would `find-file`.
+  The price: a bare all-lowercase filename, `makefile:12`, reads as a
+  scheme, exactly as upstream reads it. Any `.`, `/` or capital before the
+  colon — `main.c:3`, `./makefile:12`, `Makefile:12` — makes it a file.
+
+The existing-file guard applies unchanged: a file really named `x.py:3` on
+disk opens verbatim.
+
 ### Interaction with md-bare-url
 
 Both packages advise `markdown-ts--make-link-button`, and compose in either
@@ -157,6 +200,7 @@ behaviour and each is worth calling directly:
 
 - `md-file-anchor-split` — URL → `(PATH . ANCHOR)`.
 - `md-file-anchor-line-range` — ANCHOR → `(BEG . END)` or nil.
+- `md-file-anchor-split-line-suffix` — URL → `(PATH BEG . END)` or nil.
 - `md-file-anchor-visit` — the whole click-time behaviour, callable on any
   URL string.
 
@@ -193,9 +237,14 @@ overlay's bounds.
 - **Reversibility and healing**: fontify with the mode off, enable, and the
   live button gains the new action; disable, and it reverts; reload leaves
   exactly one advice.
-- **The parsers in isolation**: `md-file-anchor-split` and
-  `md-file-anchor-line-range` pinned on their edges (first-`#` split,
-  column anchors, reversed ranges, non-line anchors).
+- **The parsers in isolation**: `md-file-anchor-split`,
+  `md-file-anchor-line-range` and `md-file-anchor-split-line-suffix` pinned
+  on their edges (first-`#` split, column anchors, reversed ranges,
+  non-line anchors, ports, bare lowercase schemes).
+- **Line suffixes**: `RET` on an absolute `target.py:7`, a relative
+  `target.py:3-9` and `target.py:12:5` lands and highlights as the `#L`
+  shapes do; a literal `colon.py:3` on disk opens verbatim; the upstream
+  canary covers this shape too.
 
 ## Validation against implementation
 
