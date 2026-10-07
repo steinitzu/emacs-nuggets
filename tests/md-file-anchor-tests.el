@@ -41,6 +41,12 @@ Non-markdown heading: [n](target.py#appendix)
 
 Literal hash file: [l](weird#L5.md)
 
+Suffix range: [c](target.py:3-9)
+
+Suffix column: [k](target.py:12:5)
+
+Literal colon file: [q](colon.py:3)
+
 Web: [w](https://example.com/a#b)
 
 In-buffer: [f](#top)
@@ -66,7 +72,9 @@ body
   (with-temp-file (expand-file-name "notes.md" dir)
     (insert md-file-anchor-tests--notes))
   (with-temp-file (expand-file-name "weird#L5.md" dir)
-    (insert "literal hash filename\n")))
+    (insert "literal hash filename\n"))
+  (with-temp-file (expand-file-name "colon.py:3" dir)
+    (insert "literal colon filename\n")))
 
 ;;;; Helpers
 
@@ -155,6 +163,12 @@ destination is junk that should not be visited for real."
     (should (equal (md-file-anchor-tests--found-file "[r]")
                    "target.py#L392-L400"))))
 
+(ert-deftest md-file-anchor-test-upstream-passes-the-line-suffix-to-find-file ()
+  "With the mode off, a `:LINE' suffix is treated as part of the filename."
+  (md-file-anchor-tests--with-buffer
+    (should (equal (md-file-anchor-tests--found-file "[c]")
+                   "target.py:3-9"))))
+
 ;;;; The fix
 
 (ert-deftest md-file-anchor-test-range-anchor-opens-at-first-line ()
@@ -233,6 +247,42 @@ destination is junk that should not be visited for real."
     (should (equal (file-name-nondirectory (buffer-file-name)) "target.py"))
     (should (= (line-number-at-pos) 1))))
 
+;;;; Line suffixes
+
+(ert-deftest md-file-anchor-test-absolute-path-line-suffix ()
+  "RET on an absolute /dir/target.py:7, the shape agents write, lands on line 7."
+  (md-file-anchor-tests--with-buffer
+    (goto-char (point-max))
+    (insert (format "\nAbsolute: [a](%s:7)\n"
+                    (expand-file-name "target.py" dir)))
+    (redisplay t)
+    (md-file-anchor-tests--enable)
+    (md-file-anchor-tests--press-ret "[a]")
+    (should (equal (file-name-nondirectory (buffer-file-name)) "target.py"))
+    (should (= (line-number-at-pos) 7))
+    (should (= (overlay-end pulse-momentary-overlay)
+               (md-file-anchor-tests--line-pos 7 'eol)))))
+
+(ert-deftest md-file-anchor-test-line-suffix-range ()
+  "RET on target.py:3-9 lands on line 3 and highlights through line 9."
+  (md-file-anchor-tests--with-buffer
+    (md-file-anchor-tests--enable)
+    (md-file-anchor-tests--press-ret "[c]")
+    (should (equal (file-name-nondirectory (buffer-file-name)) "target.py"))
+    (should (= (line-number-at-pos) 3))
+    (should (= (overlay-start pulse-momentary-overlay)
+               (md-file-anchor-tests--line-pos 3 'bol)))
+    (should (= (overlay-end pulse-momentary-overlay)
+               (md-file-anchor-tests--line-pos 9 'eol)))))
+
+(ert-deftest md-file-anchor-test-line-suffix-with-column ()
+  "RET on target.py:12:5 lands on line 12; the column is ignored."
+  (md-file-anchor-tests--with-buffer
+    (md-file-anchor-tests--enable)
+    (md-file-anchor-tests--press-ret "[k]")
+    (should (equal (file-name-nondirectory (buffer-file-name)) "target.py"))
+    (should (= (line-number-at-pos) 12))))
+
 ;;;; The existing-file guard
 
 (ert-deftest md-file-anchor-test-literal-hash-filename-opens-verbatim ()
@@ -241,6 +291,14 @@ destination is junk that should not be visited for real."
     (md-file-anchor-tests--enable)
     (md-file-anchor-tests--press-ret "[l]")
     (should (equal (file-name-nondirectory (buffer-file-name)) "weird#L5.md"))))
+
+(ert-deftest md-file-anchor-test-literal-colon-filename-opens-verbatim ()
+  "A link to a file whose name really ends in `:3' is not split."
+  (md-file-anchor-tests--with-buffer
+    (md-file-anchor-tests--enable)
+    (md-file-anchor-tests--press-ret "[q]")
+    (should (equal (file-name-nondirectory (buffer-file-name)) "colon.py:3"))
+    (should (= (line-number-at-pos) 1))))
 
 ;;;; Non-interference
 
@@ -297,6 +355,33 @@ destination is junk that should not be visited for real."
   (should-not (md-file-anchor-line-range "deferred-decisions"))
   (should-not (md-file-anchor-line-range ""))
   (should-not (md-file-anchor-line-range nil)))
+
+(ert-deftest md-file-anchor-test-line-suffix-grammar ()
+  "Compiler-style suffixes parse; ports, schemes and fragments do not."
+  (should (equal (md-file-anchor-split-line-suffix "/a/b.sql:1")
+                 '("/a/b.sql" 1 . 1)))
+  (should (equal (md-file-anchor-split-line-suffix "b.py:392-400")
+                 '("b.py" 392 . 400)))
+  (should (equal (md-file-anchor-split-line-suffix "b.py:400-392")
+                 '("b.py" 392 . 400)))
+  ;; Shortest path wins: line 1, column 2.
+  (should (equal (md-file-anchor-split-line-suffix "a.c:1:2") '("a.c" 1 . 1)))
+  (should (equal (md-file-anchor-split-line-suffix "Makefile:12")
+                 '("Makefile" 12 . 12)))
+  (should (equal (md-file-anchor-split-line-suffix "./makefile:12")
+                 '("./makefile" 12 . 12)))
+  ;; Not file-with-suffix.
+  (should-not (md-file-anchor-split-line-suffix "b.py"))
+  (should-not (md-file-anchor-split-line-suffix "b.py:"))
+  (should-not (md-file-anchor-split-line-suffix "b.py:x"))
+  (should-not (md-file-anchor-split-line-suffix ":12"))
+  (should-not (md-file-anchor-split-line-suffix "b.py:12-"))
+  (should-not (md-file-anchor-split-line-suffix "b.md#x:12"))
+  (should-not (md-file-anchor-split-line-suffix "https://host:8080"))
+  (should-not (md-file-anchor-split-line-suffix "urn:isbn:0451450523"))
+  (should-not (md-file-anchor-split-line-suffix "tel:5551234"))
+  (should-not (md-file-anchor-split-line-suffix "makefile:12"))
+  (should-not (md-file-anchor-split-line-suffix nil)))
 
 ;;;; Reversibility
 ;;
