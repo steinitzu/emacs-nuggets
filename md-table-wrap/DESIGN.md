@@ -119,6 +119,42 @@ in pixels as rendered, and every stretch aligns to it.
 The width budget is the window's body width minus the indentation, less
 one column for the wrap glyph.
 
+### Lazy building
+
+Redisplay cost is linear in the buffer's overlay count, and a wrapped row
+holds one overlay per screen line. So a table's work is split in two:
+
+- **The model is eager.** Parsing, cell models, column widths and every
+  row's wrapping are computed for the whole table at layout. They make no
+  overlays, widths depend on every row, and motion through a row that
+  isn't drawn yet (C-n onto it) is computed from the model alone.
+- **Overlays are lazy.** A row's strings and overlays are built from a
+  `jit-lock` function, registered after font-lock (depth 90, as in
+  `md-table-align`), for the rows intersecting the region redisplay is
+  about to show. Laying out a table builds nothing: it marks the table's
+  text unfontified, so jit-lock asks for whatever comes into view. The row
+  holding point is also built on demand after each command, since its
+  cursor anchoring can't wait for redisplay.
+- **Far rows are evicted.** After each command, a built row more than
+  `md-table-wrap--keep-rows` rows from point and from every window's start
+  onto the buffer is torn down, and its text marked unfontified, so
+  jit-lock rebuilds it if it is shown again. The overlay count is then
+  bounded by the neighbourhood of the windows, not the buffer.
+
+Invariant: a row in a laid-out table either is built or has its text
+unfontified. Every path that leaves a row unbuilt (layout, eviction) marks
+it so.
+
+Rows are fontified for their copies with `font-lock-ensure`, never
+`jit-lock-fontify-now`: the latter runs `jit-lock-functions`, which would
+re-enter the builder in the middle of a layout. The builder skips a table
+whose geometry is not yet set for the same reason. Inside the jit-lock
+pass, font-lock has already covered the region; a row straddling its edge
+is fontified first.
+
+A width change re-wraps every row's model but rebuilds only the rows that
+are built.
+
 ## Borders
 
 `md-table-wrap-style` picks how borders are drawn:
@@ -188,12 +224,9 @@ spill/viewport code, and is deferred until this mode has seen daily use.
 
 These are known and accepted for a first version:
 
-- **Eager layout.** Every table in the buffer is laid out on enable and
-  on each structural change. Redisplay cost is linear in the buffer's
-  overlay count: about 1.6 ms per motion command at 200 rows, but 8.8 ms
-  at 1000 rows. Laying out only rows near the window, from jit-lock, cut
-  that to 0.6 ms in the prototype; it is the first thing to do if large
-  buffers feel slow. A full re-layout at 200 rows takes 140-200 ms.
+- **Eager models.** Every table's model is rebuilt on enable and on each
+  structural change near a table (see Lazy building). It makes no
+  overlays, but its width allocation is still linear in the table's rows.
 - **Source order.** C-f/C-b, M-f/M-b, the region and kill follow the
   buffer's cell-by-cell order, not the screen's. Display-only means the
   buffer holds the row as `c1 c2 c3`; this cannot change.
