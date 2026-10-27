@@ -2024,7 +2024,9 @@ new width by `md-table-align--viewport'."
 (defun md-table-align--maybe-enable ()
   "Enable `md-table-align-mode' if this buffer's mode calls for it."
   (when (and (apply #'derived-mode-p md-table-align-modes)
-             (md-table-align--parser))
+             (md-table-align--parser)
+             ;; `md-table-wrap-mode' draws this buffer's tables itself.
+             (not (bound-and-true-p md-table-wrap-mode)))
     (md-table-align-mode 1)))
 
 ;;;###autoload
