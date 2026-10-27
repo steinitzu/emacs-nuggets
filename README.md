@@ -327,7 +327,8 @@ Markdown per row, unmodified, so it works in read-only buffers and chat
 transcripts. Column widths are chosen to keep the table short, short label
 columns stay unwrapped where that is cheap, and the table re-wraps as you
 type or resize the window. Rows of a wrapped table are separated by rules;
-a table that fits is just framed.
+a table that fits is just framed. Only the rows near the window are drawn,
+so a thousand-row table costs about what a screenful does.
 
 ```elisp
 (require 'md-table-wrap)
@@ -364,8 +365,6 @@ Borders take the `md-table-wrap-border` face (inherits `shadow`).
 
 - `C-f`/`C-b`, `M-f`/`M-b`, the region and kill follow the buffer's order,
   which is cell by cell along the row, not screen line by screen line.
-- Every table in the buffer is laid out up front, so very large buffers with
-  many tables pay for it in redisplay time.
 - No drag-selecting through wrapped text with the mouse.
 - With `markdown-ts-hide-markup`, cells wrap by their raw width, hidden
   markup included.
