@@ -35,6 +35,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'jit-lock)
 (require 'treesit nil t)
 
 (defgroup md-table-wrap nil
@@ -109,15 +110,24 @@ Label columns are kept unwrapped where that is cheap."
 
 (defun md-table-wrap--word (text s e)
   "[S E WIDTH PIECES CJK] for the word TEXT[S,E).
-PIECES are (S E WIDTH) runs between which the word may break."
-  (let ((pieces nil) (ps s))
-    (cl-loop for k from (1+ s) below e
-             when (md-table-wrap--break-before-p text k)
-             do (push (list ps k (string-width text ps k)) pieces)
-             (setq ps k))
-    (push (list ps e (string-width text ps e)) pieces)
-    (vector s e (string-width text s e) (nreverse pieces)
-            (cl-loop for k from s below e thereis (md-table-wrap--cjk-p (aref text k))))))
+PIECES, the word's break points, are computed on first use by
+`md-table-wrap--pieces': most words never need them."
+  (vector s e (string-width text s e) nil
+          (cl-loop for k from s below e
+                   thereis (let ((c (aref text k)))
+                             (and (> c 127) (md-table-wrap--cjk-p c))))))
+
+(defun md-table-wrap--pieces (text word)
+  "The (S E WIDTH) runs of WORD in TEXT between which it may break."
+  (or (aref word 3)
+      (aset word 3
+            (let* ((s (aref word 0)) (e (aref word 1)) (pieces nil) (ps s))
+              (cl-loop for k from (1+ s) below e
+                       when (md-table-wrap--break-before-p text k)
+                       do (push (list ps k (string-width text ps k)) pieces)
+                       (setq ps k))
+              (push (list ps e (string-width text ps e)) pieces)
+              (nreverse pieces)))))
 
 (defun md-table-wrap--words (text)
   "Words of TEXT; spaces inside a code span do not split one."
@@ -137,7 +147,8 @@ PIECES are (S E WIDTH) runs between which the word may break."
     (dolist (w words)
       (setq natural (+ natural (aref w 2) (if (> natural 0) 1 0)))
       (setq minw (max minw (if (aref w 4)
-                               (cl-loop for p in (aref w 3) maximize (nth 2 p))
+                               (cl-loop for p in (md-table-wrap--pieces text w)
+                                        maximize (nth 2 p))
                              (min md-table-wrap-word-cap (aref w 2))))))
     (md-table-wrap--cell-make :text text :words words
                               :natural (max 1 natural) :minw minw)))
@@ -160,7 +171,7 @@ PIECES are (S E WIDTH) runs between which the word may break."
            (t
             ;; Too wide for a line, or CJK: flow its pieces.
             (let ((first t))
-              (dolist (p (aref word 3))
+              (dolist (p (md-table-wrap--pieces text word))
                 (let ((gap (if (and first ls) 1 0)))
                   (cond
                    ((and ls (<= (+ used gap (nth 2 p)) w))
@@ -293,11 +304,14 @@ saves the most lines per unit of width.  Leftover goes to deficits."
 ;;; Tables and rows
 
 (cl-defstruct (md-table-wrap--table (:constructor md-table-wrap--table-make))
-  rows ncols mins maxs widths xs px unit indent face budget)
+  rows ncols mins maxs widths xs px unit indent face budget wraps)
+;; wraps: non-nil when some cell is wider than its column, so rows get rules.
 
 (cl-defstruct (md-table-wrap--row (:constructor md-table-wrap--row-make))
-  tbl m len delim bounds cells cm wraps height lines offs ovs lc pt fp)
-;; m: marker at the row's first character.  bounds: offsets of the pipes
+  tbl m len delim bounds cells cm wraps height lines offs ovs lc pt fp pc ti idx)
+;; ti: index in its table's rows.  idx: index in the buffer's run of table
+;; rows, across tables.  pc: (FP . LINES), lines painted with the foreign
+;; faces FP.  m: marker at the row's first character.  bounds: offsets of the pipes
 ;; from m (-1 or len for a missing leading or closing pipe).  cells: (S . E)
 ;; offsets of the trimmed cell texts.  cm: `md-table-wrap--cell' per column.
 ;; wraps: per column, line spans relative to the cell start.  lines: one
@@ -318,6 +332,9 @@ saves the most lines per unit of width.  Leftover goes to deficits."
 (defvar-local md-table-wrap--timer nil)
 (defvar-local md-table-wrap--rescan-timer nil)
 (defvar-local md-table-wrap--saved nil "State to restore when the mode is turned off.")
+(defvar-local md-table-wrap--built-rows nil
+  "Rows that may have overlays.  A superset: a layout clears rows without
+taking them off, so users check `md-table-wrap--built-p'.")
 
 (defsubst md-table-wrap--beg (row) (marker-position (md-table-wrap--row-m row)))
 (defsubst md-table-wrap--end (row)
@@ -414,9 +431,21 @@ saves the most lines per unit of width.  Leftover goes to deficits."
                         collect (md-table-wrap--make-cell
                                  (md-table-wrap--cell-text-at row c))))))
 
-(defun md-table-wrap--body (tbl)
-  (cl-loop for r across (md-table-wrap--table-rows tbl)
-           unless (md-table-wrap--row-delim r) collect (md-table-wrap--row-cm r)))
+(defvar md-table-wrap--alloc-rows 100
+  "Most body rows column widths are allocated from; a taller table is sampled.")
+
+(defun md-table-wrap--body (tbl &optional sample)
+  "Cell models of TBL's body rows; with SAMPLE, at most an even spread of
+`md-table-wrap--alloc-rows' of them."
+  (let* ((all (cl-loop for r across (md-table-wrap--table-rows tbl)
+                       unless (md-table-wrap--row-delim r)
+                       collect (md-table-wrap--row-cm r)))
+         (n (length all)))
+    (if (or (not sample) (<= n md-table-wrap--alloc-rows))
+        all
+      (let ((v (vconcat all)))
+        (cl-loop for k below md-table-wrap--alloc-rows
+                 collect (aref v (/ (* k n) md-table-wrap--alloc-rows)))))))
 
 (defun md-table-wrap--refresh (tbl)
   "Recompute TBL's per-column minimum and natural widths."
@@ -431,7 +460,7 @@ saves the most lines per unit of width.  Leftover goes to deficits."
 
 (defun md-table-wrap--allocate (tbl &optional sticky)
   "Column widths for TBL at its budget, sticky to the current ones."
-  (let* ((n (md-table-wrap--table-ncols tbl)) (body (md-table-wrap--body tbl))
+  (let* ((n (md-table-wrap--table-ncols tbl)) (body (md-table-wrap--body tbl t))
          (mins (md-table-wrap--table-mins tbl)) (maxs (md-table-wrap--table-maxs tbl))
          (b (- (md-table-wrap--table-budget tbl) (1+ (* 3 n))))
          (wrap (> (md-table-wrap--sum maxs) b))
@@ -461,7 +490,12 @@ saves the most lines per unit of width.  Leftover goes to deficits."
       (aset xs i (+ x 2))
       (setq x (+ x (aref ws i) 3)))
     (aset px n x)
-    (setf (md-table-wrap--table-xs tbl) xs (md-table-wrap--table-px tbl) px)))
+    (setf (md-table-wrap--table-xs tbl) xs (md-table-wrap--table-px tbl) px
+          ;; A cell wraps exactly when its natural width exceeds its column.
+          (md-table-wrap--table-wraps tbl)
+          (let ((maxs (md-table-wrap--table-maxs tbl)))
+            (and maxs (cl-loop for c below (min n (length maxs))
+                               thereis (> (aref maxs c) (aref ws c))))))))
 
 (defun md-table-wrap--pixel (tbl x)
   (+ (md-table-wrap--table-indent tbl) (* x (md-table-wrap--table-unit tbl))))
@@ -499,6 +533,12 @@ saves the most lines per unit of width.  Leftover goes to deficits."
             (md-table-wrap--row-height row)
             (max 1 (apply #'max 1 (mapcar #'length wraps)))))))
 
+(defun md-table-wrap--wrapped (row)
+  "ROW, with its lines computed for its table's widths if they aren't yet."
+  (unless (or (md-table-wrap--row-delim row) (md-table-wrap--row-wraps row))
+    (md-table-wrap--wrap-row row))
+  row)
+
 (defun md-table-wrap--bounds (row i line)
   "(B . E) offsets from the row start of cell I's LINE, or nil."
   (let ((l (nth line (nth i (md-table-wrap--row-wraps row))))
@@ -510,8 +550,16 @@ saves the most lines per unit of width.  Leftover goes to deficits."
     (if b (cdr b) (cdr (nth i (md-table-wrap--row-cells row))))))
 
 (defun md-table-wrap--fontify (beg end)
-  (cond ((bound-and-true-p jit-lock-mode) (jit-lock-fontify-now beg end))
-        ((bound-and-true-p font-lock-mode) (font-lock-ensure beg end))))
+  ;; Font-lock alone.  Neither `jit-lock-fontify-now' nor `font-lock-ensure',
+  ;; which jit-lock routes to it: both run `jit-lock-functions', re-entering
+  ;; `md-table-wrap--jit', and mark the text fontified, so rows they cover
+  ;; but this call doesn't build would never be built.
+  (when (bound-and-true-p font-lock-mode)
+    (save-excursion (font-lock-fontify-region beg end))))
+
+(defun md-table-wrap--fontify-row (row)
+  (md-table-wrap--fontify (md-table-wrap--beg row)
+                          (min (point-max) (1+ (md-table-wrap--end row)))))
 
 (defvar md-table-wrap-copy-map
   (let ((m (make-sparse-keymap)))
@@ -588,8 +636,8 @@ FILL is the line's character, by default the style's."
 
 (defun md-table-wrap--header-p (row)
   (let* ((rows (md-table-wrap--table-rows (md-table-wrap--row-tbl row)))
-         (i (cl-position row rows)))
-    (and i (< (1+ i) (length rows))
+         (i (md-table-wrap--row-ti row)))
+    (and (< (1+ i) (length rows))
          (md-table-wrap--row-delim (aref rows (1+ i))))))
 
 (defun md-table-wrap--decorate (row l s)
@@ -620,16 +668,14 @@ Rows of a wrapped table get one, so a cell's lines don't run on into the
 next row's; tables that fit on one line each do not.  The last row gets
 the table's bottom edge in the `box' style."
   (let* ((tbl (md-table-wrap--row-tbl row)) (rows (md-table-wrap--table-rows tbl))
-         (i (cl-position row rows)))
-    (when (and i (not (md-table-wrap--row-delim row))
+         (i (md-table-wrap--row-ti row)))
+    (when (and (not (md-table-wrap--row-delim row))
                ;; The header already has the delimiter row below it.
                (not (md-table-wrap--header-p row)))
       (cond ((= (1+ i) (length rows))
              (and (md-table-wrap--box-p)
                   (concat "\n" (md-table-wrap--hline tbl "└" "┴" "┘" t))))
-            ((and md-table-wrap-row-rules
-                  (cl-loop for r across rows
-                           thereis (> (or (md-table-wrap--row-height r) 1) 1)))
+            ((and md-table-wrap-row-rules (md-table-wrap--table-wraps tbl))
              (concat "\n" (if (md-table-wrap--box-p)
                               (md-table-wrap--hline tbl "├" "┼" "┤" t)
                             (md-table-wrap--hline tbl "|" "|" "|" t))))))))
@@ -643,9 +689,12 @@ the table's bottom edge in the `box' style."
 
 (defun md-table-wrap--build (row)
   "(Re)make ROW's strings and overlays, anchored at rest."
+  (md-table-wrap--wrapped row)
+  (cl-pushnew row md-table-wrap--built-rows :test #'eq)
   (let ((beg (md-table-wrap--beg row)) (end (md-table-wrap--end row))
         (ovs (md-table-wrap--row-ovs row)))
-    (setf (md-table-wrap--row-lc row) nil (md-table-wrap--row-fp row) nil)
+    (setf (md-table-wrap--row-lc row) nil (md-table-wrap--row-fp row) nil
+          (md-table-wrap--row-pc row) nil)
     (if (md-table-wrap--row-delim row)
         (progn (mapc #'delete-overlay ovs)
                (setf (md-table-wrap--row-ovs row)
@@ -661,6 +710,28 @@ the table's bottom edge in the `box' style."
                 (cons (md-table-wrap--ov beg beg 'display "")
                       (cl-loop repeat h collect (md-table-wrap--ov beg beg)))))
         (md-table-wrap--anchor row nil)))))
+
+(defun md-table-wrap--built-p (row) (md-table-wrap--row-ovs row))
+
+(defun md-table-wrap--ensure-built (row)
+  "Build ROW now if it isn't, fontifying it for its copies first."
+  (unless (md-table-wrap--built-p row)
+    (md-table-wrap--fontify-row row)
+    (md-table-wrap--build row)))
+
+(defun md-table-wrap--unfontify (beg end)
+  "Mark BEG..END for jit-lock, so its rows are built when next shown."
+  (with-silent-modifications
+    (put-text-property beg (min (point-max) end) 'fontified nil)))
+
+(defun md-table-wrap--unbuild (row)
+  "Tear ROW's overlays down, leaving it to be built when next shown."
+  (mapc #'delete-overlay (md-table-wrap--row-ovs row))
+  (setq md-table-wrap--built-rows (delq row md-table-wrap--built-rows))
+  (setf (md-table-wrap--row-ovs row) nil (md-table-wrap--row-lines row) nil
+        (md-table-wrap--row-offs row) nil (md-table-wrap--row-lc row) nil
+        (md-table-wrap--row-fp row) nil (md-table-wrap--row-pc row) nil)
+  (md-table-wrap--unfontify (md-table-wrap--beg row) (1+ (md-table-wrap--end row))))
 
 ;;; Cursor, faces and anchors
 
@@ -700,12 +771,20 @@ the table's bottom edge in the `box' style."
       (add-face-text-property 0 (length s) (if (facep 'hl-line) 'hl-line 'highlight) nil s))
     ;; Faces go on cell text only: a pipe or padding stands for its source
     ;; character on every line, but only one line shows that character.
+    ;; Each face goes on in runs, not character by character.
     (dolist (f fp)
-      (dotimes (j (length offs))
-        (let ((o (aref offs j)))
-          (when (and o (get-text-property j 'md-table-wrap-text s)
-                     (<= (nth 0 f) (+ beg o)) (< (+ beg o) (nth 1 f)))
-            (add-face-text-property j (1+ j) (nth 2 f) nil s)))))
+      (cl-flet ((covered (j)
+                  (let ((o (aref offs j)))
+                    (and o (get-text-property j 'md-table-wrap-text s)
+                         (<= (nth 0 f) (+ beg o)) (< (+ beg o) (nth 1 f))))))
+        (let ((j 0) (n (length offs)))
+          (while (< j n)
+            (if (not (covered j))
+                (cl-incf j)
+              (let ((k (1+ j)))
+                (while (and (< k n) (covered k)) (cl-incf k))
+                (add-face-text-property j k (nth 2 f) nil s)
+                (setq j k)))))))
     s))
 
 (defun md-table-wrap--show-row (row)
@@ -714,15 +793,25 @@ the table's bottom edge in the `box' style."
          (lc (md-table-wrap--row-lc row)) (fp (md-table-wrap--foreign row))
          (hl (and lc (md-table-wrap--hl-line-p)))
          (rule (md-table-wrap--rule row))
+         ;; Lines painted with FP alone, kept while FP holds: moving point
+         ;; through the row repaints only the line holding the cursor.
+         (cache (and fp
+                     (let ((pc (md-table-wrap--row-pc row)))
+                       (if (and pc (equal (car pc) fp))
+                           (cdr pc)
+                         (cdr (setf (md-table-wrap--row-pc row)
+                                    (cons fp (make-vector h nil))))))))
          (strs (cl-loop
                 for o in lov for l from 0
                 collect (let ((s (md-table-wrap--decorate
                                   row l
-                                  (if (or (eql l lc) fp)
-                                      (md-table-wrap--paint
-                                       row l (and (eql l lc) (md-table-wrap--row-pt row))
-                                       fp (and hl (eql l lc)))
-                                    (aref (md-table-wrap--row-lines row) l)))))
+                                  (cond ((eql l lc)
+                                         (md-table-wrap--paint
+                                          row l (md-table-wrap--row-pt row) fp hl))
+                                        (fp (or (aref cache l)
+                                                (aset cache l (md-table-wrap--paint
+                                                               row l nil fp nil))))
+                                        (t (aref (md-table-wrap--row-lines row) l))))))
                           ;; An empty span can't display its line's newline.
                           (cond ((and (< l (1- h)) (= (overlay-start o) (overlay-end o)))
                                  (concat s "\n"))
@@ -798,7 +887,7 @@ hand-aligned table; a pipe and the padding after it, to the first line."
 
 (defun md-table-wrap--anchor (row pt)
   "Anchor ROW's lines at rest, or around PT if non-nil."
-  (unless (md-table-wrap--row-delim row)
+  (unless (or (md-table-wrap--row-delim row) (not (md-table-wrap--built-p row)))
     (let* ((beg (md-table-wrap--beg row)) (end (md-table-wrap--end row))
            (h (md-table-wrap--row-height row))
            (lead (car (md-table-wrap--row-ovs row))) (lov (cdr (md-table-wrap--row-ovs row)))
@@ -870,14 +959,19 @@ hand-aligned table; a pipe and the padding after it, to the first line."
             0))))
 
 (defun md-table-wrap--layout-table (tbl)
-  "Lay TBL out from scratch: parse, measure, allocate and build every row."
+  "Lay TBL out from scratch: parse, measure, allocate and wrap every row.
+No row is built: the table is marked for jit-lock, which builds the rows
+redisplay shows."
   (let* ((rows (md-table-wrap--table-rows tbl)))
+    ;; Until the geometry below is set, `md-table-wrap--jit' leaves TBL be.
+    (setf (md-table-wrap--table-px tbl) nil)
     (cl-loop for r across rows
              do (mapc #'delete-overlay (md-table-wrap--row-ovs r))
-             (setf (md-table-wrap--row-ovs r) nil)
+             (setf (md-table-wrap--row-ovs r) nil (md-table-wrap--row-wraps r) nil)
              (md-table-wrap--parse-row r))
-    (md-table-wrap--fontify (md-table-wrap--beg (aref rows 0))
-                            (1+ (md-table-wrap--end (aref rows (1- (length rows))))))
+    ;; Measuring reads the delimiter row's face.
+    (md-table-wrap--fontify-row (or (cl-find-if #'md-table-wrap--row-delim rows)
+                                    (aref rows 0)))
     (md-table-wrap--measure tbl)
     (let ((n (cl-loop for r across rows
                       maximize (max 1 (length (md-table-wrap--row-cells r))))))
@@ -889,15 +983,75 @@ hand-aligned table; a pipe and the padding after it, to the first line."
           (md-table-wrap--table-widths tbl) nil
           (md-table-wrap--table-widths tbl) (md-table-wrap--allocate tbl))
     (md-table-wrap--geometry tbl)
-    (cl-loop for r across rows do (md-table-wrap--wrap-row r) (md-table-wrap--build r))))
+    (md-table-wrap--unfontify (md-table-wrap--beg (aref rows 0))
+                              (1+ (md-table-wrap--end (aref rows (1- (length rows))))))))
 
 (defun md-table-wrap--relayout-widths (tbl widths)
-  "Re-lay every row of TBL at WIDTHS, without reparsing."
+  "Re-lay TBL at WIDTHS, without reparsing.
+Every row's lines are dropped, and only the rows that are built are
+rebuilt; the rest are wrapped when next needed."
   (setf (md-table-wrap--table-widths tbl) widths)
   (md-table-wrap--geometry tbl)
   (cl-loop for r across (md-table-wrap--table-rows tbl)
-           do (md-table-wrap--wrap-row r) (md-table-wrap--build r))
+           do (setf (md-table-wrap--row-wraps r) nil)
+           (when (md-table-wrap--built-p r) (md-table-wrap--build r)))
   (setq md-table-wrap--prow nil))
+
+(defvar md-table-wrap--keep-rows 60
+  "Built rows further than this from point and every window start are evicted.")
+
+(defun md-table-wrap--jit (beg end)
+  "Build the rows of laid-out tables intersecting BEG..END, for redisplay."
+  (with-demoted-errors "md-table-wrap: %S"
+    (dolist (tbl md-table-wrap--tables)
+      (let ((rows (md-table-wrap--table-rows tbl)))
+        (when (and (md-table-wrap--table-px tbl)
+                   (<= (md-table-wrap--beg (aref rows 0)) end)
+                   (>= (md-table-wrap--end (aref rows (1- (length rows)))) beg))
+          (cl-loop for r across rows
+                   when (and (not (md-table-wrap--built-p r))
+                             (<= (md-table-wrap--beg r) end)
+                             (>= (md-table-wrap--end r) beg))
+                   ;; Font-lock covered BEG..END in this pass already.
+                   do (when (or (< (md-table-wrap--beg r) beg)
+                                (> (md-table-wrap--end r) end))
+                        (md-table-wrap--fontify-row r))
+                   (md-table-wrap--build r))))))
+  nil)
+
+(defun md-table-wrap--index-near (pos)
+  "Buffer-wide index of the first table row ending at or after POS."
+  (or (cl-loop for tbl in md-table-wrap--tables
+               for rows = (md-table-wrap--table-rows tbl)
+               when (>= (md-table-wrap--end (aref rows (1- (length rows)))) pos)
+               return (let ((lo 0) (hi (1- (length rows))))
+                        (while (< lo hi)
+                          (let ((mid (/ (+ lo hi) 2)))
+                            (if (>= (md-table-wrap--end (aref rows mid)) pos)
+                                (setq hi mid)
+                              (setq lo (1+ mid)))))
+                        (md-table-wrap--row-idx (aref rows lo))))
+      ;; Past every table: one beyond the last row.
+      (let ((last (car (last md-table-wrap--tables))))
+        (if last
+            (let ((rows (md-table-wrap--table-rows last)))
+              (1+ (md-table-wrap--row-idx (aref rows (1- (length rows))))))
+          0))))
+
+(defun md-table-wrap--evict ()
+  "Tear down built rows far from point and from every window onto the buffer."
+  (setq md-table-wrap--built-rows
+        (cl-delete-if-not #'md-table-wrap--built-p md-table-wrap--built-rows))
+  (when (> (length md-table-wrap--built-rows) md-table-wrap--keep-rows)
+    (let ((near (mapcar #'md-table-wrap--index-near
+                        (cons (point) (mapcar #'window-start
+                                              (get-buffer-window-list nil nil t))))))
+      (dolist (r (copy-sequence md-table-wrap--built-rows))
+        (when (and (not (eq r md-table-wrap--prow))
+                   (cl-loop for j in near
+                            always (> (abs (- (md-table-wrap--row-idx r) j))
+                                      md-table-wrap--keep-rows)))
+          (md-table-wrap--unbuild r))))))
 
 (defun md-table-wrap--forget ()
   "Drop every overlay and marker the layout holds."
@@ -905,7 +1059,7 @@ hand-aligned table; a pipe and the padding after it, to the first line."
   (dolist (tbl md-table-wrap--tables)
     (cl-loop for r across (md-table-wrap--table-rows tbl)
              do (set-marker (md-table-wrap--row-m r) nil)))
-  (setq md-table-wrap--tables nil md-table-wrap--prow nil))
+  (setq md-table-wrap--tables nil md-table-wrap--prow nil md-table-wrap--built-rows nil))
 
 (defun md-table-wrap--layout-all ()
   "Find every table in the buffer and lay it out."
@@ -923,6 +1077,11 @@ hand-aligned table; a pipe and the padding after it, to the first line."
                                                      :tbl tbl :m (copy-marker b)))
                                                   begs)))
                            tbl)))
+  (let ((idx 0))
+    (dolist (tbl md-table-wrap--tables)
+      (cl-loop for r across (md-table-wrap--table-rows tbl) for ti from 0
+               do (setf (md-table-wrap--row-ti r) ti (md-table-wrap--row-idx r) idx)
+               (cl-incf idx))))
   (mapc #'md-table-wrap--layout-table md-table-wrap--tables))
 
 ;;; Following point and edits
@@ -947,6 +1106,9 @@ hand-aligned table; a pipe and the padding after it, to the first line."
                (md-table-wrap--live-p md-table-wrap--prow))
       (md-table-wrap--anchor md-table-wrap--prow nil))
     (when row
+      ;; Anchoring at point can't wait for redisplay to build the row.
+      (when (md-table-wrap--table-px (md-table-wrap--row-tbl row))
+        (md-table-wrap--ensure-built row))
       (md-table-wrap--anchor row (point))
       (unless (md-table-wrap--row-delim row) (setq disable-point-adjustment t)))
     (setq md-table-wrap--prow row)))
@@ -968,11 +1130,21 @@ hand-aligned table; a pipe and the padding after it, to the first line."
     (if (or (not (eq was (md-table-wrap--row-delim row)))
             (> (length (md-table-wrap--row-cells row)) (md-table-wrap--table-ncols tbl)))
         t
-      (md-table-wrap--fontify (md-table-wrap--beg row) (1+ (md-table-wrap--end row)))
       (unless (md-table-wrap--row-delim row)
         (md-table-wrap--model-row row (md-table-wrap--table-ncols tbl))
-        (md-table-wrap--wrap-row row))
-      (md-table-wrap--build row)
+        (md-table-wrap--wrap-row row)
+        ;; The table wraps now: its other built rows need their rules.
+        (when (and (> (md-table-wrap--row-height row) 1)
+                   (not (md-table-wrap--table-wraps tbl)))
+          (setf (md-table-wrap--table-wraps tbl) t)
+          (dolist (r md-table-wrap--built-rows)
+            (when (and (eq (md-table-wrap--row-tbl r) tbl) (not (eq r row))
+                       (md-table-wrap--built-p r))
+              (md-table-wrap--build r)))))
+      ;; A row that isn't built is built from the new model when shown.
+      (when (md-table-wrap--built-p row)
+        (md-table-wrap--fontify-row row)
+        (md-table-wrap--build row))
       (cl-pushnew tbl md-table-wrap--realloc)
       (md-table-wrap--schedule #'md-table-wrap--idle-realloc)
       nil)))
@@ -1011,7 +1183,8 @@ hand-aligned table; a pipe and the padding after it, to the first line."
   (with-demoted-errors "md-table-wrap: %S"
     (md-table-wrap--process)
     (md-table-wrap--check-geometry)
-    (md-table-wrap--follow-point)))
+    (md-table-wrap--follow-point)
+    (md-table-wrap--evict)))
 
 (defun md-table-wrap--schedule (fn &optional rescan)
   "Run FN in this buffer after `md-table-wrap-idle-delay' of idle time.
@@ -1059,13 +1232,12 @@ reallocation."
     (with-demoted-errors "md-table-wrap: %S"
       (let* ((w (if (windowp win) win (selected-window)))
              (ws (window-start w)) (we (window-end w)))
-        (dolist (tbl md-table-wrap--tables)
-          (cl-loop for r across (md-table-wrap--table-rows tbl)
-                   when (and (not (md-table-wrap--row-delim r)) (md-table-wrap--row-ovs r)
-                             (<= (md-table-wrap--beg r) we) (>= (md-table-wrap--end r) ws)
-                             (not (equal (md-table-wrap--foreign r)
-                                         (md-table-wrap--row-fp r))))
-                   do (md-table-wrap--show-row r)))))))
+        ;; Only a built row has copies to mirror onto.
+        (dolist (r md-table-wrap--built-rows)
+          (when (and (md-table-wrap--built-p r) (not (md-table-wrap--row-delim r))
+                     (<= (md-table-wrap--beg r) we) (>= (md-table-wrap--end r) ws)
+                     (not (equal (md-table-wrap--foreign r) (md-table-wrap--row-fp r))))
+            (md-table-wrap--show-row r)))))))
 
 (defun md-table-wrap--hl-line-range ()
   (if (md-table-wrap--row-at (point))
@@ -1083,7 +1255,8 @@ reallocation."
 (defun md-table-wrap--vmove (dir)
   (let* ((row (md-table-wrap--row-at (point)))
          (body (and row (not (md-table-wrap--row-delim row))))
-         (lx (and body (md-table-wrap--pos-line-x row (- (point) (md-table-wrap--beg row)))))
+         (lx (and body (md-table-wrap--pos-line-x (md-table-wrap--wrapped row)
+                                                  (- (point) (md-table-wrap--beg row)))))
          (col (current-column))
          (goal (or (and (memq last-command '(md-table-wrap-next-line
                                              md-table-wrap-previous-line))
@@ -1104,7 +1277,8 @@ reallocation."
       (let ((r2 (md-table-wrap--row-at (point))))
         (cond ((null r2))
               ((md-table-wrap--row-delim r2) (goto-char (md-table-wrap--beg r2)))
-              (t (setq goal (or goal (max 0 (- col (md-table-wrap--indent-chars r2)))))
+              (t (md-table-wrap--wrapped r2)
+                 (setq goal (or goal (max 0 (- col (md-table-wrap--indent-chars r2)))))
                  (goto-char (+ (md-table-wrap--beg r2)
                                (md-table-wrap--pos-at
                                 r2 (if (> dir 0) 0 (1- (md-table-wrap--row-height r2)))
@@ -1127,7 +1301,7 @@ reallocation."
         (if (= x 0)
             (if visual-line-mode (beginning-of-visual-line) (move-beginning-of-line 1))
           (if visual-line-mode (end-of-visual-line) (move-end-of-line 1)))
-      (let ((beg (md-table-wrap--beg row)))
+      (let ((beg (md-table-wrap--beg (md-table-wrap--wrapped row))))
         (goto-char (+ beg (md-table-wrap--pos-at
                            row (car (md-table-wrap--pos-line-x row (- (point) beg)))
                            x)))))))
@@ -1214,8 +1388,14 @@ Switches `md-table-align-mode' off in the buffer while on."
         (add-hook 'after-change-functions #'md-table-wrap--after-change nil t)
         ;; After the global `redisplay--update-region-highlight'.
         (add-hook 'pre-redisplay-functions #'md-table-wrap--pre-redisplay 90 t)
+        ;; `jit-lock-register' prepends; rows are built from fontified text,
+        ;; so the builder runs after font-lock in the same pass.
+        (jit-lock-register #'md-table-wrap--jit)
+        (remove-hook 'jit-lock-functions #'md-table-wrap--jit t)
+        (add-hook 'jit-lock-functions #'md-table-wrap--jit 90 t)
         (md-table-wrap--layout-all)
         (md-table-wrap--follow-point))
+    (jit-lock-unregister #'md-table-wrap--jit)
     (remove-hook 'post-command-hook #'md-table-wrap--post-command t)
     (remove-hook 'before-change-functions #'md-table-wrap--before-change t)
     (remove-hook 'after-change-functions #'md-table-wrap--after-change t)
