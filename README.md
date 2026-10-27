@@ -302,6 +302,75 @@ from any hook.
 - A window with no room for even a couple of characters of table is left to
   wrap, on the grounds that clipping it to nothing would be worse.
 
+### md-table-wrap — wrap wide tables' cells to fit the window
+
+`md-table-align` keeps every row on one screen line, so a table whose cells
+hold sentences is read through a letterbox, a few columns at a time.
+`md-table-wrap` instead word-wraps each cell inside its column, so the whole
+table fits the window, the way you would hand-align it in a text file:
+
+```
+┌──────────┬─────────────────────────┬───────────┐
+│ Approach │ What it does            │ Status    │
+╞══════════╪═════════════════════════╪═══════════╡
+│ Per-line │ Every cell is drawn as  │ chosen    │
+│ anchors  │ a copy in an overlay    │           │
+│          │ before-string.          │           │
+├──────────┼─────────────────────────┼───────────┤
+│ Focus    │ The cell holding point  │ fallback  │
+│ cell     │ stays real buffer text. │           │
+└──────────┴─────────────────────────┴───────────┘
+```
+
+Like `md-table-align` it is display-only: the buffer still holds one line of
+Markdown per row, unmodified, so it works in read-only buffers and chat
+transcripts. Column widths are chosen to keep the table short, short label
+columns stay unwrapped where that is cheap, and the table re-wraps as you
+type or resize the window. Rows of a wrapped table are separated by rules;
+a table that fits is just framed.
+
+```elisp
+(require 'md-table-wrap)
+(add-hook 'markdown-ts-mode-hook #'md-table-wrap-mode)
+;; or
+(global-md-table-wrap-mode 1)
+```
+
+It replaces `md-table-align` in the buffers it is on: turning it on switches
+`md-table-align-mode` off there, turning it off switches it back on, and
+`global-md-table-align-mode` leaves its buffers alone.
+
+| Command | Description |
+|:--------|:------------|
+| `md-table-wrap-mode` | Buffer-local minor mode. |
+| `global-md-table-wrap-mode` | Enables the above in `md-table-wrap-modes`. |
+| `md-table-wrap-refresh` | Lay out every table in the buffer again. |
+
+`C-n`/`C-p` and `C-a`/`C-e` move by screen line through a wrapped row, and a
+click on cell text puts point there.
+
+| Option | Default | Description |
+|:-------|:--------|:------------|
+| `md-table-wrap-style` | `box` | `box` for box-drawing borders, `ascii` for `\|` and `-`. |
+| `md-table-wrap-row-rules` | `t` | Draw a rule between the rows of a wrapped table. |
+| `md-table-wrap-modes` | `(markdown-ts-mode)` | Modes `global-md-table-wrap-mode` activates in. |
+| `md-table-wrap-word-cap` | `20` | Longest word that may set a column's minimum width. |
+| `md-table-wrap-short-column` | `16` | Columns this narrow are labels, kept unwrapped where cheap. |
+| `md-table-wrap-mirror-faces` | `t` | Show region, isearch and similar highlights on wrapped text. |
+
+Borders take the `md-table-wrap-border` face (inherits `shadow`).
+
+#### Limitations
+
+- `C-f`/`C-b`, `M-f`/`M-b`, the region and kill follow the buffer's order,
+  which is cell by cell along the row, not screen line by screen line.
+- Every table in the buffer is laid out up front, so very large buffers with
+  many tables pay for it in redisplay time.
+- No drag-selecting through wrapped text with the mouse.
+- With `markdown-ts-hide-markup`, cells wrap by their raw width, hidden
+  markup included.
+- A buffer shown in two windows of different widths fits one of them.
+
 ### md-table-inline — inline markup inside table cells
 
 In `markdown-ts-mode`, inline markup inside a pipe table cell is dead text: a
@@ -724,6 +793,7 @@ under a pty to get a TTY frame; batch mode has no frame that lays text out.
 ```
 emacs-tools.el          collection loader; adds each extension to load-path
 md-table-align/         extension: display-only Markdown table alignment
+md-table-wrap/          extension: wrap wide Markdown tables' cells to fit
 md-table-inline/        extension: inline markup inside Markdown table cells
 md-bare-url/            extension: make bare URLs in Markdown follow
 md-file-anchor/         extension: follow line/heading anchors on file links
