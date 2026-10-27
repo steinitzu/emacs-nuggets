@@ -1,0 +1,231 @@
+# md-table-wrap — planning and design
+
+Draw a Markdown pipe table that is too wide for the window with its cells
+**word-wrapped inside their columns**, so the whole table fits the text area
+and reads like a table hand-aligned into multi-line cells. Display-only: the
+buffer text never changes, so it works in read-only buffers too.
+
+## Problem
+
+`md-table-align` aligns tables, and for a table wider than the window it
+clips to a viewport and scrolls sideways (or spills into the margin). Both
+keep every row on one screen line, so a table whose cells hold sentences
+is read through a letterbox: most of each row is off screen at any moment.
+
+What a reader wants is the table a person would type into a text file when
+the cells are long:
+
+```
+┌──────────┬─────────────────────────┬───────────┐
+│ Approach │ What it does            │ Status    │
+╞══════════╪═════════════════════════╪═══════════╡
+│ Per-line │ Every cell is drawn as  │ chosen    │
+│ anchors  │ a copy in an overlay    │           │
+│          │ before-string.          │           │
+├──────────┼─────────────────────────┼───────────┤
+│ Focus    │ The cell holding point  │ fallback  │
+│ cell     │ stays real buffer text. │           │
+└──────────┴─────────────────────────┴───────────┘
+```
+
+while the buffer still holds the one-line-per-row Markdown it always did.
+
+## Feasibility
+
+Researched and prototyped before this design (2026-10-21/22). The
+prototype, `table-wrap-poc.el`, was used in a GUI Emacs and judged good
+enough to use daily. The findings that shaped this design:
+
+- Emacs cannot interleave two cells' lines from buffer text: the buffer
+  holds `c1 c2 c3`, the screen needs `c1L1 c2L1 c3L1 / c1L2 c2L2 …`. Any
+  real-text layout must follow buffer order, so wrapped cells have to be
+  **drawn as copies**, not shown in place.
+- `(space :align-to …)` stretches work inside overlay **before-strings**
+  but are inert inside `display` strings (xdisp.c). Copies therefore live
+  in before-strings.
+- A `cursor` text property on a copy puts the **real cursor** there, but
+  only if the hidden span the copy belongs to holds point. Hence the
+  per-line anchors below.
+
+## Mechanism: per-line anchors
+
+For each body row of a wrapped table:
+
+- The row's source text is hidden in **one span per screen line**. Each
+  span is an overlay whose `display` is `"\n"` (`""` for the last line),
+  and whose `before-string` is that screen line, drawn from copies of the
+  cell text, pipes and `:align-to` stretches.
+- Because every screen line starts at a buffer position of its own,
+  one-line scrolling steps through a tall row like ordinary text.
+- At rest a row's spans are one character each. When point enters a row,
+  it is **re-anchored around point**: the spans are moved so the line
+  holding point holds point's position, and the copy of the character at
+  point gets the `cursor` property. A `post-command-hook` re-anchors at
+  most two rows per command: the one left and the one entered. It runs
+  before the command loop's point adjustment, and sets
+  `disable-point-adjustment`, so point is never pushed out of the hidden
+  text.
+- When several line overlays share a start (fewer characters after point
+  than lines left), Emacs shows their strings in no fixed order, so a run's
+  strings are concatenated onto its first overlay.
+- The delimiter row is a single `display` string.
+
+Every copy string ends in the `default` face. An overlay string's unfaced
+attributes are otherwise taken from the buffer text at its anchor, so a
+line anchored in bold text would turn bold.
+
+## Layout
+
+### Discovery
+
+Tables come from the tree-sitter `markdown` parser (`pipe_table` and its
+row nodes), as in `md-table-align`. Without a parser a regexp fallback
+treats runs of pipe-led lines ending in a delimiter row as tables.
+
+### Column widths
+
+Greedy widening from minimum widths:
+
+- A column's minimum is its longest word, capped at
+  `md-table-wrap-word-cap` characters.
+- Starting from the minimums, repeatedly widen the column whose next
+  height-saving width saves the most table lines per unit of width.
+  Leftover width goes to the columns furthest below their natural width.
+- **Label columns** (widest cell at most `md-table-wrap-short-column`) are
+  kept unwrapped when that costs at most `md-table-wrap-protect-tolerance`
+  of the table's height.
+- **Sticky widths while editing**: after an edit, the current widths are
+  kept while they stay valid and within `md-table-wrap-sticky-slack` of
+  the fresh optimum's height, so columns don't jump while typing.
+- A table that fits is drawn at natural widths. A table whose minimums
+  don't fit squeezes the widest minimums; words then break mid-word.
+
+Against an exact optimum on 201 test tables, the greedy result is 2.2%
+taller on average.
+
+Break rules: words break at spaces; a word longer than its column breaks
+after `/ . - _ ? & = # , ; :`; CJK breaks between any two characters;
+code spans stay whole until wider than the column.
+
+### Geometry
+
+Widths are counted in characters of the table's face, measured once per
+layout with `string-pixel-width`, so the table font must be fixed-pitch
+(it is under `markdown-ts-mode` with `mixed-pitch`). The face is taken from
+a delimiter cell, which has none of the bold or shadow a header cell or a
+pipe may carry. A table's indentation (a table in a list item) is measured
+in pixels as rendered, and every stretch aligns to it.
+
+The width budget is the window's body width minus the indentation, less
+one column for the wrap glyph.
+
+## Borders
+
+`md-table-wrap-style` picks how borders are drawn:
+
+- `box` (default): box-drawing characters. `┌┬┐` above the header,
+  `╞═╪═╡` for the delimiter row, `├─┼─┤` between rows and `└┴┘` below the
+  last, with `│` for every pipe. Borders take the `md-table-wrap-border`
+  face (`shadow`) merged over the table's own face, so they stay in the
+  table's fixed-pitch font and join up.
+- `ascii`: the Markdown characters, `|` and `-`.
+
+**Rules between rows.** Without them, a column of long sentences reads as
+one run-on paragraph, because nothing marks where one row ends. A wrapped
+table therefore gets a rule below every body row (`md-table-wrap-row-rules`).
+A table where every row fits on one line gets none: they would double its
+height for nothing. The rule is appended to the row's last line string,
+after a newline, with an `:align-to` to the table's indent, since nothing
+real precedes it on its screen line.
+
+### Rejected: a "web" style
+
+Tried in the prototype: 1-pixel stretch verticals, rules as `:underline`
+on each row's last line, a shaded header band, and short padding lines
+(reduced `:height` on the line's glyphs and newline) between rows. It was
+never verified to render as intended. The box style was judged cleaner,
+works identically in a terminal, and needs none of the extra overlays,
+so the web style was dropped.
+
+## Interaction
+
+| Behaviour | How |
+|---|---|
+| C-n / C-p | remapped; target computed from the layout model, goal column kept across repeats |
+| C-a / C-e | remapped to the start and end of the screen line within the row |
+| C-f / C-b, typing, DEL, yank, undo | native: point moves through source text; the row re-anchors after each command |
+| scrolling | each screen line has its own buffer position; after a scroll command, point at `window-start` is mapped to the line it shows |
+| mouse-1 on a copy | the copy's own `keymap` maps the click to the source character |
+| region, isearch, show-paren… | foreign overlay faces over a row are mirrored onto its copies from `pre-redisplay-functions` (`md-table-wrap-mirror-faces`) |
+| hl-line | `hl-line-range-function` is narrowed to point inside a table; the line holding point gets the `hl-line` face on its copy |
+| markdown faces | copies are taken with `buffer-substring` after fontifying the row |
+
+### Edits
+
+- An edit inside a row re-parses and re-wraps only that row, then
+  schedules an idle reallocation of the table's widths
+  (`md-table-wrap-idle-delay`), sticky as above.
+- An edit that adds or removes a newline near a table, or changes a row's
+  shape (cell count, delimiter-ness), re-lays out the whole buffer.
+  Elsewhere it schedules an idle rescan.
+- A change of window width or `face-remapping-alist` (text scaling)
+  re-allocates or re-lays out on the next command.
+
+## Relation to md-table-align
+
+The two modes both draw tables and cannot share one. `md-table-wrap-mode`
+switches `md-table-align-mode` off in its buffer while on, and back on when
+switched off if it was on before. `global-md-table-align-mode` skips buffers
+where `md-table-wrap-mode` is on, so enabling either globally works in
+either order.
+
+Long term, wrapping could become `md-table-align`'s way of fitting a wide
+table, with horizontal scrolling as the fallback for tables whose minimum
+widths don't fit. That is a larger change to `md-table-align`'s
+spill/viewport code, and is deferred until this mode has seen daily use.
+
+## Limits
+
+These are known and accepted for a first version:
+
+- **Eager layout.** Every table in the buffer is laid out on enable and
+  on each structural change. Redisplay cost is linear in the buffer's
+  overlay count: about 1.6 ms per motion command at 200 rows, but 8.8 ms
+  at 1000 rows. Laying out only rows near the window, from jit-lock, cut
+  that to 0.6 ms in the prototype; it is the first thing to do if large
+  buffers feel slow. A full re-layout at 200 rows takes 140-200 ms.
+- **Source order.** C-f/C-b, M-f/M-b, the region and kill follow the
+  buffer's cell-by-cell order, not the screen's. Display-only means the
+  buffer holds the row as `c1 c2 c3`; this cannot change.
+- **No drag-select** through copies: `mouse-drag-region` maps through
+  `posn-point`, which is the anchor.
+- **One window width per buffer**: in two windows of different widths the
+  table fits the one used for layout.
+- **Rendered vs raw width.** Hidden markup (`markdown-ts-hide-markup`)
+  takes no space on screen, but wrapping counts the raw text.
+- **Window start** can't sit on a rule line, so a one-line scroll steps
+  over it.
+
+## Lifecycle
+
+- `md-table-wrap-unload-function` switches the mode off in every buffer,
+  removing overlays, hooks and timers before the definitions go.
+- Turning the mode off removes every overlay it made (they all carry the
+  `md-table-wrap` property), restores `hl-line-range-function`, and
+  re-enables `md-table-align-mode` if it was on.
+
+## Testing
+
+Integration tests in a real TTY frame (`make test`), in real
+`markdown-ts-mode` buffers:
+
+- buffer text and modified flag unchanged; works in `buffer-read-only`
+  and `read-only`-property buffers;
+- the drawn lines fit the window and every border stands in the same
+  column on every line, including in a list item;
+- rules between rows of a wrapped table, none in a table that fits;
+- C-n/C-p and C-a/C-e land on the model's positions, and the cursor
+  shows on the row's right screen line (`posn-at-point`);
+- typing into a cell re-wraps it;
+- turning off removes every overlay and restores `md-table-align-mode`;
+  `global-md-table-align-mode` leaves a wrapped buffer alone.
