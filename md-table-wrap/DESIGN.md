@@ -225,7 +225,14 @@ Integration tests in a real TTY frame (`make test`), in real
   column on every line, including in a list item;
 - rules between rows of a wrapped table, none in a table that fits;
 - C-n/C-p and C-a/C-e land on the model's positions, and the cursor
-  shows on the row's right screen line (`posn-at-point`);
+  shows on the row's right screen line;
 - typing into a cell re-wraps it;
 - turning off removes every overlay and restores `md-table-align-mode`;
   `global-md-table-align-mode` leaves a wrapped buffer alone.
+
+Deviation, found while writing them: `posn-at-point` can't locate the
+cursor in a wrapped row. Point is inside hidden text there, so it reports
+the anchor's glyph, not the copy the `cursor` property puts the cursor on.
+The tests find the screen line holding that property instead. That the
+terminal really draws the cursor there was checked in the prototype, by
+driving `emacs -nw` on a pty and reading the terminal's own cursor.
