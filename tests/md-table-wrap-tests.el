@@ -305,6 +305,84 @@ and the cursor shows one screen row lower each time."
       (should (> (md-table-wrap--row-height (md-table-wrap--row-at (point))) 1))
       (should (search-backward "Short. Now it says" nil t)))))
 
+;;;; Lazy building
+
+(defconst md-table-wrap-tests--tall
+  (concat "| Id | Note |\n|---|---|\n"
+          (mapconcat (lambda (i)
+                       (format "| r%d | Row %d says enough that it wraps onto a second \
+line in a sixty-column window, every time. |" i i))
+                     (number-sequence 1 300) "\n")
+          "\n")
+  "A 300-row table, far taller than any window.")
+
+(defun md-table-wrap-tests--built ()
+  "The first table's rows that have overlays, as indices."
+  (cl-loop for r across (md-table-wrap--table-rows (car md-table-wrap--tables))
+           for i from 0
+           when (md-table-wrap--built-p r) collect i))
+
+(defun md-table-wrap-tests--row-index (pos)
+  (cl-position (md-table-wrap--row-at pos)
+               (md-table-wrap--table-rows (car md-table-wrap--tables))))
+
+(ert-deftest md-table-wrap-test-builds-only-what-is-shown ()
+  "Of 300 rows, only those redisplay showed have overlays, and all of
+those were drawn, since the window starts at the table."
+  (md-table-wrap-tests--with-table md-table-wrap-tests--tall
+    (let ((built (md-table-wrap-tests--built)))
+      (should (memq 0 built))
+      (should (memq 2 built))
+      (should (< (length built) 30))
+      ;; Two overlays per two-line row, plus a lead each, and nothing more.
+      (should (< (length (md-table-wrap-tests--own-overlays)) 100)))))
+
+(ert-deftest md-table-wrap-test-far-rows-are-evicted-and-come-back ()
+  "Jumping to the end builds the rows there and tears down the top; going
+back rebuilds the top from jit-lock, since eviction left it unfontified.
+The neighbourhood kept is narrowed, so two windowfuls exceed it."
+  (let ((md-table-wrap--keep-rows 15))
+  (md-table-wrap-tests--with-table md-table-wrap-tests--tall
+    (md-table-wrap-tests--press "M->")
+    (let ((built (md-table-wrap-tests--built)))
+      (should-not (memq 2 built))
+      (should (memq (md-table-wrap-tests--row-index (window-start)) built))
+      (should (memq 300 built))
+      (should (< (length built) 100)))
+    (md-table-wrap-tests--press "M-<")
+    (should (memq 2 (md-table-wrap-tests--built)))
+    ;; Eviction reads window starts before redisplay moves them, so the
+    ;; end's rows go one command later.
+    (md-table-wrap-tests--press "C-n")
+    (let ((built (md-table-wrap-tests--built)))
+      (should (memq 2 built))
+      (should-not (memq 300 built))
+      ;; The rebuilt rows are drawn to the grid again.
+      (let ((lines (md-table-wrap-tests--render
+                    (md-table-wrap-tests--drawn
+                     (point-min)
+                     (md-table-wrap--end
+                      (aref (md-table-wrap--table-rows (car md-table-wrap--tables)) 4))))))
+        (should (string-prefix-p "┌" (car lines)))
+        (dolist (line lines)
+          (should (equal (md-table-wrap-tests--border-columns line)
+                         (md-table-wrap-tests--border-columns (car lines))))))))))
+
+(ert-deftest md-table-wrap-test-next-line-onto-an-unbuilt-row ()
+  "C-n into a row that was never drawn builds it and puts the cursor on it."
+  (md-table-wrap-tests--with-table md-table-wrap-tests--tall
+    (let* ((rows (md-table-wrap--table-rows (car md-table-wrap--tables)))
+           (far (aref rows 150)))
+      (should-not (md-table-wrap--built-p far))
+      (goto-char (md-table-wrap--beg (aref rows 149)))
+      (md-table-wrap-tests--press "C-n C-n C-n")
+      (should (eq (md-table-wrap--row-at (point)) far))
+      (should (md-table-wrap--built-p far))
+      (should (cl-some (lambda (o)
+                         (let ((s (overlay-get o 'before-string)))
+                           (and s (text-property-not-all 0 (length s) 'cursor nil s))))
+                       (cdr (md-table-wrap--row-ovs far)))))))
+
 ;;;; Lifecycle and md-table-align
 
 (ert-deftest md-table-wrap-test-off-removes-everything ()
