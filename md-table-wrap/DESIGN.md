@@ -124,10 +124,24 @@ one column for the wrap glyph.
 Redisplay cost is linear in the buffer's overlay count, and a wrapped row
 holds one overlay per screen line. So a table's work is split in two:
 
-- **The model is eager.** Parsing, cell models, column widths and every
-  row's wrapping are computed for the whole table at layout. They make no
-  overlays, widths depend on every row, and motion through a row that
-  isn't drawn yet (C-n onto it) is computed from the model alone.
+- **The model is eager, but cheap.** Parsing, cell models and column
+  widths are computed for the whole table at layout: they make no
+  overlays, and widths depend on every row. Two things keep this from
+  growing with the table, found by profiling a 1000-row table, where
+  enabling took 8 s and C-n 30 ms:
+  - Columns are **allocated from a sample** of at most
+    `md-table-wrap--alloc-rows` body rows, evenly spaced. The greedy
+    widener wraps every sampled row at every candidate width (38,000
+    wraps at 1000 rows), so it is by far the costliest step. Minimum and
+    natural widths still come from every row; they are one pass.
+  - **Wrapping is lazy.** A row's lines are computed when it is built,
+    or when motion passes through it, and dropped when widths change.
+    Whether a table wraps at all, which decides its rules, is read off
+    the widths: some cell's natural width exceeds its column.
+- **Nothing per command walks every row.** Each row stores its index in
+  its table and in the buffer's run of table rows, and the built rows are
+  kept in a list. Eviction, face mirroring and the rule decision use
+  those, not a scan.
 - **Overlays are lazy.** A row's strings and overlays are built from a
   `jit-lock` function, registered after font-lock (depth 90, as in
   `md-table-align`), for the rows intersecting the region redisplay is
@@ -139,21 +153,50 @@ holds one overlay per screen line. So a table's work is split in two:
   `md-table-wrap--keep-rows` rows from point and from every window's start
   onto the buffer is torn down, and its text marked unfontified, so
   jit-lock rebuilds it if it is shown again. The overlay count is then
-  bounded by the neighbourhood of the windows, not the buffer.
+  bounded by the neighbourhood of the windows, not the buffer. Window
+  starts are read after the command but before redisplay moves them, so
+  after a jump the old neighbourhood stays built until the next command:
+  the bound is two neighbourhoods, not one.
 
 Invariant: a row in a laid-out table either is built or has its text
 unfontified. Every path that leaves a row unbuilt (layout, eviction) marks
 it so.
 
-Rows are fontified for their copies with `font-lock-ensure`, never
-`jit-lock-fontify-now`: the latter runs `jit-lock-functions`, which would
-re-enter the builder in the middle of a layout. The builder skips a table
+Rows are fontified for their copies with `font-lock-fontify-region`,
+never `jit-lock-fontify-now` or `font-lock-ensure`. jit-lock points
+`font-lock-ensure-function` at `jit-lock-fontify-now`, so both run
+`jit-lock-functions`: that re-enters the builder (found as a
+`max-lisp-eval-depth` error, with whole chunks built at a time), and marks
+text fontified that the builder may not have built, breaking the
+invariant. The builder skips a table
 whose geometry is not yet set for the same reason. Inside the jit-lock
 pass, font-lock has already covered the region; a row straddling its edge
 is fontified first.
 
 A width change re-wraps every row's model but rebuilds only the rows that
 are built.
+
+**Painting.** `markdown-ts-mode` keeps a face overlay over the table point
+is in (`markdown-ts-in-table`), so every row has foreign faces to mirror,
+and every anchoring repainted every line of the row, character by
+character. Faces now go on in runs, and each row caches its lines painted
+with the current foreign faces: moving point through a row repaints only
+the line holding the cursor.
+
+Word break points (the pieces a too-long word may split into) are
+computed on first use: most words never need them.
+
+**Measured** in a 60×24 terminal, byte-compiled, on a 1000-row table whose
+every row wraps:
+
+| | |
+|---|---|
+| enable and first redisplay | 148 ms |
+| C-n with redisplay | 3.9 ms (plain Emacs: 2.85 ms) |
+| C-n stretching an active region | 4.9 ms |
+| overlays | 168, for 56 built rows of 1002 |
+
+Interpreted (no `.elc`), the same runs take about seven times as long.
 
 ## Borders
 
@@ -225,8 +268,11 @@ spill/viewport code, and is deferred until this mode has seen daily use.
 These are known and accepted for a first version:
 
 - **Eager models.** Every table's model is rebuilt on enable and on each
-  structural change near a table (see Lazy building). It makes no
-  overlays, but its width allocation is still linear in the table's rows.
+  structural change near a table (see Lazy building). Parsing and cell
+  models are still linear in the rows, though cheap.
+- **Sampled widths.** A table over `md-table-wrap--alloc-rows` rows gets
+  widths chosen for its sample, which can be a little taller than widths
+  chosen for every row.
 - **Source order.** C-f/C-b, M-f/M-b, the region and kill follow the
   buffer's cell-by-cell order, not the screen's. Display-only means the
   buffer holds the row as `c1 c2 c3`; this cannot change.
