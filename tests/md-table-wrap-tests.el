@@ -233,6 +233,41 @@ Unwrapped, its widest row needs over 100 columns."
                              "│ 3 │ 4 │"
                              "└───┴───┘"))))))
 
+(defconst md-table-wrap-tests--code-spans
+  "| Site | Status |
+|---|---|
+| `db/acl/handlers.py:116` `widget_viewer_access_super_admin` (#271) | **port: in the fix-up commit (B3)** |
+| `db/acl/functions/audit/audit_trigger.sql:32-59` reads `app.user_id/session_id/remote_ip` | metadata, not identity; attached to no table. |
+"
+  "A wrapped table whose rows start with code spans, as reported.")
+
+(defun md-table-wrap-tests--undefaulted ()
+  "Characters of this mode's strings that lack `default' under their face.
+Each is (STRING . INDEX).  Such a character takes its unfaced attributes
+from the buffer text its overlay is anchored at."
+  (let (bad)
+    (dolist (o (md-table-wrap-tests--own-overlays))
+      (dolist (s (list (overlay-get o 'before-string) (overlay-get o 'display)))
+        (when (stringp s)
+          (dotimes (i (length s))
+            (unless (memq 'default (flatten-tree (get-text-property i 'face s)))
+              (push (cons s i) bad))))))
+    bad))
+
+(ert-deftest md-table-wrap-test-borders-ignore-their-anchor ()
+  "Every drawn character carries `default', borders and rules included.
+Rules and edges ride on line strings anchored where point is.  Without
+`default' they took the face of the text there -- a code span's height in
+a GUI -- so the bottom edge's junctions slid left of the pipes above, and
+rules changed width as point moved through the table."
+  (md-table-wrap-tests--with-table md-table-wrap-tests--code-spans
+    (should-not (md-table-wrap-tests--undefaulted))
+    (md-table-wrap-tests--goto "app.user_id")
+    (md-table-wrap--post-command)
+    (redisplay t)
+    (should (md-table-wrap--row-lc md-table-wrap--prow))
+    (should-not (md-table-wrap-tests--undefaulted))))
+
 (ert-deftest md-table-wrap-test-ascii-style ()
   "The `ascii' style draws Markdown pipes and dashes."
   (let ((md-table-wrap-style 'ascii))
