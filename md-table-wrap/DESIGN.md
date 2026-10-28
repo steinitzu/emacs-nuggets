@@ -70,9 +70,22 @@ For each body row of a wrapped table:
   strings are concatenated onto its first overlay.
 - The delimiter row is a single `display` string.
 
-Every copy string ends in the `default` face. An overlay string's unfaced
-attributes are otherwise taken from the buffer text at its anchor, so a
-line anchored in bold text would turn bold.
+Every string the mode draws ends in the `default` face: cell copies,
+rules, the top and bottom edges, the delimiter row and each line span's
+newline. An overlay or display string's unfaced attributes are otherwise
+taken from the buffer text at its anchor, so a line anchored in bold text
+would turn bold.
+
+*Changed:* at first only the cell copies got `default`, applied as each
+line was built, and the rules and edges went without. A rule rides on the
+last line of its row, which is anchored at point, so in a GUI it took the
+height of whatever point was in. In a code span of a different size, `─`
+came out narrower than the column unit: the bottom edge's `┴┘` slid left of
+the pipes above, and rules changed width as point moved. Now `default` goes
+on each finished before-string, in `md-table-wrap--show-row`, and on the
+display strings. A terminal shows every face one column wide, so the test
+checks the invariant (every drawn character carries `default`) rather than
+the width.
 
 ## Layout
 
