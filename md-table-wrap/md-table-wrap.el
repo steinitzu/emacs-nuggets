@@ -629,10 +629,19 @@ FILL is the line's character, by default the style's."
                            (list 'md-table-wrap-row row 'md-table-wrap-line l
                                  'keymap md-table-wrap-copy-map)
                            s)
-      ;; An overlay string's unfaced attributes come from the buffer text at
-      ;; its anchor, so a line anchored in bold text would turn bold.
-      (add-face-text-property 0 (length s) 'default t s)
       (cons s v))))
+
+(defun md-table-wrap--defaulted (s)
+  "S with `default' under its faces, so nothing comes from its anchor.
+An overlay or display string's unfaced attributes come from the buffer
+text it is anchored at.  Anchors follow point, so a border anchored in a
+code span or bold text would take that text's height or weight, and
+change width as point moved."
+  (add-face-text-property 0 (length s) 'default t s)
+  s)
+
+(defconst md-table-wrap--newline (md-table-wrap--defaulted (string ?\n))
+  "A line span's display: its newline, whose face sets the line's height.")
 
 (defun md-table-wrap--header-p (row)
   (let* ((rows (md-table-wrap--table-rows (md-table-wrap--row-tbl row)))
@@ -699,7 +708,8 @@ the table's bottom edge in the `box' style."
         (progn (mapc #'delete-overlay ovs)
                (setf (md-table-wrap--row-ovs row)
                      (list (md-table-wrap--ov beg end 'display
-                                              (md-table-wrap--delim-string row)))))
+                                              (md-table-wrap--defaulted
+                                               (md-table-wrap--delim-string row))))))
       (let* ((h (md-table-wrap--row-height row))
              (built (cl-loop for l below h collect (md-table-wrap--line row l))))
         (setf (md-table-wrap--row-lines row) (vconcat (mapcar #'car built))
@@ -827,7 +837,8 @@ the table's bottom edge in the `box' style."
           (push (car strs) acc)
           (overlay-put (car lov) 'before-string nil)
           (setq lov (cdr lov) strs (cdr strs)))
-        (overlay-put o 'before-string (apply #'concat (nreverse acc)))))
+        (overlay-put o 'before-string
+                     (md-table-wrap--defaulted (apply #'concat (nreverse acc))))))
     (setf (md-table-wrap--row-fp row) fp)))
 
 (defun md-table-wrap--owner (row off)
@@ -907,7 +918,7 @@ hand-aligned table; a pipe and the padding after it, to the first line."
                ;; screen line starts at a buffer position of its own and
                ;; one-line scrolling can step through a tall row.
                (overlay-put o 'display (cond ((= l (1- h)) "")
-                                             ((< a (or b end)) "\n"))))
+                                             ((< a (or b end)) md-table-wrap--newline))))
       (setf (md-table-wrap--row-lc row) lc (md-table-wrap--row-pt row) pt)
       (md-table-wrap--show-row row)
       (dolist (k keep)
