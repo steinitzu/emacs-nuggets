@@ -7,10 +7,11 @@ buffer text never changes, so it works in read-only buffers too.
 
 ## Problem
 
-`md-table-align` aligns tables, and for a table wider than the window it
-clips to a viewport and scrolls sideways (or spills into the margin). Both
-keep every row on one screen line, so a table whose cells hold sentences
-is read through a letterbox: most of each row is off screen at any moment.
+`md-table-align`, this package's predecessor, aligned tables, and for a
+table wider than the window it clipped to a viewport and scrolled sideways
+(or spilled into the margin). Both kept every row on one screen line, so a
+table whose cells hold sentences was read through a letterbox: most of each
+row off screen at any moment.
 
 What a reader wants is the table a person would type into a text file when
 the cells are long:
@@ -92,7 +93,8 @@ the width.
 ### Discovery
 
 Tables come from the tree-sitter `markdown` parser (`pipe_table` and its
-row nodes), as in `md-table-align`. Without a parser a regexp fallback
+row nodes), which also keeps pipe lines in fenced code out. Without a
+parser a regexp fallback
 treats runs of pipe-led lines ending in a delimiter row as tables.
 
 ### Column widths
@@ -156,8 +158,9 @@ holds one overlay per screen line. So a table's work is split in two:
   kept in a list. Eviction, face mirroring and the rule decision use
   those, not a scan.
 - **Overlays are lazy.** A row's strings and overlays are built from a
-  `jit-lock` function, registered after font-lock (depth 90, as in
-  `md-table-align`), for the rows intersecting the region redisplay is
+  `jit-lock` function, registered after font-lock (depth 90:
+  `jit-lock-register` prepends, and copies must be taken from text this
+  pass has already fontified), for the rows intersecting the region redisplay is
   about to show. Laying out a table builds nothing: it marks the table's
   text unfontified, so jit-lock asks for whatever comes into view. The row
   holding point is also built on demand after each command, since its
@@ -188,6 +191,21 @@ is fontified first.
 
 A width change re-wraps every row's model but rebuilds only the rows that
 are built.
+
+**Refontified rows are rebuilt.** When jit-lock asks for a row that is
+already built, the builder builds it again. Built text is only marked
+unfontified when something wants it fontified anew, such as a
+`font-lock-flush` from a mode that adds faces, and the row's copies hold
+the faces from before. The row holding point is rebuilt anchored around
+point, so the cursor stays put. The rebuild is skipped while edits are
+pending (`md-table-wrap--dirty`/`--full`): the row's model may not match
+its text then, and the next command's update rebuilds the rows those edits
+touch.
+
+*Changed:* at first the builder skipped built rows. That went unnoticed
+while `md-table-align` was the table mode `md-table-inline` was tested
+against. Tested against this mode, it showed up: with `md-table-inline-mode`
+turned on second, a code span's copy never got the code-span face.
 
 **Painting.** `markdown-ts-mode` keeps a face overlay over the table point
 is in (`markdown-ts-in-table`), so every row has foreign faces to mirror,
@@ -263,18 +281,27 @@ so the web style was dropped.
 - A change of window width or `face-remapping-alist` (text scaling)
   re-allocates or re-lays out on the next command.
 
-## Relation to md-table-align
+## Replacing md-table-align
 
-The two modes both draw tables and cannot share one. `md-table-wrap-mode`
-switches `md-table-align-mode` off in its buffer while on, and back on when
-switched off if it was on before. `global-md-table-align-mode` skips buffers
-where `md-table-wrap-mode` is on, so enabling either globally works in
-either order.
+This mode shipped alongside `md-table-align`. It switched
+`md-table-align-mode` off in its buffers, and `global-md-table-align-mode`
+skipped them. The plan was for wrapping to become `md-table-align`'s way
+of fitting a wide table once it had seen daily use.
 
-Long term, wrapping could become `md-table-align`'s way of fitting a wide
-table, with horizontal scrolling as the fallback for tables whose minimum
-widths don't fit. That is a larger change to `md-table-align`'s
-spill/viewport code, and is deferred until this mode has seen daily use.
+It did see daily use, and it covers what `md-table-align` was for: a table
+that fits is drawn aligned, and one that doesn't is wrapped rather than
+clipped. That made the rest of `md-table-align` redundant: the horizontal
+viewport, the margin spill for `visual-fill-column`, and the many-tables
+performance work behind them. On 2026-11-03 `md-table-align` was retired,
+with the coexistence code above, and this mode became the only table
+renderer. It lives on in git history.
+
+Two things only `md-table-align` did went with it:
+
+- **Column alignment markers.** `:---:` and `---:` centred and
+  right-aligned a column; here every column is left-aligned.
+- **The vertical records view** (`md-table-align-toggle-vertical`), a
+  psql `\x`-style `label | value` rendering of a table, toggled per table.
 
 ## Limits
 
@@ -303,8 +330,7 @@ These are known and accepted for a first version:
 - `md-table-wrap-unload-function` switches the mode off in every buffer,
   removing overlays, hooks and timers before the definitions go.
 - Turning the mode off removes every overlay it made (they all carry the
-  `md-table-wrap` property), restores `hl-line-range-function`, and
-  re-enables `md-table-align-mode` if it was on.
+  `md-table-wrap` property) and restores `hl-line-range-function`.
 
 ## Testing
 
@@ -319,8 +345,9 @@ Integration tests in a real TTY frame (`make test`), in real
 - C-n/C-p and C-a/C-e land on the model's positions, and the cursor
   shows on the row's right screen line;
 - typing into a cell re-wraps it;
-- turning off removes every overlay and restores `md-table-align-mode`;
-  `global-md-table-align-mode` leaves a wrapped buffer alone.
+- refontifying a built row redraws it, with the cursor where it was, and
+  faces `md-table-inline-mode` adds reach the copies in either order;
+- turning off removes every overlay.
 
 Deviation, found while writing them: `posn-at-point` can't locate the
 cursor in a wrapped row. Point is inside hidden text there, so it reports

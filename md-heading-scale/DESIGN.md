@@ -200,8 +200,8 @@ than a reinterpreted value.
 
 ### Why the mode does not refuse in non-Markdown buffers
 
-`md-table-align` declines when the buffer has no `markdown` parser, because
-without one it cannot work. This mode has no such dependency: it remaps faces
+`md-table-inline` declines when the buffer lacks its grammars, because
+without them it cannot work. This mode has no such dependency: it remaps faces
 that only `markdown-ts-mode` ever applies, so switching it on somewhere else is
 inert rather than wrong. Refusing would cost a check and buy nothing.
 
@@ -241,13 +241,15 @@ tree-sitter parser.
 - **`:height` does nothing on a terminal frame.** The mode is harmless there,
   but there is nothing to see.
 
-## Interaction with md-table-align
+## Interaction with md-table-wrap
 
-`md-table-align--layout-key` includes `face-remapping-alist`, precisely so that
-a face change re-measures tables. Turning this mode on or off therefore
-triggers a re-layout of visible tables on the next command, which is the
-correct response: heading faces do not affect table cells, but the key is
-deliberately coarse and a needless re-layout is cheap.
+`md-table-wrap` re-lays out its tables whenever `face-remapping-alist`
+changes, so that a font change re-measures them. Turning this mode on or off
+therefore re-lays out the buffer's tables on the next command. Heading faces
+do not affect table cells, so the re-layout is needless, but the check is
+deliberately coarse and laying out is cheap. (This section named
+`md-table-align`, which keyed its layout on the same variable, until that
+package was retired on 2026-11-03.)
 
 ## Testing strategy
 

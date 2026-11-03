@@ -102,30 +102,32 @@ parsers, then flushes. Deleting *all* of them rather than trying to tell
 cell parsers from `inline`-node parsers is deliberate: recreating the
 legitimate ones is one call, and distinguishing them is guesswork.
 
-## Interplay with md-table-align
+## Interplay with md-table-wrap
 
-`md-table-align` measures cell text with `string-pixel-width`, keeping text
-properties. Its measuring work buffer has the default
-`buffer-invisibility-spec` of `t`, under which *any* non-nil `invisible`
-property hides — so a hidden backtick measures at zero width, matching what
-redisplay draws in the real buffer when hide-markup is on. When hide-markup
-is off the property does not exist at all (font-lock manages it), so
-measurement matches again. Consistent both ways, no change needed there.
+`md-table-wrap` draws every cell as a copy of its text, taken with
+`buffer-substring` after the row is fontified. The faces this mode gives a
+cell therefore ride along on the copy with no change to either package.
+One case needed one: with this mode turned on *after* a table was drawn,
+its `font-lock-flush` refontified rows whose copies were already built, and
+md-table-wrap's jit-lock function only built unbuilt rows. It now rebuilds
+a refontified row (see "Lazy building" in md-table-wrap's DESIGN.md).
 
-The one gap was invalidation: toggling hide-markup changes rendered cell
-widths without bumping the modified tick, so md-table-align's memoised
-metrics went stale. Fixed on the md-table-align side by adding
-`buffer-invisibility-spec` to its layout key, which is exactly the state
-`markdown-ts--set-hide-markup` toggles.
+md-table-wrap wraps by the raw text width, so hidden markup still takes
+room in the column it is wrapped to. That is a known md-table-wrap
+limitation, not something this mode can fix.
+
+*Changed:* this section described `md-table-align` until that package was
+retired (2026-11-03). It measured cells in pixels, so a hidden backtick
+measured zero, and it added `buffer-invisibility-spec` to its layout key
+so that toggling hide-markup re-aligned.
 
 ## Interface
 
 - `md-table-inline-mode` — buffer-local minor mode; adds the range rule on,
-  removes rule and parsers off. Refuses (with a message, mirroring
-  `md-table-align-mode`) in a buffer without both grammars.
+  removes rule and parsers off. Refuses, with a message, in a buffer
+  without both grammars.
 - `global-md-table-inline-mode` — enables it in the modes named by
-  `md-table-inline-modes` (default `markdown-ts-mode`), the same shape as
-  `global-md-table-align-mode`.
+  `md-table-inline-modes` (default `markdown-ts-mode`).
 - `md-table-inline-unload-function` — switches the mode off everywhere
   first, so `unload-feature` does not strip definitions out from under live
   range settings.
@@ -137,9 +139,8 @@ E2e in the suite's real TTY frame, real `markdown-ts-mode`, nothing stubbed:
 - a code span in a cell gets `markdown-ts-code-span`, and with
   `markdown-ts-hide-markup` its backticks go invisible;
 - emphasis in a header cell is fontified;
-- with hide-markup on, md-table-align lays the grid out to the *rendered*
-  cell widths — backticks measured at zero — and toggling hide-markup
-  re-aligns via the layout key;
+- the copies md-table-wrap draws carry a cell's code-span face, whether
+  this mode comes on before md-table-wrap or after it;
 - switching the mode off restores upstream behaviour: no cell faces, no
   stray local parsers, and text under the table's `inline` nodes still
   fontified;
