@@ -579,16 +579,26 @@ taking them off, so users check `md-table-wrap--built-p'.")
       (propertize "│" 'face (md-table-wrap--border-face tbl))
     (propertize "|" 'face (md-table-wrap--table-face tbl))))
 
+(defun md-table-wrap--line-start (row)
+  "Start of ROW's line: where its indentation, hidden like its text, begins."
+  (save-excursion (goto-char (md-table-wrap--beg row)) (line-beginning-position)))
+
+(defun md-table-wrap--indent-stretch (tbl face)
+  "A stretch, in FACE, to TBL's indent.
+Every line of a table stands on one: the real indentation is hidden,
+since rows' indentation is faced differently (see DESIGN.md, Geometry)."
+  (propertize " " 'display `(space :align-to (,(md-table-wrap--pixel tbl 0)))
+              'face face))
+
 (defun md-table-wrap--hline (tbl left mid right &optional align fill)
   "A horizontal border across TBL with junctions LEFT, MID and RIGHT.
-ALIGN non-nil starts it at the table's indent, for a line with nothing
-real before it; a stretch is inert in a `display' string, so not there.
-FILL is the line's character, by default the style's."
+ALIGN non-nil starts it at the table's indent; a stretch is inert in a
+`display' string, so not there.  FILL is the line's character, by
+default the style's."
   (let ((face (md-table-wrap--border-face tbl))
         (fill (or fill (if (md-table-wrap--box-p) ?─ ?-))))
     (concat
-     (and align (propertize " " 'display `(space :align-to (,(md-table-wrap--pixel tbl 0)))
-                            'face face))
+     (and align (md-table-wrap--indent-stretch tbl face))
      (propertize (concat left
                          (mapconcat (lambda (w) (make-string (+ w 2) fill))
                                     (md-table-wrap--table-widths tbl) mid)
@@ -703,11 +713,18 @@ the table's bottom edge in the `box' style."
     (setf (md-table-wrap--row-lc row) nil (md-table-wrap--row-fp row) nil
           (md-table-wrap--row-pc row) nil)
     (if (md-table-wrap--row-delim row)
-        (progn (mapc #'delete-overlay ovs)
-               (setf (md-table-wrap--row-ovs row)
-                     (list (md-table-wrap--ov beg end 'display
-                                              (md-table-wrap--defaulted
-                                               (md-table-wrap--delim-string row))))))
+        (let ((tbl (md-table-wrap--row-tbl row)))
+          (mapc #'delete-overlay ovs)
+          ;; A before-string, not a display string, so it can open with
+          ;; the stretch to the indent.
+          (setf (md-table-wrap--row-ovs row)
+                (list (md-table-wrap--ov
+                       (md-table-wrap--line-start row) end 'display ""
+                       'before-string
+                       (md-table-wrap--defaulted
+                        (concat (md-table-wrap--indent-stretch
+                                 tbl (md-table-wrap--table-face tbl))
+                                (md-table-wrap--delim-string row)))))))
       (let* ((h (md-table-wrap--row-height row))
              (built (cl-loop for l below h collect (md-table-wrap--line row l))))
         (setf (md-table-wrap--row-lines row) (vconcat (mapcar #'car built))
@@ -909,7 +926,9 @@ hand-aligned table; a pipe and the padding after it, to the first line."
            (keep (cl-loop for w in (get-buffer-window-list nil nil t)
                           for l = (cl-position (window-start w) lov :key #'overlay-start)
                           when (and l (> l 0)) collect (cons w l))))
-      (move-overlay lead beg (if (eql lc 0) pt beg))
+      ;; The lead hides the row's indentation, and on line 0 the text
+      ;; before point.
+      (move-overlay lead (md-table-wrap--line-start row) (if (eql lc 0) pt beg))
       (cl-loop for o in lov for (a b) on as for l from 0
                do (move-overlay o a (or b end))
                ;; Each line's newline is its span's display, so the next
