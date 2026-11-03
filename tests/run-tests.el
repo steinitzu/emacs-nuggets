@@ -24,38 +24,38 @@
       ;; A debugger prompt in a TTY frame would hang the run forever.
       debug-on-error nil)
 
-(defconst md-table-align-tests--dir
+(defconst run-tests--dir
   (file-name-directory (or load-file-name buffer-file-name)))
 
-(defconst md-table-align-tests--root
-  (expand-file-name ".." md-table-align-tests--dir))
+(defconst run-tests--root
+  (expand-file-name ".." run-tests--dir))
 
 (require 'treesit)
 (setq treesit-extra-load-path
-      (list (expand-file-name ".test-env/tree-sitter" md-table-align-tests--root)))
+      (list (expand-file-name ".test-env/tree-sitter" run-tests--root)))
 
 ;; Third-party packages the suite drives for real -- `vterm' and `ghostel',
 ;; termdex's two backends.  Kept in the test environment rather than taken from
 ;; the user's own package directory, so a run neither depends on nor disturbs
 ;; what they have installed.  Tests that need one skip when it is absent.
 (require 'package)
-(setq package-user-dir (expand-file-name ".test-env/elpa" md-table-align-tests--root))
+(setq package-user-dir (expand-file-name ".test-env/elpa" run-tests--root))
 (package-initialize)
 
 ;; Load extensions the way an end user does -- through the collection loader --
 ;; so `make test' also exercises the install path.
-(add-to-list 'load-path md-table-align-tests--root)
+(add-to-list 'load-path run-tests--root)
 (require 'emacs-tools)
 
-;; Test files require each other, so they must be findable by name.
-(add-to-list 'load-path md-table-align-tests--dir)
+;; Suites require shared helpers, so the directory must be on `load-path'.
+(add-to-list 'load-path run-tests--dir)
 
-(defun md-table-align-tests--finish (exit)
+(defun run-tests--finish (exit)
   "Write the run transcript to the log file and quit with EXIT."
   (with-current-buffer (messages-buffer)
     (let ((inhibit-read-only t))
       (write-region (point-min) (point-max)
-                    (expand-file-name ".last-run.log" md-table-align-tests--dir)
+                    (expand-file-name ".last-run.log" run-tests--dir)
                     nil 'quiet)))
   (kill-emacs exit))
 
@@ -63,7 +63,7 @@
   (unwind-protect
       (progn
         ;; This file matches "-tests.el" too; loading it would recurse.
-        (dolist (file (directory-files md-table-align-tests--dir t "-tests\\.el\\'"))
+        (dolist (file (directory-files run-tests--dir t "-tests\\.el\\'"))
           (unless (equal (file-name-nondirectory file) "run-tests.el")
             (load file nil t)))
         (let ((stats (ert-run-tests-batch)))
@@ -71,6 +71,6 @@
                               (> (ert-stats-total stats) 0))
                          0 1))
           (message "RESULT: %s" (if (zerop exit) "PASS" "FAIL"))))
-    (md-table-align-tests--finish exit)))
+    (run-tests--finish exit)))
 
 ;;; run-tests.el ends here

@@ -21,8 +21,7 @@
 (require 'seq)
 (require 'markdown-ts-mode)
 (require 'md-table-wrap)
-(require 'md-table-align)
-(require 'md-table-align-tests)
+(require 'emacs-tools-test-helpers)
 
 ;;;; Fixtures
 
@@ -69,8 +68,8 @@ Prose after.
   "Show TEXT in a `markdown-ts-mode' buffer with `md-table-wrap-mode' on.
 BODY runs in a frame `md-table-wrap-tests--frame' columns wide."
   (declare (indent 1) (debug t))
-  `(md-table-align-tests--with-frame-width md-table-wrap-tests--frame
-     (md-table-align-tests--with-buffer ,text
+  `(emacs-tools-test-with-frame-width md-table-wrap-tests--frame
+     (emacs-tools-test-with-buffer ,text
        (delete-other-windows)
        (md-table-wrap-mode 1)
        (should md-table-wrap-mode)
@@ -171,8 +170,8 @@ wherever the `cursor' property puts it, on a copy."
 
 (ert-deftest md-table-wrap-test-read-only-buffer ()
   "A `buffer-read-only' buffer is wrapped, and stays unmodified."
-  (md-table-align-tests--with-frame-width md-table-wrap-tests--frame
-    (md-table-align-tests--with-buffer md-table-wrap-tests--wide
+  (emacs-tools-test-with-frame-width md-table-wrap-tests--frame
+    (emacs-tools-test-with-buffer md-table-wrap-tests--wide
       (setq buffer-read-only t)
       (md-table-wrap-mode 1)
       (redisplay t)
@@ -182,8 +181,8 @@ wherever the `cursor' property puts it, on a copy."
 (ert-deftest md-table-wrap-test-read-only-text ()
   "Text carrying a `read-only' property, as chat transcripts use, is wrapped.
 Measuring the table's indent copies such text into a work buffer."
-  (md-table-align-tests--with-frame-width md-table-wrap-tests--frame
-    (md-table-align-tests--with-read-only-text md-table-wrap-tests--list-item
+  (emacs-tools-test-with-frame-width md-table-wrap-tests--frame
+    (emacs-tools-test-with-read-only-text md-table-wrap-tests--list-item
       (md-table-wrap-mode 1)
       (redisplay t)
       (should (> (length (md-table-wrap-tests--screen)) 6))
@@ -340,6 +339,25 @@ and the cursor shows one screen row lower each time."
       (should (> (md-table-wrap--row-height (md-table-wrap--row-at (point))) 1))
       (should (search-backward "Short. Now it says" nil t)))))
 
+(ert-deftest md-table-wrap-test-refontified-row-is-redrawn-under-the-cursor ()
+  "Refontifying a built row redraws its copies, and the row holding point
+keeps the cursor on the screen line it was on."
+  (md-table-wrap-tests--with-table md-table-wrap-tests--wide
+    (md-table-wrap-tests--goto "The first item")
+    (md-table-wrap-tests--press "C-f C-n")
+    (let ((line (md-table-wrap-tests--cursor-line))
+          (drawn (seq-keep (lambda (o) (let ((s (overlay-get o 'before-string)))
+                                          (and s (cons o s))))
+                           (md-table-wrap-tests--own-overlays))))
+      (should drawn)
+      (font-lock-flush)
+      (redisplay t)
+      ;; New string objects: the rows were drawn again from their text.
+      (should (seq-every-p (lambda (d) (not (eq (overlay-get (car d) 'before-string)
+                                                (cdr d))))
+                           drawn))
+      (should (= (md-table-wrap-tests--cursor-line) line)))))
+
 ;;;; Lazy building
 
 (defconst md-table-wrap-tests--tall
@@ -418,7 +436,7 @@ The neighbourhood kept is narrowed, so two windowfuls exceed it."
                            (and s (text-property-not-all 0 (length s) 'cursor nil s))))
                        (cdr (md-table-wrap--row-ovs far)))))))
 
-;;;; Lifecycle and md-table-align
+;;;; Lifecycle
 
 (ert-deftest md-table-wrap-test-off-removes-everything ()
   "Turning the mode off leaves no overlay, hook or timer behind."
@@ -428,26 +446,6 @@ The neighbourhood kept is narrowed, so two windowfuls exceed it."
     (should-not (memq #'md-table-wrap--post-command post-command-hook))
     (should-not md-table-wrap--timer)
     (should-not md-table-wrap--tables)))
-
-(ert-deftest md-table-wrap-test-hands-back-to-md-table-align ()
-  "md-table-align steps aside while the mode is on, and comes back after."
-  (md-table-align-tests--with-frame-width md-table-wrap-tests--frame
-    (md-table-align-tests--with-buffer md-table-wrap-tests--wide
-      (md-table-align-mode 1)
-      (md-table-wrap-mode 1)
-      (should-not md-table-align-mode)
-      (md-table-wrap-mode -1)
-      (should md-table-align-mode)
-      (md-table-align-mode -1))))
-
-(ert-deftest md-table-wrap-test-global-md-table-align-leaves-it-alone ()
-  "`global-md-table-align-mode' does not switch itself on over a wrapped buffer."
-  (md-table-align-tests--with-frame-width md-table-wrap-tests--frame
-    (md-table-align-tests--with-buffer md-table-wrap-tests--wide
-      (md-table-wrap-mode 1)
-      (md-table-align--maybe-enable)
-      (should-not md-table-align-mode)
-      (should md-table-wrap-mode))))
 
 (provide 'md-table-wrap-tests)
 

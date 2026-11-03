@@ -14,7 +14,7 @@
 ;;   (require 'emacs-tools)
 ;;
 ;; Each extension lives in its own subdirectory and is then available via
-;; `require', e.g. (require 'md-table-align).  Extensions are not loaded
+;; `require', e.g. (require 'md-table-wrap).  Extensions are not loaded
 ;; eagerly; autoloads and `require' pull in only what you use.
 ;;
 ;; While developing an extension, `M-x emacs-tools-reload' reloads it in a

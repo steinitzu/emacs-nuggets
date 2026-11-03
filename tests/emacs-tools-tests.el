@@ -3,36 +3,50 @@
 ;;; Commentary:
 
 ;; Exercises `emacs-tools-reload' against a real extension in a real buffer:
-;; the mode is on, the buffer is aligned, an option has been left at a stale
-;; value, and the reload has to put all of that right.
+;; the mode is on, the buffer's table is drawn, an option has been left at a
+;; stale value, and the reload has to put all of that right.
 ;;
-;; The reload genuinely unloads and re-loads `md-table-align' mid-test, so
+;; The reload genuinely unloads and re-loads `md-table-wrap' mid-test, so
 ;; these run against the same definitions everything else does.
 
 ;;; Code:
 
 (require 'ert)
 (require 'emacs-tools)
-(require 'md-table-align)
-(require 'md-table-align-tests)
+(require 'md-table-wrap)
+(require 'emacs-tools-test-helpers)
+
+(defconst emacs-tools-tests--table
+  "| Name | Qty |
+|:-----|----:|
+| apple | 3 |
+| fig | 12 |
+"
+  "A table for `md-table-wrap' to draw.")
+
+(defun emacs-tools-tests--overlays ()
+  "The overlays `md-table-wrap' has drawn in the current buffer."
+  (seq-filter (lambda (ov) (overlay-get ov 'md-table-wrap))
+              (overlays-in (point-min) (point-max))))
 
 ;;;; Discovery
 
 (ert-deftest emacs-tools-test-features-lists-extensions-only ()
   "Extension features are discoverable; infrastructure is not."
-  (should (memq 'md-table-align (emacs-tools-features)))
-  (should (memq 'md-table-align (emacs-tools-loaded-features)))
+  (should (memq 'md-table-wrap (emacs-tools-features)))
+  (should (memq 'md-table-wrap (emacs-tools-loaded-features)))
   ;; Unloading the loader would remove the functions doing the unloading.
   (should-not (memq 'emacs-tools (emacs-tools-features)))
   ;; The suite and the scratch directory are not extensions.
-  (should-not (memq 'md-table-align-tests (emacs-tools-features)))
+  (should-not (memq 'md-table-wrap-tests (emacs-tools-features)))
+  (should-not (memq 'emacs-tools-test-helpers (emacs-tools-features)))
   (should-not (memq 'md-font-diagnose (emacs-tools-features))))
 
 (ert-deftest emacs-tools-test-finds-minor-modes-of-a-feature ()
   "Both the buffer-local and the globalized mode are found."
-  (let ((modes (emacs-tools--minor-modes 'md-table-align)))
-    (should (memq 'md-table-align-mode modes))
-    (should (memq 'global-md-table-align-mode modes))))
+  (let ((modes (emacs-tools--minor-modes 'md-table-wrap)))
+    (should (memq 'md-table-wrap-mode modes))
+    (should (memq 'global-md-table-wrap-mode modes))))
 
 ;;;; Reloading
 
@@ -42,49 +56,46 @@
 `defcustom' does not reassign a variable that is already bound, so a
 plain `load' leaves the old value in place -- the failure this command
 exists to prevent."
-  (md-table-align-tests--with-buffer md-table-align-tests--simple
-    (md-table-align-mode 1)
-    (let ((padding md-table-align-padding)
-          (width-fn md-table-align-pixel-width-function))
+  (emacs-tools-test-with-buffer emacs-tools-tests--table
+    (md-table-wrap-mode 1)
+    (let ((cap md-table-wrap-word-cap)
+          (style md-table-wrap-style))
       (unwind-protect
           (progn
             ;; Stand in for a session still holding an older version's values.
-            (setq md-table-align-padding 7)
-            (setq md-table-align-pixel-width-function #'ignore)
-            (emacs-tools-reload 'md-table-align)
-            (should (= md-table-align-padding 1))
-            (should (eq md-table-align-pixel-width-function
-                        #'md-table-align-pixel-width)))
-        (setq md-table-align-padding padding)
-        (setq md-table-align-pixel-width-function width-fn)))))
+            (setq md-table-wrap-word-cap 7)
+            (setq md-table-wrap-style 'ascii)
+            (emacs-tools-reload 'md-table-wrap)
+            (should (= md-table-wrap-word-cap 20))
+            (should (eq md-table-wrap-style 'box)))
+        (setq md-table-wrap-word-cap cap)
+        (setq md-table-wrap-style style)))))
 
-(ert-deftest emacs-tools-test-reload-keeps-modes-on-and-realigns ()
-  "A buffer with the mode on comes back on, and correctly aligned."
-  (md-table-align-tests--with-buffer md-table-align-tests--simple
-    (md-table-align-mode 1)
+(ert-deftest emacs-tools-test-reload-keeps-modes-on-and-redraws ()
+  "A buffer with the mode on comes back on, with its table drawn."
+  (emacs-tools-test-with-buffer emacs-tools-tests--table
+    (md-table-wrap-mode 1)
     (redisplay t)
-    (emacs-tools-reload 'md-table-align)
-    (should md-table-align-mode)
+    (emacs-tools-reload 'md-table-wrap)
+    (should md-table-wrap-mode)
     (redisplay t)
-    (dolist (row (md-table-align-tests--pipe-columns))
-      (should (equal row md-table-align-tests--simple-columns)))))
+    (should (emacs-tools-tests--overlays))))
 
 (ert-deftest emacs-tools-test-reload-leaves-modes-off-that-were-off ()
   "Reloading does not switch the mode on in buffers that had it off."
-  (md-table-align-tests--with-buffer md-table-align-tests--simple
-    (should-not (bound-and-true-p md-table-align-mode))
-    (emacs-tools-reload 'md-table-align)
-    (should-not (bound-and-true-p md-table-align-mode))))
+  (emacs-tools-test-with-buffer emacs-tools-tests--table
+    (should-not (bound-and-true-p md-table-wrap-mode))
+    (emacs-tools-reload 'md-table-wrap)
+    (should-not (bound-and-true-p md-table-wrap-mode))))
 
 (ert-deftest emacs-tools-test-reload-drops-overlays-from-old-definition ()
-  "No alignment overlay outlives the reload that replaced its code."
-  (md-table-align-tests--with-buffer md-table-align-tests--simple
-    (md-table-align-mode 1)
+  "No overlay outlives the reload that replaced its code."
+  (emacs-tools-test-with-buffer emacs-tools-tests--table
+    (md-table-wrap-mode 1)
     (redisplay t)
-    (let ((before (seq-filter (lambda (ov) (overlay-get ov 'md-table-align))
-                              (overlays-in (point-min) (point-max)))))
+    (let ((before (emacs-tools-tests--overlays)))
       (should before)
-      (emacs-tools-reload 'md-table-align)
+      (emacs-tools-reload 'md-table-wrap)
       (redisplay t)
       ;; Fresh overlays are expected; the previous objects must be gone.
       (dolist (ov before)
@@ -99,24 +110,19 @@ exists to prevent."
 
 (ert-deftest emacs-tools-test-unload-function-cleans-up-overlays ()
   "`unload-feature' alone leaves no overlays behind.
-`md-table-align-unload-function' switches the mode off first, so the
+`md-table-wrap-unload-function' switches the mode off first, so the
 definitions are not stripped out from under live overlays."
-  (md-table-align-tests--with-buffer md-table-align-tests--simple
-    (md-table-align-mode 1)
+  (emacs-tools-test-with-buffer emacs-tools-tests--table
+    (md-table-wrap-mode 1)
     (redisplay t)
     (let ((buffer (current-buffer)))
       (unwind-protect
           (progn
-            (unload-feature 'md-table-align t)
+            (unload-feature 'md-table-wrap t)
             (with-current-buffer buffer
-              (should-not (seq-filter (lambda (ov) (overlay-get ov 'md-table-align))
-                                      (overlays-in (point-min) (point-max))))))
+              (should-not (emacs-tools-tests--overlays))))
         ;; Put the package back for the rest of the suite.
-        (load (locate-file "md-table-align" load-path '(".el")) nil t)))))
-
-(provide 'emacs-tools-tests)
-
-;;; emacs-tools-tests.el ends here
+        (load (locate-file "md-table-wrap" load-path '(".el")) nil t)))))
 
 ;;;; Hook registrations must survive a reload
 ;;
@@ -140,70 +146,70 @@ definitions are not stripped out from under live overlays."
 (ert-deftest emacs-tools-test-unload-alone-strips-hooks ()
   "The baseline the reload has to compensate for, so the tests below bite."
   (emacs-tools-tests--with-clean-hook
-    (add-hook 'emacs-tools-tests--sample-hook #'md-table-align-mode)
-    (should (memq #'md-table-align-mode emacs-tools-tests--sample-hook))
+    (add-hook 'emacs-tools-tests--sample-hook #'md-table-wrap-mode)
+    (should (memq #'md-table-wrap-mode emacs-tools-tests--sample-hook))
     (unwind-protect
         (progn
-          (unload-feature 'md-table-align t)
-          (should-not (memq #'md-table-align-mode
+          (unload-feature 'md-table-wrap t)
+          (should-not (memq #'md-table-wrap-mode
                             emacs-tools-tests--sample-hook)))
       ;; Whatever the assertion did, put the feature back for everything else.
-      (load (locate-file "md-table-align" load-path '(".el")) nil t))))
+      (load (locate-file "md-table-wrap" load-path '(".el")) nil t))))
 
 (ert-deftest emacs-tools-test-reload-keeps-global-hook-registrations ()
   "A global `add-hook' from an init file survives the reload."
   (emacs-tools-tests--with-clean-hook
-    (add-hook 'emacs-tools-tests--sample-hook #'md-table-align-mode)
-    (emacs-tools-reload 'md-table-align)
-    (should (memq #'md-table-align-mode emacs-tools-tests--sample-hook))))
+    (add-hook 'emacs-tools-tests--sample-hook #'md-table-wrap-mode)
+    (emacs-tools-reload 'md-table-wrap)
+    (should (memq #'md-table-wrap-mode emacs-tools-tests--sample-hook))))
 
 (ert-deftest emacs-tools-test-reload-preserves-hook-depth ()
   "An appended registration comes back appended, not at the front."
   (emacs-tools-tests--with-clean-hook
-    (add-hook 'emacs-tools-tests--sample-hook #'md-table-align-mode 90)
+    (add-hook 'emacs-tools-tests--sample-hook #'md-table-wrap-mode 90)
     (add-hook 'emacs-tools-tests--sample-hook #'ignore)
     (should (equal emacs-tools-tests--sample-hook
-                   '(ignore md-table-align-mode)))
-    (emacs-tools-reload 'md-table-align)
+                   '(ignore md-table-wrap-mode)))
+    (emacs-tools-reload 'md-table-wrap)
     (should (equal emacs-tools-tests--sample-hook
-                   '(ignore md-table-align-mode)))))
+                   '(ignore md-table-wrap-mode)))))
 
 (ert-deftest emacs-tools-test-reload-keeps-buffer-local-hook-registrations ()
   "A buffer-local registration survives, and stays local to its buffer."
   (emacs-tools-tests--with-clean-hook
-    (md-table-align-tests--with-buffer md-table-align-tests--simple
-      (add-hook 'emacs-tools-tests--sample-hook #'md-table-align-mode nil t)
-      (should (memq #'md-table-align-mode emacs-tools-tests--sample-hook))
-      (emacs-tools-reload 'md-table-align)
-      (should (memq #'md-table-align-mode emacs-tools-tests--sample-hook))
+    (emacs-tools-test-with-buffer emacs-tools-tests--table
+      (add-hook 'emacs-tools-tests--sample-hook #'md-table-wrap-mode nil t)
+      (should (memq #'md-table-wrap-mode emacs-tools-tests--sample-hook))
+      (emacs-tools-reload 'md-table-wrap)
+      (should (memq #'md-table-wrap-mode emacs-tools-tests--sample-hook))
       (should (local-variable-p 'emacs-tools-tests--sample-hook))
-      (should-not (memq #'md-table-align-mode
+      (should-not (memq #'md-table-wrap-mode
                         (default-value 'emacs-tools-tests--sample-hook))))))
 
 (ert-deftest emacs-tools-test-reload-does-not-duplicate-registrations ()
   "Restoring is idempotent: nothing appears twice after several reloads."
   (emacs-tools-tests--with-clean-hook
-    (add-hook 'emacs-tools-tests--sample-hook #'md-table-align-mode)
-    (emacs-tools-reload 'md-table-align)
-    (emacs-tools-reload 'md-table-align)
-    (should (equal emacs-tools-tests--sample-hook '(md-table-align-mode)))))
+    (add-hook 'emacs-tools-tests--sample-hook #'md-table-wrap-mode)
+    (emacs-tools-reload 'md-table-wrap)
+    (emacs-tools-reload 'md-table-wrap)
+    (should (equal emacs-tools-tests--sample-hook '(md-table-wrap-mode)))))
 
 (ert-deftest emacs-tools-test-reload-does-not-invent-registrations ()
   "A hook the feature was never on stays empty."
   (emacs-tools-tests--with-clean-hook
-    (emacs-tools-reload 'md-table-align)
+    (emacs-tools-reload 'md-table-wrap)
     (should-not emacs-tools-tests--sample-hook)))
 
 (ert-deftest emacs-tools-test-reload-restores-mode-hook-registration ()
   "The documented setup -- the mode on `markdown-ts-mode-hook' -- survives."
-  (let ((present (memq #'md-table-align-mode markdown-ts-mode-hook)))
+  (let ((present (memq #'md-table-wrap-mode markdown-ts-mode-hook)))
     (unwind-protect
         (progn
-          (add-hook 'markdown-ts-mode-hook #'md-table-align-mode)
-          (emacs-tools-reload 'md-table-align)
-          (should (memq #'md-table-align-mode markdown-ts-mode-hook)))
+          (add-hook 'markdown-ts-mode-hook #'md-table-wrap-mode)
+          (emacs-tools-reload 'md-table-wrap)
+          (should (memq #'md-table-wrap-mode markdown-ts-mode-hook)))
       (unless present
-        (remove-hook 'markdown-ts-mode-hook #'md-table-align-mode)))))
+        (remove-hook 'markdown-ts-mode-hook #'md-table-wrap-mode)))))
 
 ;;;; Reloading the loader itself
 ;;
@@ -238,17 +244,21 @@ definitions are not stripped out from under live overlays."
 (ert-deftest emacs-tools-test-reload-loader-keeps-hook-registrations ()
   "Nothing is unloaded, so hooks are not swept in the first place."
   (emacs-tools-tests--with-clean-hook
-    (add-hook 'emacs-tools-tests--sample-hook #'md-table-align-mode)
+    (add-hook 'emacs-tools-tests--sample-hook #'md-table-wrap-mode)
     (emacs-tools-reload-loader)
-    (should (memq #'md-table-align-mode emacs-tools-tests--sample-hook))))
+    (should (memq #'md-table-wrap-mode emacs-tools-tests--sample-hook))))
 
 (ert-deftest emacs-tools-test-reload-loader-keeps-extensions-loaded ()
   "Reloading the loader does not disturb the extensions it loaded."
   (emacs-tools-reload-loader)
-  (should (featurep 'md-table-align))
-  (should (memq 'md-table-align (emacs-tools-loaded-features))))
+  (should (featurep 'md-table-wrap))
+  (should (memq 'md-table-wrap (emacs-tools-loaded-features))))
 
 (ert-deftest emacs-tools-test-reload-loader-reports-missing-source ()
   "A loader that cannot find itself says so rather than failing obscurely."
   (let ((emacs-tools-directory (expand-file-name "no-such-dir/" temporary-file-directory)))
     (should-error (emacs-tools-reload-loader) :type 'user-error)))
+
+(provide 'emacs-tools-tests)
+
+;;; emacs-tools-tests.el ends here

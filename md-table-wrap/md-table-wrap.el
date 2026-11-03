@@ -28,8 +28,6 @@
 ;; or globally:
 ;;
 ;;   (global-md-table-wrap-mode 1)
-;;
-;; The mode switches `md-table-align-mode' off in its buffer while it is on.
 
 ;;; Code:
 
@@ -696,8 +694,8 @@ the table's bottom edge in the `box' style."
     (while props (overlay-put o (pop props) (pop props)))
     o))
 
-(defun md-table-wrap--build (row)
-  "(Re)make ROW's strings and overlays, anchored at rest."
+(defun md-table-wrap--build (row &optional pt)
+  "(Re)make ROW's strings and overlays, anchored at rest or around PT."
   (md-table-wrap--wrapped row)
   (cl-pushnew row md-table-wrap--built-rows :test #'eq)
   (let ((beg (md-table-wrap--beg row)) (end (md-table-wrap--end row))
@@ -719,7 +717,7 @@ the table's bottom edge in the `box' style."
           (setf (md-table-wrap--row-ovs row)
                 (cons (md-table-wrap--ov beg beg 'display "")
                       (cl-loop repeat h collect (md-table-wrap--ov beg beg)))))
-        (md-table-wrap--anchor row nil)))))
+        (md-table-wrap--anchor row pt)))))
 
 (defun md-table-wrap--built-p (row) (md-table-wrap--row-ovs row))
 
@@ -961,7 +959,9 @@ hand-aligned table; a pipe and the padding after it, to the first line."
           (if (> hb lbp)
               (let ((s (buffer-substring lbp hb)))
                 ;; `string-pixel-width' inserts into a work buffer, where
-                ;; read-only text signals (md-table-align DESIGN.md v4.1).
+                ;; text carrying `read-only' (a chat transcript's, say)
+                ;; signals.  These properties govern modification, never
+                ;; width, so the copy can drop them.
                 (remove-list-of-text-properties
                  0 (length s) '(read-only modification-hooks insert-in-front-hooks
                                 insert-behind-hooks)
@@ -1012,22 +1012,29 @@ rebuilt; the rest are wrapped when next needed."
   "Built rows further than this from point and every window start are evicted.")
 
 (defun md-table-wrap--jit (beg end)
-  "Build the rows of laid-out tables intersecting BEG..END, for redisplay."
+  "Build the rows of laid-out tables intersecting BEG..END, for redisplay.
+A row already built is rebuilt: its text is being fontified again, so
+its copies hold stale faces -- a mode that adds faces, such as
+`md-table-inline-mode', arriving after the row was drawn.  Not while
+edits are pending, though: the row's model may not match its text, and
+the next command's update rebuilds the rows they touch."
   (with-demoted-errors "md-table-wrap: %S"
-    (dolist (tbl md-table-wrap--tables)
-      (let ((rows (md-table-wrap--table-rows tbl)))
-        (when (and (md-table-wrap--table-px tbl)
-                   (<= (md-table-wrap--beg (aref rows 0)) end)
-                   (>= (md-table-wrap--end (aref rows (1- (length rows)))) beg))
-          (cl-loop for r across rows
-                   when (and (not (md-table-wrap--built-p r))
-                             (<= (md-table-wrap--beg r) end)
-                             (>= (md-table-wrap--end r) beg))
-                   ;; Font-lock covered BEG..END in this pass already.
-                   do (when (or (< (md-table-wrap--beg r) beg)
-                                (> (md-table-wrap--end r) end))
-                        (md-table-wrap--fontify-row r))
-                   (md-table-wrap--build r))))))
+    (let ((settled (not (or md-table-wrap--dirty md-table-wrap--full))))
+      (dolist (tbl md-table-wrap--tables)
+        (let ((rows (md-table-wrap--table-rows tbl)))
+          (when (and (md-table-wrap--table-px tbl)
+                     (<= (md-table-wrap--beg (aref rows 0)) end)
+                     (>= (md-table-wrap--end (aref rows (1- (length rows)))) beg))
+            (cl-loop for r across rows
+                     when (and (or settled (not (md-table-wrap--built-p r)))
+                               (<= (md-table-wrap--beg r) end)
+                               (>= (md-table-wrap--end r) beg))
+                     ;; Font-lock covered BEG..END in this pass already.
+                     do (when (or (< (md-table-wrap--beg r) beg)
+                                  (> (md-table-wrap--end r) end))
+                          (md-table-wrap--fontify-row r))
+                     (md-table-wrap--build
+                      r (and (eq r md-table-wrap--prow) (md-table-wrap--row-pt r)))))))))
   nil)
 
 (defun md-table-wrap--index-near (pos)
@@ -1370,9 +1377,6 @@ reallocation."
     m)
   "Keymap of `md-table-wrap-mode': line motion through wrapped rows.")
 
-(defvar md-table-align-mode)
-(declare-function md-table-align-mode "md-table-align")
-
 ;;;###autoload
 (define-minor-mode md-table-wrap-mode
   "Draw Markdown tables with their cells wrapped to fit the window.
@@ -1381,18 +1385,14 @@ A table wider than the window has its cells word-wrapped inside their
 columns, with a rule between rows.  Buffer text is not modified, so this
 works in read-only buffers too.  C-n/C-p and C-a/C-e move by screen line
 through wrapped rows; C-f/C-b and the region follow the buffer's order,
-cell by cell.
-
-Switches `md-table-align-mode' off in the buffer while on."
+cell by cell."
   :lighter " TblWrap"
   :keymap md-table-wrap-mode-map
   (if md-table-wrap-mode
       (progn
         (setq md-table-wrap--saved
-              (list :md-table-align (bound-and-true-p md-table-align-mode)
-                    :hl-local (local-variable-p 'hl-line-range-function)
+              (list :hl-local (local-variable-p 'hl-line-range-function)
                     :hl (bound-and-true-p hl-line-range-function)))
-        (when (bound-and-true-p md-table-align-mode) (md-table-align-mode -1))
         (setq-local hl-line-range-function #'md-table-wrap--hl-line-range)
         (add-hook 'post-command-hook #'md-table-wrap--post-command nil t)
         (add-hook 'before-change-functions #'md-table-wrap--before-change nil t)
@@ -1417,9 +1417,6 @@ Switches `md-table-align-mode' off in the buffer while on."
     (if (plist-get md-table-wrap--saved :hl-local)
         (setq-local hl-line-range-function (plist-get md-table-wrap--saved :hl))
       (kill-local-variable 'hl-line-range-function))
-    (when (and (plist-get md-table-wrap--saved :md-table-align)
-               (fboundp 'md-table-align-mode))
-      (md-table-align-mode 1))
     (setq md-table-wrap--saved nil)))
 
 (defun md-table-wrap--maybe-enable ()
