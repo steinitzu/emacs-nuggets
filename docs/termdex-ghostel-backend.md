@@ -1,8 +1,8 @@
 # termdex: ghostel as a second terminal backend
 
-Status: **feasibility done, no design or implementation yet.** Started
-2026-10-27; the open probe was settled on 2026-10-28 (the activity signal and
-the kill hang, below). Next: the design section in termdex/DESIGN.md.
+Status: **implemented** on 2026-10-28. The design and its deviations are in
+termdex/DESIGN.md ("Backends: vterm and ghostel"), which supersedes the plan
+below. Kept for the measurements and the rejected options.
 
 ## The ask
 

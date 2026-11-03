@@ -566,8 +566,10 @@ is used rather than `markdown-mode`'s global `set-face-attribute`.
 
 ### termdex — reach the right terminal, out of many
 
-With a handful of `vterm` buffers open, `C-x b` stops helping: buffer names say
-nothing about where each terminal is or what it is doing.
+With a handful of terminal buffers open, `C-x b` stops helping: buffer names say
+nothing about where each terminal is or what it is doing. termdex works with
+[vterm](https://github.com/akermu/emacs-libvterm) and
+[ghostel](https://github.com/dakra/ghostel); install either or both.
 
 `termdex` treats a terminal as belonging to **wherever it is now**. `cd`
 somewhere else and it is a terminal of that directory — it is not tied to the
@@ -615,6 +617,22 @@ projectile into project.el and every termdex command follows:
 Terminals termdex creates are named after the title their shell reports, and
 follow it as it changes (`termdex-buffer-name-string`). Terminals started any
 other way are left alone.
+
+#### vterm or ghostel
+
+`termdex-backend` picks which kind of terminal termdex makes:
+
+```elisp
+(setq termdex-backend 'auto)     ; default: ghostel if installed, else vterm
+(setq termdex-backend 'vterm)    ; or pick one
+(setq termdex-backend 'ghostel)
+```
+
+It only affects what termdex *creates*. Every live vterm and ghostel counts as a
+terminal whatever it says, so you can switch backends mid-session without
+losing track of the terminals you already have open. ghostel's compilation,
+`ghostel-exec` and eshell-visual buffers run a program, not a shell, so they
+are not counted as terminals.
 
 #### A count in the mode line
 
@@ -678,7 +696,7 @@ stalest to the top.
 #### Excluding terminals someone else drives
 
 A coding agent's session terminal, a build console, a REPL in its own window —
-these are ordinary vterms in your project directory, so every rule above matches
+these are ordinary terminals in your project directory, so every rule above matches
 them, and `termdex-here` will happily walk you into one looking for a shell
 prompt.
 
@@ -708,13 +726,15 @@ one still starts from that terminal's directory.
 
 #### Requirements
 
-[`vterm`](https://github.com/akermu/emacs-libvterm), and Linux: a terminal's
+[`vterm`](https://github.com/akermu/emacs-libvterm) or
+[`ghostel`](https://github.com/dakra/ghostel), and Linux: a terminal's
 directory, busy state, and running command are read from `/proc`. That needs no
 cooperation from your shell — no rc snippet — and it keeps working inside a
 `sudo -i`, an `ssh`, or any other shell started within a terminal, where
-`default-directory` silently stops moving. Where you *do* have vterm's
-shell-side integration and a genuinely remote directory, that is used instead,
-since `/proc` can only see the local `ssh` client.
+`default-directory` silently stops moving. Where the terminal's own shell-side
+integration (vterm's `vterm_prompt_end`, ghostel's OSC 7) reports a genuinely
+remote directory, that is used instead, since `/proc` can only see the local
+`ssh` client.
 
 See [termdex/DESIGN.md](termdex/DESIGN.md) for how a terminal's current shell is
 identified, and for what it cannot see (a shell blocked in a builtin such as
@@ -723,7 +743,7 @@ identified, and for what it cannot see (a shell blocked in a builtin such as
 ## Development
 
 ```sh
-make deps      # build the tree-sitter grammars and install vterm for the tests
+make deps      # build the tree-sitter grammars, install vterm and ghostel for the tests
 make test      # run the test suite
 make bench     # run the md-table-align performance benchmark
 make compile   # byte-compile, warnings are errors
@@ -737,10 +757,12 @@ deterministic for a given fixture and frame size, so compare them against the
 last recorded run to catch performance regressions; wall times are
 machine-dependent.
 
-`make deps` also installs `vterm` into `.test-env/elpa`, since termdex's tests
-drive real terminals. It compiles a C module, so it needs cmake, a compiler and
-libvterm's headers; without them the build is skipped and the termdex tests skip
-themselves rather than failing the run.
+`make deps` also installs `vterm` and `ghostel` into `.test-env/elpa`, since
+termdex's tests drive real terminals, each one on both backends. vterm compiles
+a C module, so it needs cmake, a compiler and libvterm's headers. ghostel
+downloads a prebuilt module from its GitHub releases, so it needs network
+access. Whichever backend is missing, its termdex tests skip themselves rather
+than failing the run.
 
 ### Reloading in a live session
 
@@ -797,7 +819,7 @@ md-table-inline/        extension: inline markup inside Markdown table cells
 md-bare-url/            extension: make bare URLs in Markdown follow
 md-file-anchor/         extension: follow line/heading anchors on file links
 md-heading-scale/       extension: size Markdown headings by their level
-termdex/                extension: directory-aware handling for many vterms
+termdex/                extension: directory-aware handling for many terminals
 docs/                   cross-session working notes: questions and findings
 tests/                  test suite and TTY test runner
 ```

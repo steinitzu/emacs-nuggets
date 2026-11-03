@@ -2,13 +2,15 @@
 
 ;;; Commentary:
 
-;; Driven against real vterms running real shells: a terminal is started, text
-;; is typed into it, and the assertions are about what /proc then says.  There
-;; is nothing to usefully mock here -- the whole package is a claim about what
-;; a process tree looks like, and only a real one can refute it.
+;; Driven against real terminals running real shells: a terminal is started,
+;; text is typed into it, and the assertions are about what /proc then says.
+;; There is nothing to usefully mock here -- the whole package is a claim about
+;; what a process tree looks like, and only a real one can refute it.
 ;;
-;; The suite skips itself when vterm is not installed (`make deps' builds it),
-;; so the rest of the collection's tests still run.
+;; Every terminal test runs once per backend, vterm and ghostel, as NAME--vterm
+;; and NAME--ghostel.  Each skips itself when its backend is not installed
+;; (`make deps' installs both), so the rest of the collection's tests still
+;; run.
 ;;
 ;; Nothing waits a fixed number of seconds.  A shell takes as long as it takes
 ;; to reach its prompt, and a fixed wait is a test that fails on a loaded
@@ -19,8 +21,19 @@
 (require 'ert)
 (require 'termdex)
 
-(defconst termdex-tests--available (require 'vterm nil t)
-  "Whether vterm could be loaded at all.")
+(defconst termdex-tests--backends
+  (seq-filter (lambda (backend)
+                (pcase backend
+                  ('vterm (require 'vterm nil t))
+                  ;; ghostel loads without its native module and fetches it
+                  ;; on first use, after a prompt; a batch run cannot answer.
+                  ('ghostel (and (require 'ghostel nil t)
+                                 (locate-library "ghostel-module")))))
+              '(vterm ghostel))
+  "The backends that could be loaded, so their tests can run.")
+
+(defvar termdex-tests--backend nil
+  "The backend the running test drives.")
 
 (defconst termdex-tests--timeout 15
   "Seconds to wait for a shell to do something before giving up.")
@@ -45,8 +58,8 @@ that asked for it rather than silently continuing."
     (termdex-tests--wait
      (lambda () (equal (termdex-terminal-directory (termdex--probe buffer)) want)))))
 
-(defun termdex-tests--settle (buffer)
-  "Give BUFFER's shell a chance to act on anything sent to it.
+(defun termdex-tests--settle (_buffer)
+  "Give a terminal's shell a chance to act on anything sent to it.
 
 For asserting that something did *not* happen.  Waiting out the full
 timeout to prove a negative would make the suite mostly sleep, so this
@@ -55,7 +68,7 @@ comfortably sufficient when the thing is supposed to happen, which the
 positive tests demonstrate it is."
   (let ((deadline (time-add nil 2)))
     (while (time-less-p nil deadline)
-      (accept-process-output (buffer-local-value 'vterm--process buffer) 0.05))))
+      (accept-process-output nil 0.05))))
 
 (defun termdex-tests--busy (buffer &optional command)
   "Wait until BUFFER's terminal is busy, and return what it is running.
@@ -94,13 +107,14 @@ what it saw."
 
 (defun termdex-tests--type (buffer string)
   "Type STRING into BUFFER's terminal."
-  (with-current-buffer buffer (vterm-send-string string)))
+  (termdex--send-string buffer string))
 
-(defun termdex-tests--terminal (directory)
-  "Start a terminal in DIRECTORY and wait for its shell to settle there."
+(defun termdex-tests--terminal (directory &optional backend)
+  "Start a terminal in DIRECTORY and wait for its shell to settle there.
+Of the test's backend, or BACKEND."
   (let* ((default-directory (file-name-as-directory directory))
-         (buffer (save-window-excursion
-                   (vterm (generate-new-buffer-name "*termdex-test*")))))
+         (buffer (termdex--start (or backend termdex-tests--backend)
+                                 (generate-new-buffer-name "*termdex-test*"))))
     (should (termdex-tests--directory-is buffer directory))
     (should (termdex-tests--idle buffer))
     buffer))
@@ -120,7 +134,7 @@ count and half of these tests would be testing nothing."
 (defmacro termdex-tests--with-terminals (&rest body)
   "Run BODY, then kill every buffer it created and stop any dashboard timer.
 A live process makes `kill-buffer' ask for confirmation, which would
-hang a batch run, so the query functions are suppressed."
+hang a batch run, so the kill goes through `termdex--kill'."
   (declare (indent 0) (debug t))
   `(let ((before (buffer-list)))
      (unwind-protect (progn ,@body)
@@ -128,15 +142,24 @@ hang a batch run, so the query functions are suppressed."
        (dolist (buffer (buffer-list))
          (unless (memq buffer before)
            (when (buffer-live-p buffer)
-             (let ((kill-buffer-query-functions nil))
-               (kill-buffer buffer))))))))
+             (termdex--kill buffer)))))))
 
-(defmacro termdex-tests--deftest (name &rest body)
-  "Define test NAME, skipped when vterm is unavailable."
-  (declare (indent 1) (debug (symbolp body)))
-  `(ert-deftest ,name ()
-     (skip-unless termdex-tests--available)
-     (termdex-tests--with-terminals ,@body)))
+(defmacro termdex-tests--deftest (name _arglist &rest body)
+  "Define NAME--vterm and NAME--ghostel, each running BODY on that backend.
+Each skips when its backend cannot be loaded.  BODY may start with a
+docstring, which both tests carry."
+  (declare (indent 2) (doc-string 3) (debug (symbolp sexp body)))
+  (let ((doc (when (stringp (car body)) (list (pop body)))))
+    `(progn
+       ,@(mapcar
+          (lambda (backend)
+            `(ert-deftest ,(intern (format "%s--%s" name backend)) ()
+               ,@doc
+               (skip-unless (memq ',backend termdex-tests--backends))
+               (let ((termdex-tests--backend ',backend)
+                     (termdex-backend ',backend))
+                 (termdex-tests--with-terminals ,@body))))
+          '(vterm ghostel)))))
 
 (defmacro termdex-tests--with-cleanup (seconds &rest body)
   "Run BODY with the cleanup threshold at SECONDS and the timer off.
@@ -162,6 +185,10 @@ long enough."
     (while (time-less-p nil deadline)
       (accept-process-output nil 0.05))))
 
+(defun termdex-tests--mark (buffer)
+  "Return BUFFER's activity mark, as the sweep reads it."
+  (termdex--activity-mark (termdex--probe buffer)))
+
 (defun termdex-tests--quiet (buffer)
   "Wait until BUFFER's terminal has written nothing for half a second.
 
@@ -170,22 +197,22 @@ nothing is running, while it is still printing.  The sweep reads output
 as activity and restarts the clock, so a test that sweeps before the
 terminal has gone quiet is timing the shell's startup rather than its
 own pause -- and every terminal survives, protected or not."
-  (let ((tick nil) (since nil))
+  (let ((mark nil) (since nil))
     (termdex-tests--wait
      (lambda ()
-       (let ((now (buffer-chars-modified-tick buffer)))
-         (unless (eql tick now)
-           (setq tick now since (current-time)))
+       (let ((now (termdex-tests--mark buffer)))
+         (unless (equal mark now)
+           (setq mark now since (current-time)))
          (time-less-p (time-add since 0.5) nil))))))
 
 (defun termdex-tests--spoke (buffer string)
   "Type STRING into BUFFER and wait until the terminal writes something.
 Returns non-nil if output arrived, which is what the sweep reads as
 activity."
-  (let ((before (buffer-chars-modified-tick buffer)))
+  (let ((before (termdex-tests--mark buffer)))
     (termdex-tests--type buffer string)
     (termdex-tests--wait
-     (lambda () (/= before (buffer-chars-modified-tick buffer))))))
+     (lambda () (not (equal before (termdex-tests--mark buffer)))))))
 
 
 ;;;; Probing: where a terminal is, and whether it is busy
@@ -234,8 +261,7 @@ the reason the package reads /proc rather than believing the buffer."
       ;; absence, or this passes for the wrong reason.
       (should (termdex-tests--wait
                (lambda () (termdex--children
-                           (termdex--current-shell
-                            (process-id (buffer-local-value 'vterm--process buffer)))))))
+                           (termdex--current-shell (termdex--leader-pid buffer))))))
       (should (termdex-tests--idle buffer)))))
 
 
@@ -279,7 +305,6 @@ nothing."
 
 (ert-deftest termdex-interactive-shell-p-reads-command-lines ()
   "Options mean an interactive shell; an argument or -c means a script."
-  (skip-unless termdex-tests--available)
   (cl-letf* ((cmdlines '((1 . ("bash"))
                          (2 . ("bash" "--norc"))
                          (3 . ("-bash"))
@@ -512,7 +537,7 @@ subdirectory it had wandered off to."
            (termdex-exclude-functions
             (list (lambda (buffer) (eq buffer excluded)))))
       (should-not (termdex--match (termdex--canonical root)))
-      (should (termdex--vterm-buffer-p excluded))
+      (should (termdex--terminal-buffer-p excluded))
       (should-not (termdex--candidate-p excluded)))))
 
 (termdex-tests--deftest termdex-excluded-terminal-still-knows-where-it-is ()
@@ -602,7 +627,7 @@ you asked for a terminal, so you get one, in the directory you are in."
       (with-temp-buffer
         (setq default-directory root)
         (setq created (save-window-excursion (termdex-last))))
-      (should (termdex--vterm-buffer-p created))
+      (should (termdex--terminal-buffer-p created))
       (should (termdex-tests--directory-is created root)))))
 
 (defvar termdex-tests--offered nil
@@ -753,6 +778,27 @@ Needs no terminal: this is about two entries and a predicate."
         (termdex-list-kill))
       (should-not (buffer-live-p buffer)))))
 
+(termdex-tests--deftest termdex-list-kills-a-nested-shell-without-asking ()
+  "`k' on a terminal at a nested shell's prompt does not ask either.
+Idle to termdex, so termdex does not confirm -- and ghostel's own query,
+which thinks otherwise, must not get to."
+  (termdex-tests--with-project root
+    (let ((buffer (termdex-tests--terminal root)))
+      (termdex-tests--type buffer "bash --norc\n")
+      (should (termdex-tests--wait
+               (lambda () (not (eql (termdex-terminal-shell (termdex--probe buffer))
+                                    (termdex--leader-pid buffer))))))
+      (should (termdex-tests--idle buffer))
+      (save-window-excursion (termdex-list))
+      (with-current-buffer termdex-list-buffer-name
+        (goto-char (point-min))
+        (while (and (not (eq (tabulated-list-get-id) buffer)) (not (eobp)))
+          (forward-line 1))
+        (should (eq (tabulated-list-get-id) buffer))
+        (termdex-tests--never-asking
+          (termdex-list-kill)))
+      (should-not (buffer-live-p buffer)))))
+
 
 ;;;; Naming
 
@@ -766,8 +812,7 @@ every prompt and the name tracks a `cd' by itself."
       (with-temp-buffer
         (setq default-directory root)
         (setq buffer (save-window-excursion (termdex-new))))
-      (with-current-buffer buffer
-        (vterm-send-string "PS1='$ '; printf '\\033]0;chosen-title\\007'\n"))
+      (termdex-tests--type buffer "PS1='$ '; printf '\\033]0;chosen-title\\007'\n")
       (should (termdex-tests--wait
                (lambda () (equal (buffer-name buffer) "*term chosen-title*")))))))
 
@@ -828,8 +873,7 @@ terminal: this is about `global-mode-string' surgery."
       (termdex-tests--terminal root)
       (let ((second (termdex-tests--terminal root)))
         (should (equal (termdex-tests--indicator) (termdex-tests--expected 2)))
-        (let ((kill-buffer-query-functions nil))
-          (kill-buffer second)))
+        (termdex--kill second))
       (should (equal (termdex-tests--indicator) (termdex-tests--expected 1))))))
 
 (termdex-tests--deftest termdex-indicator-does-not-count-excluded-terminals ()
@@ -967,6 +1011,38 @@ you sat reading the screen."
         (termdex-cleanup-now)
         (should-not (buffer-live-p buffer))))))
 
+(defmacro termdex-tests--never-asking (&rest body)
+  "Run BODY with any yes-or-no question signalling instead of waiting.
+A question nobody answers would hang the run; this turns it into an
+error, which the sweep demotes and so leaves the terminal alive."
+  (declare (indent 0) (debug t))
+  `(cl-letf (((symbol-function 'yes-or-no-p)
+              (lambda (prompt) (error "Asked: %s" prompt)))
+             ((symbol-function 'y-or-n-p)
+              (lambda (prompt) (error "Asked: %s" prompt))))
+     ,@body))
+
+(termdex-tests--deftest termdex-cleanup-closes-a-nested-shell-without-asking ()
+  "A terminal at a nested shell's prompt is closed without a question.
+termdex calls it idle; ghostel's shell integration calls the nested
+shell a running command and asks, from a buffer-local query, before
+killing.  A kill that does not bind the query in the terminal's own
+buffer asks it -- from a timer, in real use."
+  (termdex-tests--with-project root
+    (let ((buffer (termdex-tests--terminal root)))
+      (termdex-tests--type buffer "bash --norc\n")
+      (should (termdex-tests--wait
+               (lambda () (not (eql (termdex-terminal-shell (termdex--probe buffer))
+                                    (termdex--leader-pid buffer))))))
+      (should (termdex-tests--idle buffer))
+      (should (termdex-tests--quiet buffer))
+      (termdex-tests--with-cleanup 1
+        (termdex-tests--never-asking
+          (termdex-cleanup-now)
+          (termdex-tests--pause 1.2)
+          (termdex-cleanup-now)))
+      (should-not (buffer-live-p buffer)))))
+
 (ert-deftest termdex-cleanup-mode-owns-exactly-one-timer ()
   "The mode installs one idle timer, never two, and removes it again.
 Needs no terminal: this is about the timer list."
@@ -989,5 +1065,52 @@ Needs no terminal: this is about the timer list."
                              #'termdex--cleanup-maybe-sweep))
                        timer-idle-list)))
       (termdex-cleanup-mode (if was 1 -1)))))
+
+
+;;;; Backends
+
+(ert-deftest termdex-backend-auto-prefers-ghostel ()
+  "`auto' is ghostel when installed, vterm otherwise, and an error with neither.
+The one place that stubs: what is installed is the input, and \"neither\"
+cannot be arranged for real in a test environment that has both."
+  (let ((termdex-backend 'auto))
+    (cl-flet ((with-installed (libraries)
+                (cl-letf (((symbol-function 'locate-library)
+                           (lambda (library &rest _)
+                             (and (member library libraries) library))))
+                  (condition-case nil (termdex--backend)
+                    (user-error 'error)))))
+      (should (eq (with-installed '("ghostel" "vterm")) 'ghostel))
+      (should (eq (with-installed '("ghostel")) 'ghostel))
+      (should (eq (with-installed '("vterm")) 'vterm))
+      (should (eq (with-installed '()) 'error))))
+  (let ((termdex-backend 'vterm))
+    (should (eq (termdex--backend) 'vterm))))
+
+(ert-deftest termdex-indexes-both-kinds-whatever-the-backend ()
+  "A vterm and a ghostel are both terminals, under either setting.
+The option says what termdex makes; switching it must not orphan the
+terminals already open."
+  (skip-unless (and (memq 'vterm termdex-tests--backends)
+                    (memq 'ghostel termdex-tests--backends)))
+  (termdex-tests--with-terminals
+    (termdex-tests--with-project root
+      (let ((vterm (termdex-tests--terminal root 'vterm))
+            (ghostel (termdex-tests--terminal root 'ghostel)))
+        (dolist (termdex-backend '(vterm ghostel auto))
+          (let ((buffers (mapcar #'termdex-terminal-buffer (termdex-terminals))))
+            (should (memq vterm buffers))
+            (should (memq ghostel buffers))))))))
+
+(ert-deftest termdex-a-ghostel-running-a-program-is-not-a-terminal ()
+  "`ghostel-exec' shares the mode, but runs a program, not a shell.
+Indexed, a quiet one would read as an idle prompt and be closed."
+  (skip-unless (memq 'ghostel termdex-tests--backends))
+  (termdex-tests--with-terminals
+    (let ((buffer (generate-new-buffer "*termdex-test-exec*")))
+      (ghostel-exec buffer "sleep" '("60"))
+      (should (termdex-tests--wait
+               (lambda () (process-live-p (buffer-local-value 'ghostel--process buffer)))))
+      (should-not (termdex--terminal-buffer-p buffer)))))
 
 ;;; termdex-tests.el ends here

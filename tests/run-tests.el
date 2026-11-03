@@ -34,8 +34,8 @@
 (setq treesit-extra-load-path
       (list (expand-file-name ".test-env/tree-sitter" md-table-align-tests--root)))
 
-;; Third-party packages the suite drives for real -- currently just `vterm',
-;; which termdex needs.  Kept in the test environment rather than taken from
+;; Third-party packages the suite drives for real -- `vterm' and `ghostel',
+;; termdex's two backends.  Kept in the test environment rather than taken from
 ;; the user's own package directory, so a run neither depends on nor disturbs
 ;; what they have installed.  Tests that need one skip when it is absent.
 (require 'package)

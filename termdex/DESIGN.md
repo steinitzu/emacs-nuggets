@@ -1,7 +1,7 @@
 # termdex — planning and design
 
-Multi-terminal handling for `vterm`: an overview of every live terminal, and
-directory-aware commands for reaching or spawning one.
+Multi-terminal handling for `vterm` and `ghostel`: an overview of every live
+terminal, and directory-aware commands for reaching or spawning one.
 
 Supersedes `docs/vterm-plan.md`, which is the original statement of intent.
 
@@ -532,7 +532,9 @@ So a terminal is active when any of three things is true:
   silent job has not been idle for forty minutes; it has been idle since the job
   ended.
 
-The record is one buffer-local cons of `(TICK . TIME)` on the terminal itself.
+The record is one buffer-local cons of `(MARK . TIME)` on the terminal itself.
+MARK was originally just the tick. With ghostel it became `(TICK . WCHAR)`, for
+a reason given under "Backends".
 
 ### What is never closed
 
@@ -614,12 +616,189 @@ annotation are where that information belongs.
 
 ## Scope
 
-Only `vterm`. But the collector's notion of a terminal is "a buffer with a live
-process on a pty", so `eat`, `ansi-term`, and `shell` can be added later by
-teaching the probe to find their process — no change to matching, switching, or
-the dashboard.
+`vterm` and `ghostel` (see the next section). The collector's notion of a
+terminal is "a buffer with a live process on a pty", so `eat`, `ansi-term`, and
+`shell` can be added later by teaching the probe to find their process. That
+needs no change to matching, switching, or the dashboard, and the ghostel work
+below confirmed it.
+
+## Backends: vterm and ghostel
+
+Added after long use. The ask: termdex should work with
+[ghostel](https://github.com/dakra/ghostel) (a terminal built on libghostty-vt)
+as well as vterm, with a configurable backend. If only one is installed, use
+it. If both are, default to ghostel.
+
+Feasibility was established first, against a real ghostel (v0.59.0) in a TTY
+frame. `docs/termdex-ghostel-backend.md` has the measurements. The short
+version: everything termdex knows about a terminal comes from `/proc`, asked of
+a leader pid, and that works on a ghostel unchanged. cwd follows `cd`, busy
+state and the command name are right, and experiment 5's nested shell holds.
+Two things did not carry over: the activity signal and the kill query. Both are
+covered below.
+
+### The option chooses what is created, not what is indexed
+
+```elisp
+(defcustom termdex-backend 'auto ...)  ; auto | ghostel | vterm
+```
+
+`auto` resolves to ghostel when `(locate-library "ghostel")` finds it,
+otherwise vterm, and signals a `user-error` naming both packages when neither
+is installed. It is resolved each time a terminal is created rather than at
+load, so installing one later needs no restart. The values are symbols with no
+units, so the reload trap in CLAUDE.md does not apply.
+
+The option decides only which kind of terminal termdex **makes**. Every live
+vterm and every ghostel shell is a terminal whatever it says. Switching
+backends in the middle of a session then leaves nothing behind: the old
+terminals stay in the switcher, the dashboard, the cleanup sweep and the
+indicator. This was the owner's call when asked.
+
+### What differs, and where
+
+The differences fit in a handful of small functions. Matching, switching, the
+dashboard and the probe's `/proc` walk do not know there are two backends.
+
+| termdex needs | vterm | ghostel |
+|---|---|---|
+| is it a terminal (`termdex--terminal-buffer-p`) | `vterm-mode`, live `vterm--process` | `ghostel-mode`, live `ghostel--process`, `ghostel--pid` set, identity kind `term` |
+| leader pid (`termdex--leader-pid`) | `(process-id vterm--process)` | `ghostel--pid` |
+| type at it (`termdex--send-string`) | `vterm-send-string` | `ghostel-send-string` |
+| start one (`termdex--start`) | `(vterm NAME)` | `(ghostel t)`, `ghostel-buffer-name` let-bound to NAME |
+| name follows title | `vterm-buffer-name-string`, a format | `ghostel-buffer-name-function`, a function of the title, set buffer-locally |
+| remote `default-directory` | OSC 51 via `vterm_prompt_end` | OSC 7, which ghostel's own shell integration emits |
+
+Two entries in that table need explaining:
+
+- **The leader pid is `ghostel--pid`, not the process's pid.** ghostel owns the
+  PTY itself by default (`ghostel-use-native-pty`). `ghostel--process` is then
+  a *pipe* to the native module, and `process-id` on it is nil. ghostel sets
+  `ghostel--pid` in both PTY modes. It is an internal variable, and termdex
+  already reads vterm's internal `vterm--process`, so it is the same kind of
+  dependency.
+- **Only `(kind . term)` ghostels are terminals.** ghostel also uses
+  `ghostel-mode` for `ghostel-compile`, `ghostel-exec`, eshell's visual
+  commands and `ghostel-shell-command`. Those run a program, not a shell you
+  type at. A running compilation's leader is `make` or `bash -c`, which the
+  walk reads as idle at a prompt. Cleanup would then close a build that had
+  gone quiet. `ghostel-identity` records each buffer's kind, and reading it is
+  a buffer-local lookup, cheap enough for the indicator's redisplay rule.
+  vterm has nothing like these buffers, so it needs no such check.
+
+Naming: for a ghostel termdex creates, `ghostel-buffer-name-function` is set
+buffer-locally to format the title with `termdex-buffer-name-string`, and to
+return nil when there is no title. Nil from that function means "leave the
+name alone", which matches what vterm does with an empty title.
+`termdex-buffer-name-string` keeps its meaning. Only its docstring stops saying
+"vterm".
+
+### Activity: the shell's own writes, beside the tick
+
+The cleanup sweep read `buffer-chars-modified-tick` as "the terminal produced
+output". That holds for vterm. It does **not** hold for a buried ghostel. When
+a buffer has no window, ghostel defers rendering (`ghostel--pending-redraw`),
+so nothing is written to the buffer until it is shown. Measured: `echo hi` in
+a buried ghostel left the tick unmoved.
+
+The replacement signal is the **current shell's `wchar`** from
+`/proc/PID/io`, which counts the bytes the process has written. The sweep only
+asks about terminals that are not busy and whose shell has no children (see
+"What is never closed"). For those, the only thing that can write to the
+terminal is the shell itself. Every command ends with a new prompt, readline
+echoes typed characters itself, and builtins such as `echo` are the shell
+writing. Measured on a ghostel (`hacks/ghostel-io-probe.el`):
+
+| case | `wchar` |
+|---|---|
+| untouched prompt, buried, 6s | **still** |
+| untouched prompt, displayed, 6s | **still** |
+| `echo hi`, buried | moved |
+| `ls`, buried | moved |
+| typing, no `RET`, buried | moved (readline echo) |
+| displaying the buffer | still |
+| nested `bash`, idle / `echo` | still / moved (the inner shell's counter) |
+
+The activity mark becomes `(TICK . WCHAR)`, compared with `equal`. It is used
+for **every** backend, not only ghostel. One rule is simpler than a per-backend
+switch, and on vterm the extra half can only move when the shell really
+writes, so at worst it makes a terminal look more alive. That is the safe
+direction. A change of current shell (a nested bash starts or exits) also
+changes the value, and that counts as activity, which it is. A remote terminal
+has no local shell, so its `wchar` is nil, and it is protected from closing
+anyway.
+
+Two alternatives were rejected:
+
+- **`ghostel--pending-redraw` turning on as an edge.** It needs no state, but
+  it stays on until the buffer is displayed, so a second burst of output is
+  invisible. Used as a protection ("output you have not seen") it would stop
+  cleanup from ever closing a terminal you ran something in and walked away
+  from, which is the case the feature exists for.
+- **Wrapping ghostel's process filter** to count output. That is exact, but it
+  is advice, which "Zero persistent state" rules out. And after an
+  `unload-feature` the wrapper would reference unbound symbols and signal on
+  every write.
+
+### Killing: the query is buffer-local
+
+ghostel adds `ghostel--kill-buffer-query` to `kill-buffer-query-functions`
+**buffer-locally**. termdex killed terminals with
+`(let ((kill-buffer-query-functions nil)) (kill-buffer buffer))`, run from
+whatever buffer was current. That binds only the global value, so ghostel's
+local query still ran. With `ghostel-query-before-killing` at its default
+`auto` and ghostel's shell integration reporting a command running, it called
+`yes-or-no-p`. From the cleanup timer that is a prompt nobody asked for. In a
+test run it is a hang (this is what hung the io probe). The two sides
+disagree in ordinary cases: a nested `bash` is "a running command" to ghostel
+and an idle prompt to termdex.
+
+`termdex--kill` binds the variable **with the terminal current**, so the `let`
+binds the buffer-local value. Both kill paths (the dashboard's `k` and the
+sweep) and the tests' teardown go through it.
+
+### Validated against the implementation
+
+Built as designed, with two small additions:
+
+- **Creation split in two.** `termdex--start BACKEND NAME` starts a terminal
+  without displaying it, and `termdex--create` adds naming and display on top.
+  The tests start terminals of a *named* backend (two kinds side by side in
+  one test), which `termdex--create`'s "whatever the option says" could not
+  do. Naming is `termdex--follow-title`.
+- **The activity mark takes the probed terminal, not the buffer.** The shell
+  pid it needs is already on the `termdex-terminal` record, so
+  `termdex--cleanup-touch` and `termdex--cleanup-quiet-since` now take the
+  record. This avoids walking the process tree a second time, the same reason
+  the record gained its `shell` slot.
+
+The kill regression tests were checked against the old idiom: with the pre-fix
+kill put back, both ghostel variants fail on ghostel's own "has a running
+process; kill it?" and both vterm variants pass. The full suite is 44 terminal
+tests, each run on both backends, plus the backend-independent ones. All pass.
 
 ## Testing
+
+**Every real-terminal test runs once per backend.** `termdex-tests--deftest`
+defines `NAME--vterm` and `NAME--ghostel`, each binding `termdex-backend` and
+skipping when that backend cannot load. That makes the suite one claim checked
+twice rather than two suites that drift apart. The helpers that touched vterm
+directly (typing, starting a terminal, the leader pid, teardown) go through
+termdex's own backend functions. `make deps` installs ghostel and its prebuilt
+module (`tests/install-ghostel.el`), and a failure warns rather than stops the
+run, as for vterm. Added with ghostel:
+
+- **Backend resolution**: `auto` with one, both, or neither installed. This
+  is the one place that stubs: `locate-library` is the input, and "neither
+  installed" cannot be arranged for real.
+- **Both kinds are indexed whatever the backend**: a vterm and a ghostel, side
+  by side, under each setting.
+- **Killing a terminal with a nested shell never prompts**, from both the
+  sweep and the dashboard. This is the hang above, kept as a regression test.
+- **A ghostel that is not a shell is not a terminal**: a `ghostel-exec`
+  buffer is not indexed.
+
+The original vterm-only notes follow.
 
 Real vterm, per the repo's integration-first rule. `vterm` is now installed into
 `.test-env/elpa` from MELPA, with `vterm-module.so` compiled against the system

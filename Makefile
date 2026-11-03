@@ -35,11 +35,12 @@ bench: deps
 ## use.  Batch mode cannot answer that prompt, so the tests need them built up
 ## front.  The recipes come from `markdown-ts-mode' rather than being repeated
 ## here, so the test environment tracks the commit Emacs pins.
-## Also install vterm, which termdex's tests drive for real.  It builds a C
-## module, so it is a `make deps' job rather than something a test can do.  If
-## the build is impossible here, the termdex tests skip rather than fail, so
-## this recipe must not stop the run.
-deps: $(GRAMMARS)/libtree-sitter-markdown.so $(ELPA)/.vterm-stamp
+## Also install vterm and ghostel, which termdex's tests drive for real.  Each
+## needs a native module -- vterm builds one, ghostel downloads a prebuilt one
+## -- so it is a `make deps' job rather than something a test can do.  If
+## either is impossible here, that backend's termdex tests skip rather than
+## fail, so these recipes must not stop the run.
+deps: $(GRAMMARS)/libtree-sitter-markdown.so $(ELPA)/.vterm-stamp $(ELPA)/.ghostel-stamp
 
 $(GRAMMARS)/libtree-sitter-markdown.so:
 	@EMACS_TOOLS_GRAMMAR_DIR=$(GRAMMARS) $(EMACS) --batch -l tests/install-grammars.el
@@ -48,6 +49,11 @@ $(ELPA)/.vterm-stamp:
 	@EMACS_TOOLS_ELPA_DIR=$(ELPA) $(EMACS) --batch -l tests/install-vterm.el \
 	  && mkdir -p $(ELPA) && touch $@ \
 	  || echo "WARNING: vterm unavailable -- termdex tests will skip" >&2
+
+$(ELPA)/.ghostel-stamp:
+	@EMACS_TOOLS_ELPA_DIR=$(ELPA) $(EMACS) --batch -l tests/install-ghostel.el \
+	  && mkdir -p $(ELPA) && touch $@ \
+	  || echo "WARNING: ghostel unavailable -- its termdex tests will skip" >&2
 
 ## Byte-compile everything, treating warnings as failures.
 ##

@@ -1,4 +1,4 @@
-;;; termdex.el --- Directory-aware handling for many vterms -*- lexical-binding: t; -*-
+;;; termdex.el --- Directory-aware handling for many terminals -*- lexical-binding: t; -*-
 
 ;; Author: Steinthor Palsson
 ;; Version: 0.1.0
@@ -28,15 +28,19 @@
 ;;
 ;; Three facts about a terminal make all of that work: where it is, whether it
 ;; is busy, and what it is running.  All three come from /proc, asked of the
-;; terminal's *current shell* rather than of the process vterm started -- a
-;; `sudo -i' or a plain `bash' inside a terminal is a different process, whose
-;; directory the outer shell does not follow.  See DESIGN.md; the rules there
-;; were validated against real terminals before any of this was written.
+;; terminal's *current shell* rather than of the process the terminal started
+;; -- a `sudo -i' or a plain `bash' inside a terminal is a different process,
+;; whose directory the outer shell does not follow.  See DESIGN.md; the rules
+;; there were validated against real terminals before any of this was written.
 ;;
-;; vterm's own shell-side integration (`vterm_prompt_end' in a shell rc) is
-;; used where it is strictly better -- a shell across an ssh, whose directory
-;; is not a local path at all -- and ignored otherwise, since it says nothing
-;; about busy state and is not loaded inside a nested shell.
+;; Terminals are vterms and ghostels.  `termdex-backend' picks which kind
+;; termdex makes; both kinds are indexed whatever it says.
+;;
+;; A terminal's own shell-side integration (vterm's `vterm_prompt_end',
+;; ghostel's OSC 7) is used where it is strictly better -- a shell across an
+;; ssh, whose directory is not a local path at all -- and ignored otherwise,
+;; since it says nothing about busy state and is not loaded inside a nested
+;; shell.
 ;;
 ;; Usage:
 ;;
@@ -55,10 +59,29 @@
 (defvar vterm--process)
 (defvar vterm-buffer-name-string)
 
+(declare-function ghostel "ghostel" (&optional arg))
+(declare-function ghostel-send-string "ghostel" (string))
+(defvar ghostel--process)
+(defvar ghostel--pid)
+(defvar ghostel-identity)
+(defvar ghostel-buffer-name)
+(defvar ghostel-buffer-name-function)
+
 (defgroup termdex nil
-  "Directory-aware handling for many vterms."
+  "Directory-aware handling for many terminals."
   :group 'terminals
   :prefix "termdex-")
+
+(defcustom termdex-backend 'auto
+  "Which kind of terminal termdex creates.
+
+`auto' makes ghostels when ghostel is installed and vterms otherwise.
+Only creation is affected: every live vterm and ghostel is a terminal
+to termdex whatever this says, so changing it mid-session leaves no
+terminal behind."
+  :type '(choice (const :tag "ghostel if installed, else vterm" auto)
+                 (const :tag "ghostel" ghostel)
+                 (const :tag "vterm" vterm)))
 
 (defcustom termdex-cd-on-ancestor-match t
   "Whether to follow you down when reusing a terminal from a parent directory.
@@ -85,12 +108,13 @@ mistaken for one."
 (defcustom termdex-buffer-name-string "*term %s*"
   "Format for naming terminals that termdex creates, or nil.
 
-Set buffer-locally as `vterm-buffer-name-string', so a terminal is named
-after the title its shell reports and follows it as it changes.  Nil
-leaves vterm's naming alone.
+Set buffer-locally on the terminal -- as `vterm-buffer-name-string', or
+through `ghostel-buffer-name-function' -- so a terminal is named after
+the title its shell reports and follows it as it changes.  Nil leaves
+the terminal's own naming alone.
 
 Terminals started any other way are never renamed."
-  :type '(choice (const :tag "Leave vterm's naming alone" nil)
+  :type '(choice (const :tag "Leave the terminal's naming alone" nil)
                  (string :tag "Format string")))
 
 (defvar-local termdex-exclude nil
@@ -208,10 +232,16 @@ resolving to something else."
               ((not (string-suffix-p " (deleted)" target))))
     (file-name-as-directory target)))
 
+(defun termdex--wchar (pid)
+  "Return how many bytes PID has written, from /proc/PID/io, or nil."
+  (when-let* ((io (termdex--proc-contents pid "io"))
+              ((string-match "^wchar: \\([0-9]+\\)" io)))
+    (string-to-number (match-string 1 io))))
+
 
 ;;;; Which process to ask
 ;;
-;; The pid vterm started is the pty leader, and it is not necessarily the shell
+;; The pid a terminal started is the pty leader, and it is not necessarily the shell
 ;; you are typing at.  Run `sudo -i', `ssh', or plain `bash' and the leader's
 ;; cwd freezes where it stood while its `tpgid' reads permanently busy -- both
 ;; facts wrong, and "permanently busy" would make `termdex-here-idle' spawn a
@@ -304,28 +334,110 @@ cached."
   (remote nil :documentation "Non-nil when the terminal's shell is not local.")
   (shell nil :documentation "Pid of the shell you are typing at, or nil when remote."))
 
-(defun termdex--vterm-buffer-p (buffer)
-  "Non-nil when BUFFER is a vterm with a live process."
+;;;; Backends
+;;
+;; Everything that differs between vterm and ghostel is in this section.  The
+;; rest of termdex asks these functions and never looks at a major mode.
+
+(defun termdex--terminal-buffer-p (buffer)
+  "Non-nil when BUFFER is a terminal: a vterm or a ghostel shell, live.
+
+Runs at every mode-line redisplay, through the indicator, so it may
+look at buffer-local variables but never at /proc.
+
+A ghostel must also be a *shell*.  ghostel uses its mode for
+compilations, `ghostel-exec' and eshell's visual commands too, and one
+of those is a program rather than a prompt: a quiet build would read as
+an idle terminal, and cleanup would close it."
   (with-current-buffer buffer
-    (and (derived-mode-p 'vterm-mode)
-         (boundp 'vterm--process)
-         (process-live-p vterm--process))))
+    (cond
+     ((derived-mode-p 'vterm-mode)
+      (and (boundp 'vterm--process)
+           (process-live-p vterm--process)))
+     ((derived-mode-p 'ghostel-mode)
+      (and (boundp 'ghostel--process)
+           (process-live-p ghostel--process)
+           (integerp ghostel--pid)
+           (eq (alist-get 'kind ghostel-identity) 'term))))))
+
+(defun termdex--leader-pid (buffer)
+  "Return the pid of the process BUFFER's terminal started.
+
+Not `process-id' of the buffer's process for a ghostel: with its native
+PTY, `ghostel--process' is a pipe to the module, whose pid is nil.
+ghostel records the child's pid separately, in either PTY mode."
+  (with-current-buffer buffer
+    (if (derived-mode-p 'ghostel-mode)
+        ghostel--pid
+      (process-id vterm--process))))
+
+(defun termdex--send-string (buffer string)
+  "Type STRING into BUFFER's terminal."
+  (with-current-buffer buffer
+    (if (derived-mode-p 'ghostel-mode)
+        (ghostel-send-string string)
+      (vterm-send-string string))))
+
+(defun termdex--backend ()
+  "Return the backend new terminals are made with, `vterm' or `ghostel'.
+Resolved at every creation rather than at load, so installing a
+terminal package takes effect without reloading termdex."
+  (pcase termdex-backend
+    ('auto (cond ((locate-library "ghostel") 'ghostel)
+                 ((locate-library "vterm") 'vterm)
+                 (t (user-error "termdex needs a terminal: install ghostel or vterm"))))
+    (backend backend)))
+
+(defun termdex--start (backend name)
+  "Start a BACKEND terminal named NAME in `default-directory'.
+Returns its buffer without displaying it."
+  (save-window-excursion
+    (pcase-exhaustive backend
+      ('ghostel (require 'ghostel)
+                (let ((ghostel-buffer-name name))
+                  (ghostel t)))
+      ('vterm (require 'vterm)
+              (vterm name)))))
+
+(defun termdex--follow-title (buffer name-format)
+  "Name BUFFER's terminal after its title, through NAME-FORMAT, from now on.
+Buffer-local, so terminals started any other way keep their naming."
+  (with-current-buffer buffer
+    (if (derived-mode-p 'ghostel-mode)
+        ;; Nil leaves the name alone, which is what an untitled vterm gets.
+        (setq-local ghostel-buffer-name-function
+                    (lambda (title) (and title (format name-format title))))
+      (setq-local vterm-buffer-name-string name-format))))
+
+(defun termdex--kill (buffer)
+  "Kill BUFFER's terminal without asking whether to.
+
+The query is bound with BUFFER current, because ghostel installs its
+own buffer-locally: a `let' made from any other buffer binds only the
+global value, and ghostel's query still runs -- from the cleanup timer,
+a prompt nobody asked for.  Returns what `kill-buffer' returns."
+  (with-current-buffer buffer
+    (let ((kill-buffer-query-functions nil))
+      (kill-buffer buffer))))
+
+
+;;;; Probing a terminal
 
 (defun termdex--probe (buffer)
   "Return a `termdex-terminal' describing BUFFER.
 
-A remote terminal is described by `default-directory', which vterm's
-shell-side integration keeps up to date and which is the only source
-that can see across an ssh at all; its busy state is unknowable and is
-reported as such.  A local one is probed through /proc, which needs no
-cooperation from the shell."
+A remote terminal is described by `default-directory', which the
+terminal's shell-side integration keeps up to date and which is the only
+source that can see across an ssh at all; its busy state is unknowable
+and is reported as such.  A local one is probed through /proc, which
+needs no cooperation from the shell."
   (with-current-buffer buffer
     (if (file-remote-p default-directory)
         (termdex--terminal :buffer buffer
                            :directory default-directory
                            :busy 'unknown
                            :remote t)
-      (let* ((leader (process-id vterm--process))
+      (let* ((leader (termdex--leader-pid buffer))
              (shell (termdex--current-shell leader))
              (commands (termdex--foreground-commands leader shell)))
         (termdex--terminal
@@ -345,12 +457,12 @@ See `termdex-exclude' and `termdex-exclude-functions'."
 (defun termdex--candidate-p (buffer)
   "Non-nil when BUFFER is a terminal termdex may send you to.
 
-Deliberately not the same question as `termdex--vterm-buffer-p'.  That
+Deliberately not the same question as `termdex--terminal-buffer-p'.  That
 one asks whether a buffer is a terminal at all, and an excluded terminal
 still is one: its directory is read from it like any other, so running a
 command from inside one starts where it actually is rather than falling
 back to a `default-directory' that never moved."
-  (and (termdex--vterm-buffer-p buffer)
+  (and (termdex--terminal-buffer-p buffer)
        (not (termdex--excluded-p buffer))))
 
 (defun termdex-terminals (&optional include-excluded)
@@ -364,7 +476,7 @@ most-recently-used.  Nothing here is cached: this is the whole of
 termdex's state, and it is rebuilt every time it is asked for."
   (mapcar #'termdex--probe
           (seq-filter (if include-excluded
-                          #'termdex--vterm-buffer-p
+                          #'termdex--terminal-buffer-p
                         #'termdex--candidate-p)
                       (buffer-list))))
 
@@ -388,11 +500,11 @@ Both sides are resolved so the two can be compared at all."
   "Return the directory the current buffer is in, canonically.
 
 In a terminal that means the directory its shell is in, which is not
-`default-directory': without vterm's shell-side integration that never
-moves, and even with it, it does not follow a `cd' typed into a nested
-shell that never loaded the snippet."
+`default-directory': without the terminal's shell-side integration that
+never moves, and even with it, it does not follow a `cd' typed into a
+nested shell that never loaded the snippet."
   (termdex--canonical
-   (if (termdex--vterm-buffer-p (current-buffer))
+   (if (termdex--terminal-buffer-p (current-buffer))
        (or (termdex-terminal-directory (termdex--probe (current-buffer)))
            default-directory)
      default-directory)))
@@ -468,24 +580,21 @@ shell-specific settings, so it is accepted rather than worked around."
   (when (and termdex-cd-on-ancestor-match
              (not (termdex-terminal-busy terminal))
              (not (equal (termdex-terminal-directory terminal) directory)))
-    (with-current-buffer (termdex-terminal-buffer terminal)
-      (vterm-send-string
-       (format "cd %s\n" (shell-quote-argument (directory-file-name directory)))))
+    (termdex--send-string
+     (termdex-terminal-buffer terminal)
+     (format "cd %s\n" (shell-quote-argument (directory-file-name directory))))
     t))
 
 (defun termdex--create (directory)
-  "Return a new terminal in DIRECTORY, displayed and selected."
-  (require 'vterm)
+  "Return a new terminal in DIRECTORY, displayed and selected.
+Of the kind `termdex-backend' names."
   (let* ((default-directory (file-name-as-directory directory))
-         (buffer (save-window-excursion
-                   (vterm (format "*term %s*"
-                                  (file-name-nondirectory
-                                   (directory-file-name directory)))))))
+         (buffer (termdex--start (termdex--backend)
+                                 (format "*term %s*"
+                                         (file-name-nondirectory
+                                          (directory-file-name directory))))))
     (when termdex-buffer-name-string
-      (with-current-buffer buffer
-        ;; Buffer-local: a terminal termdex made is named after its title,
-        ;; without changing how terminals started any other way are named.
-        (setq-local vterm-buffer-name-string termdex-buffer-name-string)))
+      (termdex--follow-title buffer termdex-buffer-name-string))
     (termdex--display buffer)))
 
 (defun termdex--reach (require-idle &optional at-project-root)
@@ -815,8 +924,7 @@ buffer is gone."
               (yes-or-no-p (format "%s is running %s; kill it? "
                                    (buffer-name buffer)
                                    (or (termdex-terminal-command terminal) "something"))))
-      (let ((kill-buffer-query-functions nil))
-        (kill-buffer buffer))
+      (termdex--kill buffer)
       (termdex-list-refresh))))
 
 (defun termdex-list-new ()
@@ -938,7 +1046,8 @@ was suspended for two hours wakes up and finds its terminals two hours
 stale, which is the truth.")
 
 (defvar-local termdex--cleanup-activity nil
-  "Cons of this terminal's modification tick and when it last looked alive.
+  "Cons of this terminal's activity mark and when it last looked alive.
+See `termdex--activity-mark' for what the mark is.
 
 Kept on the terminal itself rather than in a registry, so it cannot
 outlive what it describes.  Losing it -- to a reload, say -- costs the
@@ -951,21 +1060,40 @@ Nil, zero and negative all mean the same thing: close nothing."
              (> termdex-cleanup-idle-seconds 0))
     termdex-cleanup-idle-seconds))
 
-(defun termdex--cleanup-touch (buffer now)
-  "Record BUFFER as having shown a sign of life at NOW."
-  (with-current-buffer buffer
-    (setq termdex--cleanup-activity (cons (buffer-chars-modified-tick) now))))
+(defun termdex--activity-mark (terminal)
+  "Return a value that changes whenever TERMINAL shows output.
+Compared with `equal' against the last one recorded; what it is made of
+does not matter beyond that.
+
+Two halves.  `buffer-chars-modified-tick' is the terminal's output as
+vterm sees it: vterm writes what the shell prints into the buffer, and
+measurement says the tick does not move on its own at an untouched
+prompt.  It moves for a redraw with no output -- displaying the
+terminal, resizing a frame -- which is a false positive pointing the
+safe way, since it happens exactly when you are looking at it.
+
+A buried ghostel writes nothing to its buffer at all: it defers
+rendering until the buffer is shown.  So the other half is how much the
+current shell has written, from /proc.  For the terminals the sweep can
+close -- not busy, no children -- the shell is the only thing left that
+can write to the terminal, and every finished command ends with it
+printing a prompt.  Taken for every backend, since it can only ever make
+a terminal look more alive."
+  (cons (buffer-chars-modified-tick (termdex-terminal-buffer terminal))
+        (when-let* ((shell (termdex-terminal-shell terminal)))
+          (termdex--wchar shell))))
+
+(defun termdex--cleanup-touch (terminal now)
+  "Record TERMINAL as having shown a sign of life at NOW."
+  (let ((mark (termdex--activity-mark terminal)))
+    (with-current-buffer (termdex-terminal-buffer terminal)
+      (setq termdex--cleanup-activity (cons mark now)))))
 
 (defun termdex--cleanup-alive-at (record buffer)
   "Return when BUFFER last showed a sign of life, given its RECORD.
 
-Two signals, and the later of them wins.  `buffer-chars-modified-tick'
--- which RECORD carries -- is the terminal's output: vterm writes what
-the shell prints into the buffer, and measurement says the tick does
-not move on its own at an untouched prompt.  It moves for a redraw with
-no output -- displaying the terminal, resizing a frame -- which is a
-false positive pointing the safe way, since it happens exactly when you
-are looking at it.
+Two signals, and the later of them wins.  RECORD's time is the last
+sweep to see its activity mark move; see `termdex--activity-mark'.
 
 `buffer-display-time' is the other: `set-window-buffer' stamps it, so
 visiting a terminal counts as using it even if nothing was typed.  This
@@ -977,17 +1105,17 @@ notion of \"last used\" is the right one."
         displayed
       (cdr record))))
 
-(defun termdex--cleanup-quiet-since (buffer now)
-  "Return when BUFFER last showed a sign of life, stamping it if it just did.
+(defun termdex--cleanup-quiet-since (terminal now)
+  "Return when TERMINAL last showed a sign of life, stamping it if it just did.
 The sweep's reading, which starts a clock that was not running and
 restarts one the terminal has outrun.  See `termdex--cleanup-quiet-for'
 for the reading that changes nothing."
-  (let ((tick (buffer-chars-modified-tick buffer))
-        (record (buffer-local-value 'termdex--cleanup-activity buffer)))
-    (unless (and record (eql (car record) tick))
+  (let* ((buffer (termdex-terminal-buffer terminal))
+         (record (buffer-local-value 'termdex--cleanup-activity buffer)))
+    (unless (and record (equal (car record) (termdex--activity-mark terminal)))
       ;; Output since the last sweep -- or no record at all, which is a
       ;; terminal this sweep is meeting for the first time.
-      (setq record (termdex--cleanup-touch buffer now)))
+      (setq record (termdex--cleanup-touch terminal now)))
     (termdex--cleanup-alive-at record buffer)))
 
 (defun termdex--cleanup-quiet-for (terminal now)
@@ -1003,7 +1131,7 @@ not start, restart or advance the clock that decides whether it lives."
   (let* ((buffer (termdex-terminal-buffer terminal))
          (record (buffer-local-value 'termdex--cleanup-activity buffer)))
     (when record
-      (if (not (eql (car record) (buffer-chars-modified-tick buffer)))
+      (if (not (equal (car record) (termdex--activity-mark terminal)))
           ;; It has spoken since the last sweep, which is what that sweep
           ;; will make of it too.
           0
@@ -1054,8 +1182,7 @@ The kill query is suppressed because the live process is the whole
 point: `kill-buffer' would otherwise ask, from a timer, about the
 question the sweep has just answered."
   (let ((name (buffer-name buffer)))
-    (when (let ((kill-buffer-query-functions nil))
-            (kill-buffer buffer))
+    (when (termdex--kill buffer)
       (message "termdex: closed %s, quiet for %s"
                name (format-seconds "%Y, %D, %H, %M, %z%S" (round quiet))))))
 
@@ -1071,10 +1198,10 @@ question the sweep has just answered."
                 ;; The clock is restarted, not paused: a terminal that spent
                 ;; forty minutes on a job has not been idle for forty
                 ;; minutes, it has been idle since the job ended.
-                (termdex--cleanup-touch buffer now)
+                (termdex--cleanup-touch terminal now)
               (let ((quiet (float-time
                             (time-subtract
-                             now (termdex--cleanup-quiet-since buffer now)))))
+                             now (termdex--cleanup-quiet-since terminal now)))))
                 (when (>= quiet limit)
                   (termdex--cleanup-close buffer quiet))))))))))
 
