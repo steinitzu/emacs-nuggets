@@ -17,297 +17,23 @@ Clone the repository and point Emacs at it:
 `emacs-tools` adds every extension directory to `load-path`, so afterwards:
 
 ```elisp
-(require 'md-table-align)
+(require 'md-table-wrap)
 ```
 
 Requires Emacs 31 or newer.
 
 ## Packages
 
-### md-table-align — align Markdown tables without touching the buffer
+### md-table-wrap — Markdown tables, aligned and wrapped to fit the window
 
 `markdown-mode` aligns tables by rewriting the buffer. That is no use in a
-read-only buffer, and it dirties files you only meant to read.
+read-only buffer, it dirties files you only meant to read, and a table whose
+cells hold sentences still runs off the side of the window.
 
-`md-table-align` aligns tables **as a display presentation**. Buffer text stays
-byte-identical, `buffer-modified-p` stays `nil`, and it works when the buffer is
-read-only — VC revision buffers, `magit` blobs, generated docs, archives. That
-covers both ways a buffer can be read-only: `buffer-read-only`, and a `read-only`
-text property over part of the text, as chat and transcript UIs use to lock down
-what they have already printed.
-
-Given a file containing:
-
-```markdown
-| Package | Version | Status |
-|:--------|--------:|:------:|
-| md-table-align | 0.1.0 | ready |
-| emacs-tools | 0.1.0 | ready |
-| some-other-thing | 12.4 | wip |
-```
-
-it renders as:
-
-```
-| Package          | Version | Status |
-|:-----------------|--------:|:------:|
-| md-table-align   |   0.1.0 | ready  |
-| emacs-tools      |   0.1.0 | ready  |
-| some-other-thing |    12.4 |  wip   |
-```
-
-while the file on disk — and the buffer text — is unchanged. Per-column
-alignment markers (`:---`, `---:`, `:---:`) are honoured, and cell widths are
-measured by display width so CJK text lines up correctly.
-
-#### Requirements
-
-Table discovery uses tree-sitter, so the buffer needs a `markdown` parser — in
-practice `markdown-ts-mode`, which ships with Emacs 31. There are no grammars
-to install by hand: loading the library registers the grammar sources itself
-(pinned to a known-good commit), and the mode calls `treesit-ensure-installed`,
-so Emacs offers to build them the first time you open a Markdown file.
-`treesit-auto-install-grammar` defaults to `ask`; set it to `always` if you
-would rather not be prompted.
-
-Emacs does not associate `.md` with `markdown-ts-mode`, and the mode is not
-autoloaded, so both lines are needed:
-
-```elisp
-(require 'markdown-ts-mode)
-(add-to-list 'auto-mode-alist '("\\.md\\'" . markdown-ts-mode))
-```
-
-The MELPA `markdown-mode` package is not supported — it has no tree-sitter
-parser. If the mode is enabled where no `markdown` parser exists it declines,
-with a message, rather than misbehaving.
-
-#### Usage
-
-```elisp
-(add-hook 'markdown-ts-mode-hook #'md-table-align-mode)
-```
-
-or turn it on everywhere:
-
-```elisp
-(global-md-table-align-mode 1)
-```
-
-Commands:
-
-| Command | Description |
-|:--------|:------------|
-| `md-table-align-mode` | Buffer-local minor mode; keeps tables aligned as you scroll and edit. |
-| `global-md-table-align-mode` | Enables the above in `md-table-align-modes`. |
-| `md-table-align-buffer` | Align every table once, right now. |
-| `md-table-align-clear` | Remove all alignment from the buffer. |
-| `md-table-align-hscroll-left` | Scroll the table at point left; bound over `C-x <` (`scroll-left`). |
-| `md-table-align-hscroll-right` | Scroll the table at point right; bound over `C-x >` (`scroll-right`). |
-| `md-table-align-hscroll-reset` | Return the scrolled table to its left edge. |
-| `md-table-align-toggle-vertical` | Toggle the table at point between horizontal and vertical (psql `\x`-style) display. |
-
-Customization:
-
-| Option | Default | Description |
-|:-------|:--------|:------------|
-| `md-table-align-padding` | `1` | Spaces rendered between a cell border and its content. |
-| `md-table-align-pixel-width-function` | `md-table-align-pixel-width` | Measures a cell's rendered width, in pixels. |
-| `md-table-align-modes` | `(markdown-ts-mode)` | Modes `global-md-table-align-mode` activates in. |
-| `md-table-align-hscroll` | `t` | Clip wide tables to the window and scroll them sideways. |
-| `md-table-align-ellipsis` | `…` | Marks where the window's edge has clipped a table. |
-| `md-table-align-hscroll-indicator` | `t` | Whether to mark clipped edges at all. |
-| `md-table-align-vertical-record-format` | `-[ row %d ]---` | Separator line above each record of a vertical table. |
-| `md-table-align-vertical-pipe-gap` | `2` | Spaces on each side of the pipe between a vertical table's labels and values. |
-
-#### Wide tables and word wrap
-
-Under `visual-line-mode` a table wider than the window wraps, and a wrapped
-table is not just ugly — the continuation lines restart at the window's left
-edge, so the alignment is gone entirely.
-
-Emacs has no way to switch wrapping off for part of a buffer, so
-`md-table-align` clips each table to a horizontal viewport instead, and lets
-you scroll it. A table needing 48 columns, shown in a 40-column window:
-
-```
-| Name  | Description…
-|-------|-----------------------------…
-| alpha | first item description here…
-| beta  | second item description…
-```
-
-Scroll it and the rest arrives, with the columns still on their grid:
-
-```
-…Description                 | Status |
-…----------------------------|--------|
-…first item description here | open   |
-…second item description     | done   |
-```
-
-Scrolling works the way it already does in a `truncate-lines` buffer, so there
-is nothing new to learn:
-
-- **The viewport follows point.** Move onto a cell that is off screen and the
-  table scrolls to it, honouring `hscroll-margin` and `hscroll-step` exactly as
-  `auto-hscroll-mode` does. Most of the time you never scroll by hand at all.
-- **`C-x <` and `C-x >`** scroll the table at point explicitly. Outside a table
-  they do what they always did.
-- Only the table moves. Prose above and below it stays where it is, which is
-  something native horizontal scrolling cannot do — it shifts the whole window,
-  and needs `truncate-lines` to work at all.
-
-Only the table you are in is ever scrolled, and it returns to its left edge
-when you leave it. Widen the window and the whole table comes back on its own.
-
-Clipped text is also readable without scrolling: put point on it and press
-`C-h .` (`display-local-help`), or hover the mouse over it.
-
-Set `md-table-align-hscroll` to `nil` to turn this off and let wide tables
-wrap as before.
-
-#### Narrowed windows: tables use the margins
-
-`visual-fill-column-mode` and `olivetti-mode` give prose a comfortable measure
-by setting **window margins**, and margins come out of the window's text area.
-Left alone, that means a table is fitted to the prose measure and a wide one is
-clipped, however much screen is sitting unused beside it.
-
-`md-table-align` renders the part of a row that does not fit the text area in
-the **right margin** instead, so a table gets the whole window while prose keeps
-its measure. On an 80-column frame with a 50-column measure:
-
-```
-Prose goes here and is long enough that it has
-to wrap at the narrowed measure, like
-visual-fill-column wants it to.
-
-| Name             | Kind  | Owner     | Status | Notes               |
-|:-----------------|:-----:|:----------|-------:|:--------------------|
-| alpha            | table | steinthor |     12 | fits the full width |
-| beta-longer-name | code  | someone   |      3 | also fine           |
-```
-
-The prose stops at column 50; the tables run to the window edge. Nothing about
-the buffer changes — this is display only, like everything else here.
-
-It follows the same rules as scrolling, and composes with it: a table wider
-than the *whole* window still clips and scrolls, and moving point onto a cell
-that has been clipped away scrolls the table until that cell is back. The same
-goes for a cell the margin is showing, even when the table fits: Emacs cannot
-draw the cursor in a margin, and what the margin shows is a copy rather than
-buffer text, so the cell is brought into the text area where you can see point
-and select. Move back to the start of the row, or leave the table, and it
-returns to rest. Until point comes within `hscroll-margin` of the text area's
-edge, the table holds still.
-
-Two things switch it off:
-
-- `md-table-align-spill` set to `nil`, or `md-table-align-hscroll` set to `nil`
-  (scrolling is what keeps point reachable).
-- A table rendering in a **proportional** face — under `mixed-pitch-mode`, say.
-  Padding inside a margin can only be literal spaces, so such a table would come
-  out ragged; it keeps the text area to itself instead.
-
-Where a window has no right fringe — a terminal, or a GUI with the fringes
-turned off — there is a one-column seam at the end of the text area, because
-Emacs keeps that column for the line-continuation glyph. Nothing is lost to it:
-the margin copy starts just past it. With a fringe there is no seam.
-
-#### Vertical display
-
-`M-x md-table-align-toggle-vertical` flips the table at point into an expanded
-display modelled on psql's `\x`: one **`label | value`** line per cell, one
-record block per row, labels bold and values aligned to a common column:
-
-```
--[ row 1 ]---
-Name         | alpha
-Description  | a very long value wraps at the window
-             | edge and continues under its own pipe,
-             | aligned with the rest of the record
-Status       | open
--[ row 2 ]---
-Name         | beta
-Description  | second item description
-Status       | done
-```
-
-Run it again to flip back. Like everything else here it is a rendering, not an
-edit — buffer text is untouched, so it works in read-only buffers, and each
-table keeps its own setting until you toggle it back or turn the mode off.
-A vertical record is never wider than its longest single value, which makes
-this a comfortable way to read a very wide table; under `visual-line-mode` a
-long value wraps at the window edge and continues at the value column, under
-an extra pipe on the rail (this also overrides `visual-wrap-prefix-mode`
-inside the table, whose prose-style prefix would misplace the continuation).
-The separator comes from `md-table-align-vertical-record-format`, the spacing
-on each side of the pipe from `md-table-align-vertical-pipe-gap` (default two
-spaces), and the labels, pipes and separators render in the
-`md-table-align-vertical-label`, `md-table-align-vertical-pipe` (unstyled by
-default) and `md-table-align-vertical-record` faces.
-
-#### How it works
-
-Each cell gets an overlay whose `before-string` or `display` property is a
-stretch glyph — `(space :align-to COLUMN)` — which the redisplay engine expands
-to push the following text onto a grid. Overlays never modify buffer text and
-never mark a buffer modified, which is what makes read-only buffers work.
-
-See [md-table-align/DESIGN.md](md-table-align/DESIGN.md) for the reasoning,
-including why overlays are used rather than text properties.
-
-#### Using it with mixed-pitch / variable-pitch
-
-`markdown-ts-mode` faces tables through
-`markdown-ts-table` → `markdown-ts-code-block` → `fixed-pitch`, so under
-`mixed-pitch-mode` they stay monospace on their own — no need to add anything to
-`mixed-pitch-fixed-pitch-faces`.
-
-There is one catch. Emacs ships `fixed-pitch` with `:family "Monospace"`, which
-is a generic fontconfig alias rather than a real family. If you never override
-it, your tables (and code blocks, and inline code) render in whatever fontconfig
-picks — commonly DejaVu Sans Mono — instead of your coding font. Name a real
-family:
-
-```elisp
-(set-face-attribute 'fixed-pitch nil :family "Source Code Pro")
-```
-
-Alignment itself needs no configuration under mixed-pitch. Cells are measured
-in pixels with `string-pixel-width` against the buffer, so the layout follows
-whatever the text really renders as — including face remapping and font
-fallback — rather than assuming one character occupies one canonical character
-width. That assumption is wrong under `mixed-pitch-mode`, where the table face
-inherits the remapped default's `:height` and renders wider per character than
-`frame-char-width` reports.
-
-The order the two modes are switched on does not matter. Turning on
-`mixed-pitch-mode`, `variable-pitch-mode` or `text-scale-adjust` after a table
-has been laid out re-measures it, so you can enable them in either order and
-from any hook.
-
-#### Limitations
-
-- The delimiter row (`|:---|---:|`) renders as a run of dash characters, so its
-  width is quantised to whole characters. Its closing border is pinned exactly;
-  any sub-character shortfall shows as a small gap before it.
-- A table shown in two differently sized windows at once is laid out for
-  whichever window you are in, so it is only correct in one of them at a time.
-- Only one table carries a scroll offset at a time — the one point is in.
-  Leaving it puts it back to its left edge.
-- The first column does not stay pinned while the rest scrolls, so a scrolled
-  row loses its row label.
-- A window with no room for even a couple of characters of table is left to
-  wrap, on the grounds that clipping it to nothing would be worse.
-
-### md-table-wrap — wrap wide tables' cells to fit the window
-
-`md-table-align` keeps every row on one screen line, so a table whose cells
-hold sentences is read through a letterbox, a few columns at a time.
-`md-table-wrap` instead word-wraps each cell inside its column, so the whole
-table fits the window, the way you would hand-align it in a text file:
+`md-table-wrap` draws every table **as a display presentation**, aligned, and
+with each cell word-wrapped inside its column when the table is too wide, so
+the whole table fits the window, the way you would hand-align it in a text
+file:
 
 ```
 ┌──────────┬─────────────────────────┬───────────┐
@@ -322,13 +48,19 @@ table fits the window, the way you would hand-align it in a text file:
 └──────────┴─────────────────────────┴───────────┘
 ```
 
-Like `md-table-align` it is display-only: the buffer still holds one line of
-Markdown per row, unmodified, so it works in read-only buffers and chat
-transcripts. Column widths are chosen to keep the table short, short label
-columns stay unwrapped where that is cheap, and the table re-wraps as you
-type or resize the window. Rows of a wrapped table are separated by rules;
-a table that fits is just framed. Only the rows near the window are drawn,
-so a thousand-row table costs about what a screenful does.
+Buffer text stays byte-identical and `buffer-modified-p` stays `nil`: the
+buffer still holds one line of Markdown per row. So it works in read-only
+buffers — VC revision buffers, `magit` blobs, generated docs — under both
+`buffer-read-only` and a `read-only` text property, as chat and transcript UIs
+use to lock down what they have already printed.
+
+Column widths are chosen to keep the table short, short label columns stay
+unwrapped where that is cheap, and the table re-wraps as you type or resize
+the window. Rows of a wrapped table are separated by rules; a table that fits
+is just framed. Only the rows near the window are drawn, so a thousand-row
+table costs about what a screenful does. Because the table is fitted to the
+text area, it stays inside the measure `visual-fill-column-mode` or
+`olivetti-mode` gives the prose around it.
 
 ```elisp
 (require 'md-table-wrap)
@@ -337,9 +69,16 @@ so a thousand-row table costs about what a screenful does.
 (global-md-table-wrap-mode 1)
 ```
 
-It replaces `md-table-align` in the buffers it is on: turning it on switches
-`md-table-align-mode` off there, turning it off switches it back on, and
-`global-md-table-align-mode` leaves its buffers alone.
+Tables are found with the tree-sitter `markdown` parser, so fenced code is
+never mistaken for one; without a parser a line scan stands in. In practice
+that means `markdown-ts-mode`, which ships with Emacs 31 and offers to build its
+grammars the first time you open a Markdown file. Emacs does not associate
+`.md` with it, and the mode is not autoloaded, so both lines are needed:
+
+```elisp
+(require 'markdown-ts-mode)
+(add-to-list 'auto-mode-alist '("\\.md\\'" . markdown-ts-mode))
+```
 
 | Command | Description |
 |:--------|:------------|
@@ -361,8 +100,31 @@ click on cell text puts point there.
 
 Borders take the `md-table-wrap-border` face (inherits `shadow`).
 
+#### Fonts: mixed-pitch / variable-pitch
+
+Widths are counted in characters of the table's font, so that font must be
+fixed-pitch. `markdown-ts-mode` faces tables through `markdown-ts-table` →
+`markdown-ts-code-block` → `fixed-pitch`, so under `mixed-pitch-mode` they stay
+monospace on their own.
+
+Emacs ships `fixed-pitch` with `:family "Monospace"`, a fontconfig alias
+rather than a real family, so unless you override it tables (and code) render
+in whatever fontconfig picks. Name a real family:
+
+```elisp
+(set-face-attribute 'fixed-pitch nil :family "Source Code Pro")
+```
+
+Turning on `mixed-pitch-mode`, `variable-pitch-mode` or `text-scale-adjust`
+after a table is drawn re-measures it, so the order modes come on in does not
+matter.
+
+See [md-table-wrap/DESIGN.md](md-table-wrap/DESIGN.md) for how it works.
+
 #### Limitations
 
+- Every column is left-aligned; the `:---:` and `---:` markers in the
+  delimiter row are not honoured.
 - `C-f`/`C-b`, `M-f`/`M-b`, the region and kill follow the buffer's order,
   which is cell by cell along the row, not screen line by screen line.
 - No drag-selecting through wrapped text with the mouse.
@@ -394,9 +156,8 @@ Enable per buffer or globally:
 ```
 
 `md-table-inline-modes` (default `(markdown-ts-mode)`) says where the global
-mode applies. It composes with `md-table-align`: aligned tables are laid out
-to the *rendered* cell widths, so hidden delimiters take no space and toggling
-markup hiding re-aligns.
+mode applies. It composes with `md-table-wrap`: the cells a wrapped table
+draws carry these faces, whichever of the two modes comes on first.
 
 ### md-bare-url — make plain URLs in Markdown actually open
 
@@ -745,17 +506,8 @@ identified, and for what it cannot see (a shell blocked in a builtin such as
 ```sh
 make deps      # build the tree-sitter grammars, install vterm and ghostel for the tests
 make test      # run the test suite
-make bench     # run the md-table-align performance benchmark
 make compile   # byte-compile, warnings are errors
 ```
-
-`make bench` prints a Markdown section of call counts and timings for the
-many-wide-tables workload, horizontally and with every table toggled
-vertical; append it to `tests/bench-results.md` to record a run
-(`tests/run-bench.sh >> tests/bench-results.md`). Call counts are
-deterministic for a given fixture and frame size, so compare them against the
-last recorded run to catch performance regressions; wall times are
-machine-dependent.
 
 `make deps` also installs `vterm` and `ghostel` into `.test-env/elpa`, since
 termdex's tests drive real terminals, each one on both backends. vterm compiles
@@ -800,21 +552,20 @@ idempotent. Use it after editing `emacs-tools.el`, or a stale
 `emacs-tools-reload` will keep quietly doing the old thing.
 
 Extensions can hook the unload by defining `FEATURE-unload-function`, which
-`unload-feature` calls before stripping definitions; `md-table-align` uses it
+`unload-feature` calls before stripping definitions; `md-table-wrap` uses it
 to switch itself off everywhere so no overlay outlives its code, `md-bare-url`
 to make sure no advice outlives the function it names, and `md-heading-scale`
 so no buffer is left scaled by a remapping nothing can now remove.
 
-Tests assert on what the redisplay engine actually drew — they read back rendered
-columns with `posn-at-point` — so they need a real frame. `make test` runs Emacs
+Tests assert on what the redisplay engine actually drew — screen lines,
+rendered positions and the strings it lays out — so they need a real frame. `make test` runs Emacs
 under a pty to get a TTY frame; batch mode has no frame that lays text out.
 
 ## Repository layout
 
 ```
 emacs-tools.el          collection loader; adds each extension to load-path
-md-table-align/         extension: display-only Markdown table alignment
-md-table-wrap/          extension: wrap wide Markdown tables' cells to fit
+md-table-wrap/          extension: display-only Markdown tables, wrapped to fit
 md-table-inline/        extension: inline markup inside Markdown table cells
 md-bare-url/            extension: make bare URLs in Markdown follow
 md-file-anchor/         extension: follow line/heading anchors on file links

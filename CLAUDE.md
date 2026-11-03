@@ -6,7 +6,7 @@ A collection of Emacs extensions, distributed as a single installable package.
 
 ### Layout
 
-- Each extension lives in **its own folder** at the repo root (e.g. `md-table-align/`).
+- Each extension lives in **its own folder** at the repo root (e.g. `md-table-wrap/`).
 - The whole library is installable as a package by loading this directory (each
   extension folder is added to `load-path`).
 - Repo root holds shared docs (`README.md`, `CLAUDE.md`) and the loader.
