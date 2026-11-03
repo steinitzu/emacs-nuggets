@@ -131,6 +131,26 @@ a delimiter cell, which has none of the bold or shadow a header cell or a
 pipe may carry. A table's indentation (a table in a list item) is measured
 in pixels as rendered, and every stretch aligns to it.
 
+The indentation is measured once, from the header's line, and the real
+indentation text of every row is hidden (the row's lead overlay starts at
+its line's start). Each row's first screen line then reaches the indent by
+a stretch, like its continuation lines, and the delimiter row likewise
+draws its rule as a before-string after a stretch over its hidden text.
+
+*Changed:* at first the real indentation stayed visible, and only
+continuation lines stretched to the measured indent. But the grammar faces
+the rows differently: a body or delimiter row's indentation carries
+`markdown-ts-table` (fixed pitch), and the header's carries no face. Under
+`mixed-pitch` the header's indent measured three proportional spaces (about
+24 px), while each body row's first line sat behind three fixed-pitch ones
+(about 54 px). That line's pipes stood right of the grid. The delimiter
+rule, drawn after its row's real indentation, was off the grid too
+(seen to the left, for a reason not pinned down without a GUI); it now
+stands on the same stretch as everything else. A terminal draws every face
+one column wide, so the
+list-item test could not see it; the test now checks that no real text
+draws on a table line.
+
 The width budget is the window's body width minus the indentation, less
 one column for the wrap glyph.
 
