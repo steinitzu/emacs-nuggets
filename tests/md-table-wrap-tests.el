@@ -92,8 +92,13 @@ BODY runs in a frame `md-table-wrap-tests--frame' columns wide."
          (end (md-table-wrap--end (aref rows (1- (length rows))))))
     (cons (save-excursion (goto-char beg) (line-beginning-position)) end)))
 
+(defvar md-table-wrap-tests--real nil
+  "Positions whose own text `md-table-wrap-tests--drawn' showed, newest first.")
+
 (defun md-table-wrap-tests--drawn (beg end)
-  "The string redisplay draws for BEG..END, from this mode's overlays."
+  "The string redisplay draws for BEG..END, from this mode's overlays.
+Each position whose own character is shown, for want of an overlay
+covering it, is pushed onto `md-table-wrap-tests--real'."
   (let ((pos beg) (parts nil))
     (while (< pos end)
       (dolist (o (overlays-in pos (1+ pos)))
@@ -109,6 +114,7 @@ BODY runs in a frame `md-table-wrap-tests--frame' columns wide."
             (progn (push (overlay-get cover 'display) parts)
                    (setq pos (overlay-end cover)))
           (push (buffer-substring pos (1+ pos)) parts)
+          (push pos md-table-wrap-tests--real)
           (setq pos (1+ pos)))))
     (apply #'concat (nreverse parts))))
 
@@ -289,6 +295,26 @@ them, so the copies must stand at the indent by themselves."
         (should (= (car (md-table-wrap-tests--border-columns line)) 3))
         (should (<= (string-width line) (window-body-width)))))))
 
+(ert-deftest md-table-wrap-test-no-real-text-on-a-table-line ()
+  "A table line draws nothing of the buffer's own but row-ending newlines.
+In particular a row's indentation is hidden, not shown: the grammar faces
+a body row's indentation fixed-pitch and the header's not at all, so in
+a GUI they differ in width, and a row's first line, drawn after its
+real indentation, stood off the grid the other lines stretch to.  A
+terminal draws both one column wide, so the invariant is the evidence."
+  (md-table-wrap-tests--with-table md-table-wrap-tests--list-item
+    (let ((md-table-wrap-tests--real nil)
+          (r (md-table-wrap-tests--table-region)))
+      ;; Unanchored rows, and the row holding point, anchored around it.
+      (md-table-wrap-tests--screen)
+      (md-table-wrap-tests--goto "then carry on")
+      (md-table-wrap--post-command)
+      (redisplay t)
+      (md-table-wrap-tests--screen)
+      (should (seq-every-p (lambda (p) (eq (char-after p) ?\n))
+                           (seq-filter (lambda (p) (< p (cdr r)))
+                                       md-table-wrap-tests--real))))))
+
 ;;;; Motion and editing
 
 (ert-deftest md-table-wrap-test-next-line-walks-a-wrapped-row ()
@@ -352,9 +378,11 @@ keeps the cursor on the screen line it was on."
       (should drawn)
       (font-lock-flush)
       (redisplay t)
-      ;; New string objects: the rows were drawn again from their text.
-      (should (seq-every-p (lambda (d) (not (eq (overlay-get (car d) 'before-string)
-                                                (cdr d))))
+      ;; New string objects, or the overlay replaced outright: the rows were
+      ;; drawn again from their text.
+      (should (seq-every-p (lambda (d) (or (null (overlay-buffer (car d)))
+                                           (not (eq (overlay-get (car d) 'before-string)
+                                                    (cdr d)))))
                            drawn))
       (should (= (md-table-wrap-tests--cursor-line) line)))))
 
