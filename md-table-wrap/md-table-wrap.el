@@ -869,8 +869,13 @@ the table's bottom edge in the `box' style."
          (fw (nth i (md-table-wrap--row-wraps row)))
          (x0 (aref (md-table-wrap--table-xs tbl) i))
          (xmax (+ x0 (aref (md-table-wrap--table-widths tbl) i))))
-    (cl-loop for l in fw for line from 0
-             when (<= off (+ s (cdr l)))
+    ;; OFF is on the line showing its character.  The end of a line is on
+    ;; it only where the next line starts later: at a break inside a word,
+    ;; that offset is the next line's first character.
+    (cl-loop for (l . more) on fw for line from 0
+             when (or (< off (+ s (cdr l)))
+                      (and (= off (+ s (cdr l)))
+                           (not (and more (= (car (car more)) (cdr l))))))
              return (cons line (+ x0 (max 0 (- off s (car l)))))
              finally return
              (let ((l (car (last fw))))
@@ -896,20 +901,79 @@ hand-aligned table; a pipe and the padding after it, to the first line."
           (t (md-table-wrap--cell-line-x row i off)))))
 
 (defun md-table-wrap--pos-at (row line x)
-  "Offset of the text nearest column X on ROW's screen LINE."
+  "Offset of the text nearest column X on ROW's screen LINE.
+In a cell with no text on LINE, the end of the cell's text: no offset
+is shown there, but `md-table-wrap--goto-line' puts the cursor on LINE
+all the same.  The end of a line broken inside a word is the next
+line's first character, and gets the same treatment."
   (let* ((tbl (md-table-wrap--row-tbl row))
          (px (md-table-wrap--table-px tbl)) (xs (md-table-wrap--table-xs tbl))
          (n (min (md-table-wrap--table-ncols tbl) (length (md-table-wrap--row-cells row))))
-         (i (or (cl-loop for j below n when (< x (aref px (1+ j))) return j) (1- n)))
+         (i (or (and (< x 0)
+                     ;; Before the table (C-a): the first cell with text on LINE.
+                     (cl-loop for j below n
+                              when (md-table-wrap--bounds row j line) return j))
+                (cl-loop for j below n when (< x (aref px (1+ j))) return j)
+                ;; Past the table (C-e): the last cell with text on LINE.
+                (cl-loop for j downfrom (1- n) to 0
+                         when (md-table-wrap--bounds row j line) return j)
+                (1- n)))
          (b (md-table-wrap--bounds row i line)))
-    (if b
-        (+ (car b) (min (- (cdr b) (car b)) (max 0 (- x (aref xs i)))))
+    (cond
+     (b (+ (car b) (min (- (cdr b) (car b)) (max 0 (- x (aref xs i))))))
+     ((nth i (md-table-wrap--row-wraps row)) (cdr (nth i (md-table-wrap--row-cells row))))
+     (t
       (or (cl-loop for j from (1+ i) below n
                    for bj = (md-table-wrap--bounds row j line) when bj return (car bj))
           (cl-loop for j downfrom (1- i) to 0
                    for bj = (md-table-wrap--bounds row j line) when bj return (cdr bj))
           (cdr (nth i (md-table-wrap--row-cells row)))
-          0))))
+          0)))))
+
+(defvar-local md-table-wrap--vline nil
+  "(POS ROW LINE): point at POS shows on ROW's screen LINE.
+Set by line motion where the model would show POS on another line: in
+a cell with no text on LINE, or at the end of a line broken inside a
+word.  Holds while point stays at POS and only line motion runs.")
+
+(defconst md-table-wrap--motion-commands
+  '(md-table-wrap-next-line md-table-wrap-previous-line
+    md-table-wrap-beginning-of-line md-table-wrap-end-of-line
+    md-table-wrap-mouse-set-point)
+  "Commands that place point by screen line, and keep `md-table-wrap--vline'.")
+
+(defun md-table-wrap--line-of (row pt)
+  "Screen line of ROW on which the cursor shows with point at PT."
+  (let ((h md-table-wrap--vline))
+    (if (and h (eql (car h) pt) (eq (nth 1 h) row))
+        (nth 2 h)
+      (car (md-table-wrap--pos-line-x row (- pt (md-table-wrap--beg row)))))))
+
+(defun md-table-wrap--line-x (row line off)
+  "Column of offset OFF shown on ROW's screen LINE: on a cell's text, or
+the start of a cell with no text there."
+  (let* ((tbl (md-table-wrap--row-tbl row)) (xs (md-table-wrap--table-xs tbl)))
+    (or (cl-loop for i below (length (md-table-wrap--row-cells row))
+                 for b = (md-table-wrap--bounds row i line)
+                 when (and b (<= (car b) off (cdr b)))
+                 return (+ (aref xs i) (- off (car b))))
+        (aref xs (md-table-wrap--owner row off)))))
+
+(defun md-table-wrap--point-line-x (row)
+  "(LINE . X) of the cursor in ROW, which holds point."
+  (let* ((off (- (point) (md-table-wrap--beg row)))
+         (lx (md-table-wrap--pos-line-x row off))
+         (line (md-table-wrap--line-of row (point))))
+    (if (eql line (car lx)) lx (cons line (md-table-wrap--line-x row line off)))))
+
+(defun md-table-wrap--goto-line (row line x)
+  "Move point to column X of ROW's screen LINE, and show the cursor there."
+  (let* ((off (md-table-wrap--pos-at row line x))
+         (pos (+ (md-table-wrap--beg row) off)))
+    (goto-char pos)
+    (setq md-table-wrap--vline
+          (and (/= line (car (md-table-wrap--pos-line-x row off)))
+               (list pos row line)))))
 
 (defun md-table-wrap--anchor (row pt)
   "Anchor ROW's lines at rest, or around PT if non-nil."
@@ -917,10 +981,13 @@ hand-aligned table; a pipe and the padding after it, to the first line."
     (let* ((beg (md-table-wrap--beg row)) (end (md-table-wrap--end row))
            (h (md-table-wrap--row-height row))
            (lead (car (md-table-wrap--row-ovs row))) (lov (cdr (md-table-wrap--row-ovs row)))
-           (lc (and pt (car (md-table-wrap--pos-line-x row (- pt beg)))))
+           (lc (and pt (md-table-wrap--line-of row pt)))
+           ;; Lines before LC share point's start when there are fewer
+           ;; characters before it than lines (a hinted line, low in a
+           ;; short cell's row).
            (as (cl-loop for l below h
                         collect (cond ((null lc) (min end (+ beg l)))
-                                      ((< l lc) (min (+ beg l) (- pt (- lc l))))
+                                      ((< l lc) (max beg (min (+ beg l) (- pt (- lc l)))))
                                       (t (min end (+ pt (- l lc)))))))
            ;; A window starting at one of this row's lines keeps starting there.
            (keep (cl-loop for w in (get-buffer-window-list nil nil t)
@@ -1218,6 +1285,10 @@ the next command's update rebuilds the rows they touch."
 
 (defun md-table-wrap--post-command ()
   (with-demoted-errors "md-table-wrap: %S"
+    ;; Not on a nil `this-command': `execute-kbd-macro' runs this hook with
+    ;; one around each macro, between commands that keep the line.
+    (unless (or (null this-command) (memq this-command md-table-wrap--motion-commands))
+      (setq md-table-wrap--vline nil))
     (md-table-wrap--process)
     (md-table-wrap--check-geometry)
     (md-table-wrap--follow-point)
@@ -1289,37 +1360,53 @@ reallocation."
   (- (md-table-wrap--beg row)
      (save-excursion (goto-char (md-table-wrap--beg row)) (line-beginning-position))))
 
+(defun md-table-wrap--body-row (row dir)
+  "ROW, or the nearest body row of its table past it in direction DIR.
+The delimiter row is drawn as a rule, with nothing to put the cursor on."
+  (let* ((rows (md-table-wrap--table-rows (md-table-wrap--row-tbl row)))
+         (i (md-table-wrap--row-ti row)))
+    (while (and (< -1 i (length rows)) (md-table-wrap--row-delim (aref rows i)))
+      (cl-incf i dir))
+    (and (< -1 i (length rows)) (aref rows i))))
+
+(defun md-table-wrap--enter (row dir goal)
+  "Move onto ROW from the line above (DIR 1) or below (DIR -1), at GOAL."
+  (md-table-wrap--wrapped row)
+  (md-table-wrap--goto-line
+   row (if (> dir 0) 0 (1- (md-table-wrap--row-height row))) goal))
+
 (defun md-table-wrap--vmove (dir)
   (let* ((row (md-table-wrap--row-at (point)))
          (body (and row (not (md-table-wrap--row-delim row))))
-         (lx (and body (md-table-wrap--pos-line-x (md-table-wrap--wrapped row)
-                                                  (- (point) (md-table-wrap--beg row)))))
+         (lx (and body (md-table-wrap--point-line-x (md-table-wrap--wrapped row))))
          (col (current-column))
          (goal (or (and (memq last-command '(md-table-wrap-next-line
                                              md-table-wrap-previous-line))
                         md-table-wrap--goal)
                    (and body (cdr lx))))
          (line (and body (+ (car lx) dir))))
-    (if (and body (>= line 0) (< line (md-table-wrap--row-height row)))
-        (goto-char (+ (md-table-wrap--beg row) (md-table-wrap--pos-at row line goal)))
-      (if body
-          (progn (goto-char (if (> dir 0)
-                                (min (point-max) (1+ (md-table-wrap--end row)))
-                              (max (point-min)
-                                   (1- (- (md-table-wrap--beg row)
-                                          (md-table-wrap--indent-chars row))))))
-                 (move-to-column (+ goal (md-table-wrap--indent-chars row))))
-        (line-move dir))
+    (cond
+     ((and body (>= line 0) (< line (md-table-wrap--row-height row)))
+      (md-table-wrap--goto-line row line goal))
+     (body
+      (let* ((rows (md-table-wrap--table-rows (md-table-wrap--row-tbl row)))
+             (i (+ (md-table-wrap--row-ti row) dir))
+             (next (and (< -1 i (length rows)) (md-table-wrap--body-row (aref rows i) dir))))
+        (if next
+            (md-table-wrap--enter next dir goal)
+          ;; Off the table's edge, onto the line beyond, at the goal column.
+          (goto-char (if (> dir 0)
+                         (min (point-max) (1+ (md-table-wrap--end row)))
+                       (max (point-min) (1- (md-table-wrap--line-start row)))))
+          (move-to-column (+ goal (md-table-wrap--indent-chars row))))))
+     (t
+      (line-move dir)
       ;; Landing on a row: place by the model, on its first or last line.
       (let ((r2 (md-table-wrap--row-at (point))))
-        (cond ((null r2))
-              ((md-table-wrap--row-delim r2) (goto-char (md-table-wrap--beg r2)))
-              (t (md-table-wrap--wrapped r2)
-                 (setq goal (or goal (max 0 (- col (md-table-wrap--indent-chars r2)))))
-                 (goto-char (+ (md-table-wrap--beg r2)
-                               (md-table-wrap--pos-at
-                                r2 (if (> dir 0) 0 (1- (md-table-wrap--row-height r2)))
-                                goal)))))))
+        (when r2 (setq r2 (md-table-wrap--body-row r2 dir)))
+        (when r2
+          (setq goal (or goal (max 0 (- col (md-table-wrap--indent-chars r2)))))
+          (md-table-wrap--enter r2 dir goal)))))
     (setq md-table-wrap--goal goal)))
 
 (defun md-table-wrap-next-line (&optional arg)
@@ -1333,20 +1420,20 @@ reallocation."
   (dotimes (_ (abs (or arg 1))) (md-table-wrap--vmove (if (< (or arg 1) 0) 1 -1))))
 
 (defun md-table-wrap--hmove (x)
+  "Move to the start (X negative) or end (X past the table) of the screen
+line: the first or last text on it, skipping cells blank there."
   (let ((row (md-table-wrap--row-at (point))))
     (if (or (null row) (md-table-wrap--row-delim row))
-        (if (= x 0)
+        (if (< x 0)
             (if visual-line-mode (beginning-of-visual-line) (move-beginning-of-line 1))
           (if visual-line-mode (end-of-visual-line) (move-end-of-line 1)))
-      (let ((beg (md-table-wrap--beg (md-table-wrap--wrapped row))))
-        (goto-char (+ beg (md-table-wrap--pos-at
-                           row (car (md-table-wrap--pos-line-x row (- (point) beg)))
-                           x)))))))
+      (md-table-wrap--goto-line
+       row (car (md-table-wrap--point-line-x (md-table-wrap--wrapped row))) x))))
 
 (defun md-table-wrap-beginning-of-line ()
   "Move to the start of the screen line, through wrapped table rows."
   (interactive "^")
-  (md-table-wrap--hmove 0))
+  (md-table-wrap--hmove most-negative-fixnum))
 
 (defun md-table-wrap-end-of-line ()
   "Move to the end of the screen line, through wrapped table rows."
@@ -1376,7 +1463,11 @@ reallocation."
                (off (and offs (< k (length offs))
                          (or (aref offs k)
                              (cl-loop for i downfrom k to 0 thereis (aref offs i))))))
-          (goto-char (+ (md-table-wrap--beg row) (or off 0))))))))
+          (goto-char (+ (md-table-wrap--beg row) (or off 0)))
+          ;; Show the cursor on the line clicked, as line motion does.
+          (setq md-table-wrap--vline
+                (and line off (/= line (car (md-table-wrap--pos-line-x row off)))
+                     (list (point) row line))))))))
 
 (defun md-table-wrap-refresh ()
   "Find and lay out every table in the buffer again."
