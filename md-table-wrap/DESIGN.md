@@ -281,14 +281,53 @@ so the web style was dropped.
 
 | Behaviour | How |
 |---|---|
-| C-n / C-p | remapped; target computed from the layout model, goal column kept across repeats |
-| C-a / C-e | remapped to the start and end of the screen line within the row |
+| C-n / C-p | remapped; target computed from the layout model, goal column kept across repeats; the delimiter row and rules are stepped over |
+| C-a / C-e | remapped to the first and last text on the screen line within the row |
 | C-f / C-b, typing, DEL, yank, undo | native: point moves through source text; the row re-anchors after each command |
 | scrolling | each screen line has its own buffer position; after a scroll command, point at `window-start` is mapped to the line it shows |
 | mouse-1 on a copy | the copy's own `keymap` maps the click to the source character |
 | region, isearch, show-paren… | foreign overlay faces over a row are mirrored onto its copies from `pre-redisplay-functions` (`md-table-wrap-mirror-faces`) |
 | hl-line | `hl-line-range-function` is narrowed to point inside a table; the line holding point gets the `hl-line` face on its copy |
 | markdown faces | copies are taken with `buffer-substring` after fontifying the row |
+
+### Line motion follows the screen
+
+Vertical motion steps through the lines a reader sees: each screen line of
+each body row, in order, at the goal column. The delimiter row is drawn as
+a rule, with nothing to put the cursor on, so C-n from the header goes
+straight to the first body row's first line (and C-p back). The rules
+between rows hold no position at all.
+
+A buffer position doesn't always pick out one screen line:
+
+- **A break inside a word** (a URL broken after `#` or `/`): the offset
+  ending one line starts the next. It belongs to the line showing its
+  character, the next one. The end of a line is on that line only where
+  the next starts later, after the space the break consumed.
+- **A cell blank on a line** (a short cell in a tall row): no offset is
+  shown there. Moving into it puts point at the end of the cell's text,
+  which the model places on the cell's last line.
+- **C-e at a break inside a word**: the line's end is the next line's start.
+
+For these, line motion records `md-table-wrap--vline`, (POS ROW LINE).
+While point stays at POS, the row is anchored, and its cursor drawn, on
+LINE rather than the model's line. A blank cell's cursor sits on the
+stretch filling it, at the cell's start. On the next C-n the goal column
+comes back, as it does after a short line in plain Emacs. Any command but
+line motion (or a click on a copy, which records the line clicked) drops
+the hint. A nil `this-command` doesn't, since `execute-kbd-macro` runs
+`post-command-hook` with one around each macro. Anchoring a hinted line
+low in a row whose point is near its start clamps the earlier lines'
+spans to the row's start, where they share point's overlay run.
+
+C-a and C-e skip cells blank on the line: they go to its first and last
+text. C-n into a blank cell, by contrast, stays in the column.
+
+*Changed:* at first the delimiter row was a landing spot. Its text is all
+hidden, so the cursor fell to the end of the `╞═╡` rule. And every
+ambiguous offset went to the earlier line, so C-n stuck at a mid-word
+break forever, its cursor on the end of the line above. A blank cell line
+sent C-n into a neighbouring column. Found on a table of PR links.
 
 ### Edits
 
@@ -364,6 +403,10 @@ Integration tests in a real TTY frame (`make test`), in real
 - rules between rows of a wrapped table, none in a table that fits;
 - C-n/C-p and C-a/C-e land on the model's positions, and the cursor
   shows on the row's right screen line;
+- C-n and C-p from the header visit every text line of a table of PR
+  links in order, each in the starting column, over the delimiter row,
+  mid-word breaks and blank cell lines (the cursor read off the drawn
+  screen, after each press in one macro so the goal column carries);
 - typing into a cell re-wraps it;
 - refontifying a built row redraws it, with the cursor where it was, and
   faces `md-table-inline-mode` adds reach the copies in either order;
