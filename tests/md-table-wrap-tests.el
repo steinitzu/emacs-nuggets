@@ -335,19 +335,98 @@ and the cursor shows one screen row lower each time."
                  1))
       (should (= (md-table-wrap-tests--cursor-line) (1+ row))))))
 
+(defconst md-table-wrap-tests--links
+  "| PR | Change |
+| --- | --- |
+| [widgetco-backend-lib#218](https://github.com/ExampleWidgetOrg/widgetco-backend-lib/pull/218) | lib 0.50: optional formatting hooks, `default_style_id`, `linked_by_rule_id` override |
+| [widgetco-platform-services#379](https://github.com/ExampleWidgetOrg/widgetco-platform-services/pull/379) | item label columns, item styles under the item's parent label, `GET /items` filters |
+| [widgetco-platform-services#378](https://github.com/ExampleWidgetOrg/widgetco-platform-services/pull/378) | #350 follow-ups: paging fix, 404 gate, tests |
+"
+  "A table, as reported, whose link cells break inside words, and whose
+rows leave one column's last screen lines blank.")
+
+(defun md-table-wrap-tests--cursor ()
+  "(LINE . COLUMN) of the cursor on the first table's screen lines."
+  (let* ((r (md-table-wrap-tests--table-region))
+         (s (md-table-wrap-tests--drawn (car r) (cdr r)))
+         (i (text-property-not-all 0 (length s) 'cursor nil s)))
+    (should i)
+    (let ((lines (md-table-wrap-tests--render (substring s 0 i))))
+      (cons (1- (length lines)) (string-width (car (last lines)))))))
+
+(defvar md-table-wrap-tests--trail nil)
+
+(defun md-table-wrap-tests--record ()
+  "Push the cursor's place, without counting as a command: goal columns
+carry over from the motion before."
+  (interactive)
+  (setq this-command last-command)
+  (redisplay t)
+  (push (md-table-wrap-tests--cursor) md-table-wrap-tests--trail))
+
+(defun md-table-wrap-tests--walk (key n)
+  "The cursor's places after each of N presses of KEY, in one macro."
+  (let ((md-table-wrap-tests--trail nil)
+        (map (make-sparse-keymap)))
+    (define-key map (kbd "<f12>") #'md-table-wrap-tests--record)
+    (let ((minor-mode-overriding-map-alist nil)
+          (emulation-mode-map-alists (cons `((t . ,map)) emulation-mode-map-alists)))
+      (md-table-wrap-tests--press
+       (mapconcat #'identity (make-list n (concat key " <f12>")) " ")))
+    (nreverse md-table-wrap-tests--trail)))
+
+(ert-deftest md-table-wrap-test-vertical-motion-follows-the-screen ()
+  "C-n from the header visits every screen line holding text, in order,
+in the column it started in; C-p walks back the same way.  It steps
+over the delimiter row and the rules, holds the column through words
+broken mid-word, and stays in the column on a line where its cell is
+blank, as the cursor on a short line would."
+  (md-table-wrap-tests--with-table md-table-wrap-tests--links
+    (let* ((lines (md-table-wrap-tests--screen))
+           (text (cl-loop for l in lines for i from 0
+                          when (string-prefix-p "│" l) collect i)))
+      (should (= (length text) 14))
+      (md-table-wrap-tests--goto "PR")
+      (md-table-wrap-tests--press "C-f C-b")
+      (should (equal (md-table-wrap-tests--cursor) '(1 . 2)))
+      (let ((down (md-table-wrap-tests--walk "C-n" 13)))
+        (should (equal (mapcar #'car down) (cdr text)))
+        (should (seq-every-p (lambda (c) (= (cdr c) 2)) down)))
+      (let ((up (md-table-wrap-tests--walk "C-p" 13)))
+        (should (equal (mapcar #'car up) (cdr (reverse text))))
+        (should (seq-every-p (lambda (c) (= (cdr c) 2)) up)))
+      ;; Down the second column, whose last row ends a line early.
+      (md-table-wrap-tests--goto "Change")
+      (md-table-wrap-tests--press "C-f C-b")
+      (let ((x (cdr (md-table-wrap-tests--cursor)))
+            (down (md-table-wrap-tests--walk "C-n" 13)))
+        (should (equal (mapcar #'car down) (cdr text)))
+        (should (seq-every-p (lambda (c) (= (cdr c) x)) down))))))
+
+(ert-deftest md-table-wrap-test-end-of-line-ends-at-the-last-text ()
+  "C-e on a screen line whose last cell is blank there goes to the end
+of the line's text, not into the blank cell; C-a, past the blank first
+cell, to the start of the line's text."
+  (md-table-wrap-tests--with-table md-table-wrap-tests--wide
+    (md-table-wrap-tests--goto "The first item")
+    (md-table-wrap-tests--press "C-f C-n C-e")
+    (let* ((c (md-table-wrap-tests--cursor))
+           (line (nth (car c) (md-table-wrap-tests--screen))))
+      (should (string-match "of *│ *│\\'" line))
+      (should (= (cdr c) (+ (match-beginning 0) 2)))
+      (md-table-wrap-tests--press "C-a")
+      (should (equal (md-table-wrap-tests--cursor) (cons (car c) 10))))))
+
 (ert-deftest md-table-wrap-test-beginning-of-line-stays-in-the-screen-line ()
   "C-a goes to the start of the screen line holding point, not the row."
   (md-table-wrap-tests--with-table md-table-wrap-tests--wide
     (md-table-wrap-tests--goto "The first item")
     (md-table-wrap-tests--press "C-f C-n C-e")
-    (let ((row md-table-wrap--prow) (line nil))
-      (setq line (car (md-table-wrap--pos-line-x
-                       row (- (point) (md-table-wrap--beg row)))))
-      (should (> line 0))
+    (let ((row md-table-wrap--prow) (line (md-table-wrap-tests--cursor-line)))
+      (should (> line 3))
       (md-table-wrap-tests--press "C-a")
       (should (eq md-table-wrap--prow row))
-      (should (= (car (md-table-wrap--pos-line-x row (- (point) (md-table-wrap--beg row))))
-                 line)))))
+      (should (= (md-table-wrap-tests--cursor-line) line)))))
 
 (ert-deftest md-table-wrap-test-typing-rewraps-the-cell ()
   "Typing into a cell re-wraps its row, and the text lands in the buffer."
