@@ -86,8 +86,11 @@ grammars the first time you open a Markdown file. Emacs does not associate
 | `global-md-table-wrap-mode` | Enables the above in `md-table-wrap-modes`. |
 | `md-table-wrap-refresh` | Lay out every table in the buffer again. |
 
-`C-n`/`C-p` and `C-a`/`C-e` move by screen line through a wrapped row, and a
-click on cell text puts point there.
+`C-n`/`C-p` move by screen line as the table is drawn: through a wrapped row,
+over the rules and the header's separator, keeping the column. On a line
+where the column's cell is blank, the cursor waits at the cell's start and
+picks the column back up on the next line. `C-a`/`C-e` go to the first and
+last text on the screen line, and a click on cell text puts point there.
 
 | Option | Default | Description |
 |:-------|:--------|:------------|
