@@ -323,8 +323,13 @@ saves the most lines per unit of width.  Leftover goes to deficits."
 ;; wraps: non-nil when some cell is wider than its column, so rows get rules.
 
 (cl-defstruct (md-table-wrap--row (:constructor md-table-wrap--row-make))
-  tbl m len delim bounds cells cm wraps height lines offs ovs lc pt fp pc ti idx vis)
+  tbl m len delim bounds cells cm wraps height lines offs ovs lc pt fp pc ti idx vis
+  deco rest anc)
 ;; vis: the hidden runs (`md-table-wrap--hidden-runs') cm was made with.
+;; deco: (TOP . RULE), the top edge above line 0 and the rule below the
+;; last line, or nil each.  rest: finished line strings without the cursor
+;; or foreign faces, two per line (`md-table-wrap--slot').  anc: (PT . LC)
+;; of the last anchoring, so an unchanged one is skipped.
 ;; ti: index in its table's rows.  idx: index in the buffer's run of table
 ;; rows, across tables.  pc: (FP . LINES), lines painted with the foreign
 ;; faces FP.  m: marker at the row's first character.  bounds: offsets of the pipes
@@ -698,11 +703,23 @@ change width as point moved."
     (and (< (1+ i) (length rows))
          (md-table-wrap--row-delim (aref rows (1+ i))))))
 
-(defun md-table-wrap--decorate (row l s)
-  "S, ROW's screen line L, with the table's top edge above the header's first."
-  (if (and (md-table-wrap--box-p) (= l 0) (md-table-wrap--header-p row))
-      (concat (md-table-wrap--hline (md-table-wrap--row-tbl row) "┌" "┬" "┐" t) "\n" s)
-    s))
+(defun md-table-wrap--top (row)
+  "The table's top edge, with its newline, if ROW is the header; or nil."
+  (and (md-table-wrap--box-p) (md-table-wrap--header-p row)
+       (concat (md-table-wrap--hline (md-table-wrap--row-tbl row) "┌" "┬" "┐" t) "\n")))
+
+(defsubst md-table-wrap--slot (l nl) (+ (* 2 l) (if nl 1 0)))
+
+(defun md-table-wrap--finish (row l s nl)
+  "S, ROW's screen line L, as its overlay shows it: under the top edge on
+the header's first line, over the rule on the last, and ending in a
+newline if NL.  S itself when there is nothing to add."
+  (let* ((deco (md-table-wrap--row-deco row))
+         (top (and (= l 0) (car deco)))
+         (rule (and (= l (1- (md-table-wrap--row-height row))) (cdr deco))))
+    (if (or top rule nl)
+        (concat top s (and nl md-table-wrap--newline) rule)
+      s)))
 
 (defun md-table-wrap--delim-string (row)
   (let* ((tbl (md-table-wrap--row-tbl row)) (ws (md-table-wrap--table-widths tbl)))
@@ -752,7 +769,7 @@ the table's bottom edge in the `box' style."
   (let ((beg (md-table-wrap--beg row)) (end (md-table-wrap--end row))
         (ovs (md-table-wrap--row-ovs row)))
     (setf (md-table-wrap--row-lc row) nil (md-table-wrap--row-fp row) nil
-          (md-table-wrap--row-pc row) nil)
+          (md-table-wrap--row-pc row) nil (md-table-wrap--row-anc row) nil)
     (if (md-table-wrap--row-delim row)
         (let ((tbl (md-table-wrap--row-tbl row)))
           (mapc #'delete-overlay ovs)
@@ -768,8 +785,17 @@ the table's bottom edge in the `box' style."
                                 (md-table-wrap--delim-string row)))))))
       (let* ((h (md-table-wrap--row-height row))
              (built (cl-loop for l below h collect (md-table-wrap--line row l))))
-        (setf (md-table-wrap--row-lines row) (vconcat (mapcar #'car built))
-              (md-table-wrap--row-offs row) (vconcat (mapcar #'cdr built)))
+        ;; Every piece is defaulted once, here: a line overlay's string is
+        ;; then a concatenation, with no face to add per command.
+        (setf (md-table-wrap--row-lines row)
+              (vconcat (mapcar (lambda (b) (md-table-wrap--defaulted (car b))) built))
+              (md-table-wrap--row-offs row) (vconcat (mapcar #'cdr built))
+              (md-table-wrap--row-deco row)
+              (let ((top (md-table-wrap--top row)) (rule (md-table-wrap--rule row)))
+                (and (or top rule)
+                     (cons (and top (md-table-wrap--defaulted top))
+                           (and rule (md-table-wrap--defaulted rule)))))
+              (md-table-wrap--row-rest row) (make-vector (* 2 h) nil))
         (unless (and (consp ovs) (= (length ovs) (1+ h)) (overlay-buffer (car ovs)))
           (mapc #'delete-overlay ovs)
           (setf (md-table-wrap--row-ovs row)
@@ -796,7 +822,9 @@ the table's bottom edge in the `box' style."
   (setq md-table-wrap--built-rows (delq row md-table-wrap--built-rows))
   (setf (md-table-wrap--row-ovs row) nil (md-table-wrap--row-lines row) nil
         (md-table-wrap--row-offs row) nil (md-table-wrap--row-lc row) nil
-        (md-table-wrap--row-fp row) nil (md-table-wrap--row-pc row) nil)
+        (md-table-wrap--row-fp row) nil (md-table-wrap--row-pc row) nil
+        (md-table-wrap--row-rest row) nil (md-table-wrap--row-deco row) nil
+        (md-table-wrap--row-anc row) nil)
   (md-table-wrap--unfontify (md-table-wrap--beg row) (1+ (md-table-wrap--end row))))
 
 ;;; Cursor, faces and anchors
@@ -859,43 +887,44 @@ the table's bottom edge in the `box' style."
   (let* ((lov (cdr (md-table-wrap--row-ovs row))) (h (length lov))
          (lc (md-table-wrap--row-lc row)) (fp (md-table-wrap--foreign row))
          (hl (and lc (md-table-wrap--hl-line-p)))
-         (rule (md-table-wrap--rule row))
-         ;; Lines painted with FP alone, kept while FP holds: moving point
-         ;; through the row repaints only the line holding the cursor.
-         (cache (and fp
-                     (let ((pc (md-table-wrap--row-pc row)))
-                       (if (and pc (equal (car pc) fp))
-                           (cdr pc)
-                         (cdr (setf (md-table-wrap--row-pc row)
-                                    (cons fp (make-vector h nil))))))))
+         ;; Finished lines without the cursor, kept while the foreign faces
+         ;; FP hold: moving point through the row repaints only the line
+         ;; holding the cursor, and puts nothing new on the others.
+         (cache (if (not fp)
+                    (md-table-wrap--row-rest row)
+                  (let ((pc (md-table-wrap--row-pc row)))
+                    (if (and pc (equal (car pc) fp))
+                        (cdr pc)
+                      (cdr (setf (md-table-wrap--row-pc row)
+                                 (cons fp (make-vector (* 2 h) nil))))))))
          (strs (cl-loop
                 for o in lov for l from 0
-                collect (let ((s (md-table-wrap--decorate
-                                  row l
-                                  (cond ((eql l lc)
-                                         (md-table-wrap--paint
-                                          row l (md-table-wrap--row-pt row) fp hl))
-                                        (fp (or (aref cache l)
-                                                (aset cache l (md-table-wrap--paint
-                                                               row l nil fp nil))))
-                                        (t (aref (md-table-wrap--row-lines row) l))))))
-                          ;; An empty span can't display its line's newline.
-                          (cond ((and (< l (1- h)) (= (overlay-start o) (overlay-end o)))
-                                 (concat s "\n"))
-                                ((and rule (= l (1- h))) (concat s rule))
-                                (t s))))))
+                ;; An empty span can't display its line's newline.
+                for nl = (and (< l (1- h)) (= (overlay-start o) (overlay-end o)))
+                collect
+                (if (eql l lc)
+                    (md-table-wrap--finish
+                     row l (md-table-wrap--paint row l (md-table-wrap--row-pt row) fp hl) nl)
+                  (let ((k (md-table-wrap--slot l nl)))
+                    (or (aref cache k)
+                        (aset cache k
+                              (md-table-wrap--finish
+                               row l (if fp (md-table-wrap--paint row l nil fp nil)
+                                       (aref (md-table-wrap--row-lines row) l))
+                               nl))))))))
     ;; Several line overlays can share a start (fewer characters after point
     ;; than lines left); Emacs then shows their strings in no fixed order, so
     ;; the run's strings go, in order, on its first overlay.
-    (while lov
-      (let ((o (car lov)) (acc (list (car strs))))
-        (setq lov (cdr lov) strs (cdr strs))
-        (while (and lov (= (overlay-start (car lov)) (overlay-start o)))
-          (push (car strs) acc)
-          (overlay-put (car lov) 'before-string nil)
-          (setq lov (cdr lov) strs (cdr strs)))
-        (overlay-put o 'before-string
-                     (md-table-wrap--defaulted (apply #'concat (nreverse acc))))))
+    (cl-flet ((put (o s) (unless (eq (overlay-get o 'before-string) s)
+                           (overlay-put o 'before-string s))))
+      (while lov
+        (let ((o (car lov)) (acc (list (car strs))))
+          (setq lov (cdr lov) strs (cdr strs))
+          (while (and lov (= (overlay-start (car lov)) (overlay-start o)))
+            (push (car strs) acc)
+            (put (car lov) nil)
+            (setq lov (cdr lov) strs (cdr strs)))
+          (put o (if (cdr acc) (apply #'concat (nreverse acc)) (car acc))))))
     (setf (md-table-wrap--row-fp row) fp)))
 
 (defun md-table-wrap--owner (row off)
@@ -1051,7 +1080,12 @@ the start of a cell with no text there."
 
 (defun md-table-wrap--anchor (row pt)
   "Anchor ROW's lines at rest, or around PT if non-nil."
-  (unless (or (md-table-wrap--row-delim row) (not (md-table-wrap--built-p row)))
+  (unless (or (md-table-wrap--row-delim row) (not (md-table-wrap--built-p row))
+              ;; Anchored so already: a command that left point, and its
+              ;; line, where they were (typing elsewhere, a scroll, a
+              ;; timer) redraws nothing.  A build clears this.
+              (equal (md-table-wrap--row-anc row)
+                     (cons pt (and pt (md-table-wrap--line-of row pt)))))
     (let* ((beg (md-table-wrap--beg row)) (end (md-table-wrap--end row))
            (h (md-table-wrap--row-height row))
            (lead (car (md-table-wrap--row-ovs row))) (lov (cdr (md-table-wrap--row-ovs row)))
@@ -1077,7 +1111,8 @@ the start of a cell with no text there."
                ;; one-line scrolling can step through a tall row.
                (overlay-put o 'display (cond ((= l (1- h)) "")
                                              ((< a (or b end)) md-table-wrap--newline))))
-      (setf (md-table-wrap--row-lc row) lc (md-table-wrap--row-pt row) pt)
+      (setf (md-table-wrap--row-lc row) lc (md-table-wrap--row-pt row) pt
+            (md-table-wrap--row-anc row) (cons pt lc))
       (md-table-wrap--show-row row)
       (dolist (k keep)
         (set-window-start (car k) (overlay-start (nth (cdr k) lov)) t)))))
