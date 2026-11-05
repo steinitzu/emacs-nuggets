@@ -514,6 +514,11 @@ make test      # run the test suite
 make compile   # byte-compile, warnings are errors
 ```
 
+Tests assert on what the redisplay engine actually drew — screen lines,
+rendered positions and the strings it lays out — so they need a real frame.
+`make test` runs Emacs under a pty to get a TTY frame; batch mode has no frame
+that lays text out.
+
 `make deps` also installs `vterm` and `ghostel` into `.test-env/elpa`, since
 termdex's tests drive real terminals, each one on both backends. vterm compiles
 a C module, so it needs cmake, a compiler and libvterm's headers. ghostel
@@ -549,25 +554,27 @@ alone. The `.elc` is written next to its source, so the next Emacs start
 loads it compiled too. If compiling fails, the reload loads the `.el` instead
 and says so. Compiler warnings are logged in `*Warnings*` without popping it
 up; `make compile` is where they are errors. Set
-`nuggets-reload-compile` to nil to load source as before.
+`nuggets-reload-compile` to nil to load source instead.
+
+Minor modes that are switched on are turned off before the unload and back on
+afterwards, so their buffers are rebuilt by the new code. Hook registrations
+survive: `unload-feature` strips a feature's functions from every hook, which
+is right when a feature is going away for good and wrong when it is coming
+straight back, so they are recorded beforehand and put back — with their
+depth, so an appended entry stays appended.
 
 A `.elc` can still go stale between sessions: edit the source, restart, and
 `require` loads the old `.elc`, since `load-prefer-newer` is off by default.
 So when the loader starts up it recompiles every extension's `.elc` that is
 older than its source, and deletes one that fails to compile. An extension
-with no `.elc` is left alone. Minor modes that are
-switched on are turned off beforehand and back on afterwards, so their buffers
-are rebuilt by the new code. Hook registrations survive: `unload-feature`
-strips a feature's functions from every hook, which is right when a feature is
-going away for good and wrong when it is coming straight back, so they are
-recorded beforehand and put back — with their depth, so an appended entry stays
-appended.
+with no `.elc` is left alone.
 
 The loader cannot unload itself — that would remove the functions doing the
 unloading — so `nuggets-reload-loader` plainly `load`s `nuggets.el`
-instead. That is enough here: the file defines no `defcustom` and no stateful
-`defvar`, its functions are simply redefined, and its `load-path` setup is
-idempotent. Use it after editing `nuggets.el`, or a stale
+instead. That is enough here: its one `defcustom` is an on/off switch whose
+value should survive, it has no stateful `defvar`, its functions are simply
+redefined, and its startup work — the `load-path` setup and recompiling stale
+`.elc` files — is idempotent. Use it after editing `nuggets.el`, or a stale
 `nuggets-reload` will keep quietly doing the old thing.
 
 Extensions can hook the unload by defining `FEATURE-unload-function`, which
@@ -575,10 +582,6 @@ Extensions can hook the unload by defining `FEATURE-unload-function`, which
 to switch itself off everywhere so no overlay outlives its code, `md-bare-url`
 to make sure no advice outlives the function it names, and `md-heading-scale`
 so no buffer is left scaled by a remapping nothing can now remove.
-
-Tests assert on what the redisplay engine actually drew — screen lines,
-rendered positions and the strings it lays out — so they need a real frame. `make test` runs Emacs
-under a pty to get a TTY frame; batch mode has no frame that lays text out.
 
 ## Repository layout
 
