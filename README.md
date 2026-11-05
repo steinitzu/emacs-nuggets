@@ -1,26 +1,69 @@
 # nuggets
 
-A small collection of Emacs extensions, installable as a single package.
+Small, independent Emacs extensions, installed as one package. Most of them
+make `markdown-ts-mode` buffers better to read and navigate; one helps you
+find the right terminal when you have many open.
 
-Each extension lives in its own directory. Loading this repository puts them all
-on `load-path`; nothing is loaded until you `require` it.
+Each extension lives in its own directory. Installing the package puts them all
+on `load-path`, but nothing is loaded until you `require` it, so you only get
+the ones you ask for.
+
+| Package | What it does | Needs |
+|:--------|:-------------|:------|
+| [md-table-wrap](#md-table-wrap--markdown-tables-aligned-and-wrapped-to-fit-the-window) | Draws Markdown tables aligned and word-wrapped to fit the window, without touching the buffer text | `markdown-ts-mode` |
+| [md-table-inline](#md-table-inline--inline-markup-inside-table-cells) | Gives code spans, emphasis and links inside table cells their faces | `markdown-ts-mode` |
+| [md-bare-url](#md-bare-url--make-plain-urls-in-markdown-actually-open) | Makes bare URLs open in a browser instead of the mail composer | `markdown-ts-mode` |
+| [md-file-anchor](#md-file-anchor--follow-line-and-heading-anchors-on-file-links) | Makes `file.py#L10-L20` and `file.py:12` links open the file at that line | `markdown-ts-mode` |
+| [md-heading-scale](#md-heading-scale--size-headings-by-their-level) | Sizes headings by their level | `markdown-ts-mode`, a graphical frame |
+| [termdex](#termdex--reach-the-right-terminal-out-of-many) | Jumps to the terminal for the directory you are in, and closes ones gone quiet | vterm or ghostel, Linux |
 
 ## Install
 
-Clone the repository and point Emacs at it:
+Requires Emacs 31 or newer, the first release to ship `markdown-ts-mode`.
+Pretest builds (31.0.x) work. On those, package-vc reports the `emacs 31.1`
+requirement as unmet, which is harmless.
+
+With `use-package`, which installs from Git through the built-in package-vc:
 
 ```elisp
-(add-to-list 'load-path "/path/to/nuggets")
+(use-package nuggets
+  :vc (:url "https://github.com/steinitzu/emacs-nuggets"
+       :main-file "nuggets.el"
+       :rev :newest))
+```
+
+Keep `:rev :newest`. Without it, package-vc installs the last commit that
+changed the package's version number, which can be far behind.
+
+Or clone it yourself:
+
+```sh
+git clone https://github.com/steinitzu/emacs-nuggets ~/.emacs.d/site-lisp/emacs-nuggets
+```
+
+```elisp
+(add-to-list 'load-path "~/.emacs.d/site-lisp/emacs-nuggets")
 (require 'nuggets)
 ```
 
-`nuggets` adds every extension directory to `load-path`, so afterwards:
+`nuggets` adds every extension directory to `load-path`, so afterwards you
+`require` the extensions you want.
+
+### Quick start: everything on
 
 ```elisp
-(require 'md-table-wrap)
+(require 'markdown-ts-mode)
+(add-to-list 'auto-mode-alist '("\\.md\\'" . markdown-ts-mode))
+
+(require 'md-table-wrap)    (global-md-table-wrap-mode 1)
+(require 'md-table-inline)  (global-md-table-inline-mode 1)
+(require 'md-heading-scale) (global-md-heading-scale-mode 1)
+(require 'md-bare-url)      (md-bare-url-mode 1)
+(require 'md-file-anchor)   (md-file-anchor-mode 1)
+(require 'termdex)          ; then bind its commands, see below
 ```
 
-Requires Emacs 31 or newer.
+Each section below covers one extension's options and limits.
 
 ## Packages
 
@@ -195,8 +238,8 @@ happen to come out right under the bug — is untouched.
 `md-bare-url-mode` is global: it works by advising a function, and there is
 nothing buffer-local to switch on. There is nothing to customize.
 
-This is a shim against an upstream bug — still present in Emacs master as of
-July 2026 — and is meant to be deleted once that bug is fixed. It is written so
+This is a shim against an upstream bug, and is meant to be deleted once that
+bug is fixed. It is written so
 that deletion stays cheap: rather than reimplementing bare-URL detection, it
 strips the bogus `mailto:` prefix only when what follows carries a URI scheme of
 its own, which nothing but the bug can produce. When upstream is fixed the
@@ -343,12 +386,29 @@ project it was born in, the way `projectile-run-vterm` and friends tie it.
 
 ```elisp
 (require 'termdex)
-(keymap-global-set "C-c t"   #'termdex-here)
-(keymap-global-set "C-c T"   #'termdex-here-idle)
-(keymap-global-set "C-c C-t" #'termdex-new)
-(keymap-global-set "C-c l"   #'termdex-last)
-(keymap-global-set "C-c b"   #'termdex-switch)
-(keymap-global-set "C-c B"   #'termdex-switch-project)
+(keymap-global-set "<f2>"  #'termdex-here)
+(keymap-global-set "<f3>"  #'termdex-here-idle)
+(keymap-global-set "<f4>"  #'termdex-project-root)
+(keymap-global-set "<f5>"  #'termdex-project-root-idle)
+(keymap-global-set "<f6>"  #'termdex-last)
+(keymap-global-set "C-x m" #'termdex-switch)   ; in place of compose-mail
+```
+
+Inside a terminal, vterm and ghostel send function keys to the shell, so the
+bindings above do nothing there until you let those keys through. Add them to
+the backend's exceptions. vterm reads its list once, when it loads, so set the
+whole list (its default plus your keys) before then. ghostel rebuilds its
+keymap when the option is set with `setopt`:
+
+```elisp
+(setq vterm-keymap-exceptions
+      '("C-c" "C-x" "C-u" "C-g" "C-h" "C-l" "M-x" "M-o" "C-y" "M-y"
+        "<f2>" "<f3>" "<f4>" "<f5>" "<f6>"))
+
+(with-eval-after-load 'ghostel
+  (setopt ghostel-keymap-exceptions
+          (append ghostel-keymap-exceptions
+                  '("<f2>" "<f3>" "<f4>" "<f5>" "<f6>"))))
 ```
 
 | Command | What it does |
@@ -589,10 +649,10 @@ so no buffer is left scaled by a remapping nothing can now remove.
 nuggets.el              collection loader; adds each extension to load-path
 md-table-wrap/          extension: display-only Markdown tables, wrapped to fit
 md-table-inline/        extension: inline markup inside Markdown table cells
-md-bare-url/            extension: make bare URLs in Markdown follow
+md-bare-url/            extension: bare URLs in Markdown open in a browser
 md-file-anchor/         extension: follow line/heading anchors on file links
 md-heading-scale/       extension: size Markdown headings by their level
 termdex/                extension: directory-aware handling for many terminals
-docs/                   cross-session working notes: questions and findings
+docs/                   development notes: open questions and findings
 tests/                  test suite and TTY test runner
 ```
