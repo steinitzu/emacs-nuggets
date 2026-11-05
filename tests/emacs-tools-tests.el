@@ -101,6 +101,61 @@ exists to prevent."
       (dolist (ov before)
         (should-not (overlay-buffer ov))))))
 
+;;;; Compiling
+
+(defun emacs-tools-tests--source (feature)
+  (locate-file (symbol-name feature) load-path '(".el")))
+
+(ert-deftest emacs-tools-test-reload-compiles ()
+  "A reload leaves the extension running compiled, from a fresh `.elc'
+next to its source, so the next start loads it compiled too."
+  (emacs-tools-test-with-buffer emacs-tools-tests--table
+    (md-table-wrap-mode 1)
+    (emacs-tools-reload 'md-table-wrap)
+    (let* ((source (emacs-tools-tests--source 'md-table-wrap))
+           (elc (concat source "c")))
+      (should (compiled-function-p (symbol-function 'md-table-wrap--show-row)))
+      (should (equal (symbol-file 'md-table-wrap--show-row 'defun) elc))
+      (should (file-exists-p elc))
+      (should-not (file-newer-than-file-p source elc))
+      (should md-table-wrap-mode))))
+
+(ert-deftest emacs-tools-test-reload-can-load-source ()
+  "With `emacs-tools-reload-compile' off, a reload loads the source."
+  (let ((emacs-tools-reload-compile nil))
+    (emacs-tools-reload 'md-table-wrap)
+    (should-not (compiled-function-p (symbol-function 'md-table-wrap--show-row))))
+  ;; Leave it compiled for the suites after this one.
+  (emacs-tools-reload 'md-table-wrap))
+
+(ert-deftest emacs-tools-test-failed-compile-removes-the-old-elc ()
+  "A file that doesn't compile has no `.elc' left to shadow it."
+  (let* ((dir (make-temp-file "emacs-tools-test" t))
+         (source (expand-file-name "broken-ext.el" dir))
+         (elc (concat source "c")))
+    (unwind-protect
+        (progn
+          (with-temp-file source (insert ";;; -*- lexical-binding: t -*-\n(defun broken (\n"))
+          (with-temp-file elc (insert ";; an old build\n"))
+          (should-not (emacs-tools--compile source))
+          (should-not (file-exists-p elc)))
+      (delete-directory dir t))))
+
+(ert-deftest emacs-tools-test-loader-recompiles-a-stale-elc ()
+  "An `.elc' older than its source is rebuilt when the loader starts:
+`require' would load the stale one."
+  (let* ((source (emacs-tools-tests--source 'md-table-wrap))
+         (elc (concat source "c")))
+    (should (emacs-tools--compile source))
+    ;; As after an edit made without a reload.
+    (set-file-times elc (time-subtract (file-attribute-modification-time
+                                        (file-attributes source))
+                                       100))
+    (should (file-newer-than-file-p source elc))
+    (emacs-tools--refresh-stale-elc)
+    (should (file-exists-p elc))
+    (should-not (file-newer-than-file-p source elc))))
+
 (ert-deftest emacs-tools-test-reload-rejects-unknown-feature ()
   "An unknown feature is reported rather than silently doing nothing."
   (should-error (emacs-tools-reload 'no-such-emacs-tools-feature)

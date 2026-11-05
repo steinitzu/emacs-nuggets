@@ -50,8 +50,18 @@
 ;; Suites require shared helpers, so the directory must be on `load-path'.
 (add-to-list 'load-path run-tests--dir)
 
+(defun run-tests--elc-files ()
+  (directory-files-recursively run-tests--root "\\.elc\\'" nil
+                               (lambda (d) (not (string-match-p "/\\.test-env\\'" d)))))
+
+(defconst run-tests--elc-before (run-tests--elc-files)
+  "`.elc' files present before the run.  `emacs-tools-reload' compiles,
+so the reload tests write some; those the run made, it removes.")
+
 (defun run-tests--finish (exit)
   "Write the run transcript to the log file and quit with EXIT."
+  (dolist (f (run-tests--elc-files))
+    (unless (member f run-tests--elc-before) (delete-file f)))
   (with-current-buffer (messages-buffer)
     (let ((inhibit-read-only t))
       (write-region (point-min) (point-max)
