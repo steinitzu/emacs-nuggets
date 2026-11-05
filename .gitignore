@@ -2,6 +2,7 @@
 *.elc
 tests/.last-run.log
 hacks/
+personal-notes/
 flycheck_*.el
 
 .envrc
