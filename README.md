@@ -122,6 +122,10 @@ Turning on `mixed-pitch-mode`, `variable-pitch-mode` or `text-scale-adjust`
 after a table is drawn re-measures it, so the order modes come on in does not
 matter.
 
+With `markdown-ts-hide-markup` (and `md-table-inline-mode`, which lets it
+reach cells), cells wrap by the text that shows: a link takes the width of
+its text, not its URL, and the cursor steps over hidden markup.
+
 See [md-table-wrap/DESIGN.md](md-table-wrap/DESIGN.md) for how it works.
 
 #### Limitations
@@ -131,8 +135,6 @@ See [md-table-wrap/DESIGN.md](md-table-wrap/DESIGN.md) for how it works.
 - `C-f`/`C-b`, `M-f`/`M-b`, the region and kill follow the buffer's order,
   which is cell by cell along the row, not screen line by screen line.
 - No drag-selecting through wrapped text with the mouse.
-- With `markdown-ts-hide-markup`, cells wrap by their raw width, hidden
-  markup included.
 - A buffer shown in two windows of different widths fits one of them.
 
 ### md-table-inline — inline markup inside table cells
