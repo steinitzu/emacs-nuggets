@@ -52,6 +52,52 @@ belongs on `load-path'.")
 
 (emacs-tools-setup-load-path)
 
+;;;; Compiling
+
+(defgroup emacs-tools nil
+  "The emacs-tools collection of extensions."
+  :group 'convenience
+  :prefix "emacs-tools-")
+
+(defcustom emacs-tools-reload-compile t
+  "Non-nil makes `emacs-tools-reload' byte-compile what it loads.
+Interpreted, an extension runs several times slower and makes several
+times the garbage, and garbage collection is felt as stutter.  nil
+loads the `.el' source, as `emacs-tools-reload' once did."
+  :type 'boolean)
+
+(defvar warning-minimum-level)
+
+(defun emacs-tools--compile (source)
+  "Byte-compile SOURCE to the `.elc' beside it, returning that file.
+On failure return nil, deleting the old `.elc' so it can't shadow
+SOURCE.  Warnings are logged in `*Warnings*', not popped up: `make
+compile' is where they are errors."
+  (require 'bytecomp)
+  (let ((elc (byte-compile-dest-file source))
+        (ok nil))
+    (let ((warning-minimum-level :error)
+          (byte-compile-verbose nil)
+          (inhibit-message t))
+      (setq ok (eq (ignore-errors (byte-compile-file source)) t)))
+    (if (and ok (file-exists-p elc) (not (file-newer-than-file-p source elc)))
+        elc
+      (when (file-exists-p elc) (delete-file elc))
+      nil)))
+
+(defun emacs-tools--refresh-stale-elc ()
+  "Recompile every extension `.elc' older than its source.
+`require' would load the stale one: `load-prefer-newer' is off by
+default.  One that fails to compile is deleted, so its source loads.
+An extension with no `.elc' is left alone."
+  (dolist (dir (emacs-tools-extension-directories))
+    (dolist (source (directory-files dir t "\\.el\\'"))
+      (let ((elc (concat source "c")))
+        (when (and (file-exists-p elc) (file-newer-than-file-p source elc))
+          (emacs-tools--compile source))))))
+
+(emacs-tools--refresh-stale-elc)
+
 ;;;; Reloading during development
 ;;
 ;; `load' on its own is not enough to pick up an edit:
@@ -65,7 +111,8 @@ belongs on `load-path'.")
 ;; - a stale `.elc' shadows the `.el' you just edited.
 ;;
 ;; `unload-feature' fixes the first two by unbinding everything the file
-;; defined; loading the `.el' path explicitly fixes the third.
+;; defined; compiling the `.el' afresh and loading that fixes the third,
+;; and keeps the extension compiled (see `emacs-tools-reload-compile').
 
 (defun emacs-tools-features ()
   "Return the features this collection's extensions provide.
@@ -214,8 +261,10 @@ duplicated, and a buffer killed in the meantime is skipped."
 
 FEATURE is unloaded first, which unbinds every variable and function its
 file defined, so changed `defcustom' and `defvar' defaults actually take
-effect.  The `.el' source is then loaded explicitly, bypassing any stale
-byte-compiled file.
+effect.  The `.el' source is then byte-compiled, and the fresh `.elc'
+loaded: one that can't be stale, and code that runs compiled.  If
+compiling fails, or `emacs-tools-reload-compile' is nil, the `.el'
+itself is loaded.
 
 Minor modes from FEATURE that are currently on are switched off before
 the unload and back on afterwards, so their buffers are rebuilt by the
@@ -240,16 +289,20 @@ Interactively, complete over this collection's loaded features."
     ;; reinstates their own.
     (let ((hooks (emacs-tools--hook-registrations
                   (emacs-tools--feature-functions feature)))
-          (restored 0))
+          (restored 0) (how nil))
       (when (featurep feature)
         ;; Forced: nothing here is depended on by other packages, and a
         ;; dependency check would only get in the way while iterating.
         (unload-feature feature t))
-      (load source nil t)
+      (let ((elc (and emacs-tools-reload-compile (emacs-tools--compile source))))
+        (load (or elc source) nil t t)
+        (setq how (cond (elc "compiled")
+                        (emacs-tools-reload-compile "from source: compiling failed, see *Warnings*")
+                        (t "from source"))))
       (setq restored (emacs-tools--restore-hooks hooks))
       (emacs-tools--set-modes records t)
-      (message "Reloaded %s (%d buffer%s, %d hook%s restored)"
-               feature
+      (message "Reloaded %s, %s (%d buffer%s, %d hook%s restored)"
+               feature how
                (length (cdr records))
                (if (= 1 (length (cdr records))) "" "s")
                restored
@@ -269,11 +322,12 @@ doing the old thing.
 
 A plain `load' is not a compromise here, it is the correct tool.  The
 reasons `emacs-tools-reload' unloads before loading do not apply to this
-file: it defines no `defcustom' and no stateful `defvar' whose old value
-could survive or be reinterpreted, its functions are simply redefined,
-and its one top-level side effect -- `emacs-tools-setup-load-path' -- is
-idempotent.  Loading the `.el' path explicitly still bypasses a stale
-`.elc'.
+file: it defines no stateful `defvar' whose old value could survive or
+be reinterpreted (its one `defcustom', an on/off switch, should keep a
+user's value), its functions are simply redefined, and its top-level
+side effects -- `emacs-tools-setup-load-path' and recompiling stale
+`.elc' files -- are idempotent.  Loading the `.el' path explicitly still
+bypasses a stale `.elc'.
 
 Nothing is unloaded, so no hook registration is disturbed."
   (interactive)
