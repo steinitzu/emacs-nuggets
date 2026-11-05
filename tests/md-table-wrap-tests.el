@@ -674,6 +674,121 @@ The neighbourhood kept is narrowed, so two windowfuls exceed it."
     (should-not md-table-wrap--timer)
     (should-not md-table-wrap--tables)))
 
+;;;; Geometry changes without a command
+
+;; The tests run outside the command loop, so `post-command-hook' never
+;; runs unless a test presses keys: a bare `redisplay' is a change that no
+;; command follows.
+
+(defun md-table-wrap-tests--check-fits ()
+  "The first table's screen lines fit the window, on one column grid."
+  (let* ((lines (md-table-wrap-tests--screen))
+         (grid (md-table-wrap-tests--border-columns (car lines))))
+    (should (> (length lines) 6))
+    (should (= (length grid) 4))
+    (dolist (line lines)
+      (should (<= (string-width line) (window-body-width)))
+      (should (equal (md-table-wrap-tests--border-columns line) grid)))))
+
+(defun md-table-wrap-tests--owned-by-this-buffer ()
+  "Every overlay and marker the layout holds belongs to this buffer."
+  (let ((buf (current-buffer)))
+    (should md-table-wrap--tables)
+    (dolist (tbl md-table-wrap--tables)
+      (cl-loop for r across (md-table-wrap--table-rows tbl)
+               do (should (eq (marker-buffer (md-table-wrap--row-m r)) buf))
+               (dolist (o (md-table-wrap--row-ovs r))
+                 (should (eq (overlay-buffer o) buf)))))))
+
+(ert-deftest md-table-wrap-test-enabled-before-display-fits-on-first-redisplay ()
+  "A buffer whose mode came on before it had a window, as when a file is
+opened, fits the window it is first shown in, with no command run.
+Laid out windowless, it took an 80-column fallback budget."
+  (nuggets-test-with-frame-width md-table-wrap-tests--frame
+    (let ((buf (generate-new-buffer "*nuggets-test*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer buf
+              (insert md-table-wrap-tests--wide)
+              (goto-char (point-min))
+              (markdown-ts-mode)
+              (md-table-wrap-mode 1))
+            (should-not (get-buffer-window buf t))
+            (switch-to-buffer buf)
+            (delete-other-windows)
+            (redisplay t)
+            (md-table-wrap-tests--check-fits))
+        (kill-buffer buf)))))
+
+(ert-deftest md-table-wrap-test-narrower-window-rewraps-before-redisplay ()
+  "Splitting the window re-wraps the table for the narrower half on the
+next redisplay, with no command run."
+  (md-table-wrap-tests--with-table md-table-wrap-tests--wide
+    (split-window-right)
+    (redisplay t)
+    (should (< (window-body-width) 40))
+    (md-table-wrap-tests--check-fits)))
+
+(ert-deftest md-table-wrap-test-face-remap-relays-out-before-redisplay ()
+  "A face remap made without a command (screenshot.el's `buffer-face-set')
+re-lays the table out on the next redisplay.  A terminal draws every
+face one column wide, so the new layout can't look different here; the
+check is that it was made with the remap in force."
+  (md-table-wrap-tests--with-table md-table-wrap-tests--wide
+    (let ((before (md-table-wrap-tests--own-overlays)))
+      (buffer-face-set :weight 'bold)
+      (redisplay t)
+      (should (equal md-table-wrap--remap face-remapping-alist))
+      (should-not (seq-intersection before (md-table-wrap-tests--own-overlays)))
+      (md-table-wrap-tests--check-fits))))
+
+(ert-deftest md-table-wrap-test-indirect-clone-gets-its-own-layout ()
+  "An indirect clone lays its tables out with overlays and markers of its
+own, and the base buffer's layout outlives the clone.  The clone copies
+the base's local variables, `md-table-wrap--tables' among them, whose
+rows' overlays and markers belong to the base."
+  (md-table-wrap-tests--with-table md-table-wrap-tests--wide
+    (let* ((base (current-buffer))
+           (base-tables md-table-wrap--tables)
+           (base-overlays (md-table-wrap-tests--own-overlays))
+           (clone (clone-indirect-buffer nil nil)))
+      (unwind-protect
+          (progn
+            (switch-to-buffer clone)
+            (redisplay t)
+            (should md-table-wrap-mode)
+            (should-not (eq md-table-wrap--tables base-tables))
+            (md-table-wrap-tests--owned-by-this-buffer)
+            (dolist (o (md-table-wrap-tests--own-overlays))
+              (should-not (memq o base-overlays)))
+            (md-table-wrap-tests--check-fits))
+        (kill-buffer clone))
+      (switch-to-buffer base)
+      (redisplay t)
+      (should (eq md-table-wrap--tables base-tables))
+      (md-table-wrap-tests--owned-by-this-buffer)
+      (md-table-wrap-tests--check-fits))))
+
+(ert-deftest md-table-wrap-test-screenshot-style-clone ()
+  "What screenshot.el does: clone the buffer with `make-indirect-buffer',
+narrow the clone to the table, set its face, and show it in a window,
+with no command run.  The clone's table is laid out for its own face
+and window."
+  (md-table-wrap-tests--with-table md-table-wrap-tests--wide
+    (let* ((r (md-table-wrap-tests--table-region))
+           (clone (make-indirect-buffer (current-buffer) " *md-table-wrap-shot*" t t)))
+      (unwind-protect
+          (progn
+            (with-current-buffer clone
+              (narrow-to-region (car r) (1+ (cdr r)))
+              (buffer-face-set :weight 'bold))
+            (switch-to-buffer clone)
+            (redisplay t)
+            (should (equal md-table-wrap--remap face-remapping-alist))
+            (md-table-wrap-tests--owned-by-this-buffer)
+            (md-table-wrap-tests--check-fits))
+        (kill-buffer clone)))))
+
 (provide 'md-table-wrap-tests)
 
 ;;; md-table-wrap-tests.el ends here
