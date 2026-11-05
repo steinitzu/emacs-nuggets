@@ -541,7 +541,21 @@ give you a clean slate:
 - a stale `.elc` shadows the `.el` you just edited.
 
 `emacs-tools-reload` unloads the feature first, which unbinds everything its
-file defined, then loads the `.el` path explicitly. Minor modes that are
+file defined, then byte-compiles the `.el` and loads the fresh `.elc`, which
+can't be stale. It compiles rather than loading the source because
+interpreted Lisp is several times slower and makes several times the garbage:
+md-table-wrap, interpreted, stutters through a table on garbage collection
+alone. The `.elc` is written next to its source, so the next Emacs start
+loads it compiled too. If compiling fails, the reload loads the `.el` instead
+and says so. Compiler warnings are logged in `*Warnings*` without popping it
+up; `make compile` is where they are errors. Set
+`emacs-tools-reload-compile` to nil to load source as before.
+
+A `.elc` can still go stale between sessions: edit the source, restart, and
+`require` loads the old `.elc`, since `load-prefer-newer` is off by default.
+So when the loader starts up it recompiles every extension's `.elc` that is
+older than its source, and deletes one that fails to compile. An extension
+with no `.elc` is left alone. Minor modes that are
 switched on are turned off beforehand and back on afterwards, so their buffers
 are rebuilt by the new code. Hook registrations survive: `unload-feature`
 strips a feature's functions from every hook, which is right when a feature is
