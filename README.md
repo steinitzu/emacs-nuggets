@@ -69,33 +69,32 @@ Each section below covers one extension's options and limits.
 
 ### md-table-wrap — Markdown tables, aligned and wrapped to fit the window
 
-`markdown-mode` aligns tables by rewriting the buffer. That is no use in a
-read-only buffer, it dirties files you only meant to read, and a table whose
-cells hold sentences still runs off the side of the window.
+`md-table-wrap` aligns Markdown tables **without editing the text**. Each
+table is drawn on screen with its columns lined up and framed in borders, and
+when it is wider than the window, every cell is word-wrapped inside its
+column so the whole table fits.
 
-`md-table-wrap` draws every table **as a display presentation**, aligned, and
-with each cell word-wrapped inside its column when the table is too wide, so
-the whole table fits the window, the way you would hand-align it in a text
-file:
+![A table of options whose long descriptions wrap inside their column](screenshots/md-table-wrap-prose.png)
 
-```
-┌──────────┬─────────────────────────┬───────────┐
-│ Approach │ What it does            │ Status    │
-╞══════════╪═════════════════════════╪═══════════╡
-│ Per-line │ Every cell is drawn as  │ chosen    │
-│ anchors  │ a copy in an overlay    │           │
-│          │ before-string.          │           │
-├──────────┼─────────────────────────┼───────────┤
-│ Focus    │ The cell holding point  │ fallback  │
-│ cell     │ stays real buffer text. │           │
-└──────────┴─────────────────────────┴───────────┘
-```
-
-Buffer text stays byte-identical and `buffer-modified-p` stays `nil`: the
-buffer still holds one line of Markdown per row. So it works in read-only
-buffers — VC revision buffers, `magit` blobs, generated docs — under both
+The alignment is display only. The buffer still holds the Markdown you wrote,
+byte for byte, one line per row, and is never marked modified. So you can
+read a file without it ending up changed, and tables line up in read-only
+buffers too — VC revision buffers, `magit` blobs, generated docs — under both
 `buffer-read-only` and a `read-only` text property, as chat and transcript UIs
 use to lock down what they have already printed.
+
+Inline markup keeps its faces inside wrapped cells, and long code spans,
+URLs and paths break at sensible points:
+
+![Bold, italic, struck-out text, code spans, links and emoji in wrapped cells](screenshots/md-table-wrap-markup.png)
+
+![Long identifiers and paths broken at hyphens and slashes](screenshots/md-table-wrap-long-words.png)
+
+![Escaped pipes inside code spans stay in their cell](screenshots/md-table-wrap-pipes.png)
+
+A table that already fits is aligned and framed at its natural widths:
+
+![A narrow table, aligned and framed without wrapping](screenshots/md-table-wrap-fits.png)
 
 Column widths are chosen to keep the table short, short label columns stay
 unwrapped where that is cheap, and the table re-wraps as you type or resize
@@ -655,6 +654,7 @@ md-file-anchor/         extension: follow line/heading anchors on file links
 md-heading-scale/       extension: size Markdown headings by their level
 termdex/                extension: directory-aware handling for many terminals
 docs/                   development notes: open questions and findings
+screenshots/            images for this README
 tests/                  test suite and TTY test runner
 ```
 
