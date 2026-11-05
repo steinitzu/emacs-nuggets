@@ -21,6 +21,7 @@
 (require 'seq)
 (require 'markdown-ts-mode)
 (require 'md-table-wrap)
+(require 'md-table-inline)
 (require 'emacs-tools-test-helpers)
 
 ;;;; Fixtures
@@ -118,12 +119,19 @@ covering it, is pushed onto `md-table-wrap-tests--real'."
           (setq pos (1+ pos)))))
     (apply #'concat (nreverse parts))))
 
+(defun md-table-wrap-tests--hidden-p (s i)
+  "Non-nil if character I of S is invisible in this buffer."
+  (let ((v (get-text-property i 'invisible s)))
+    (and v (invisible-p v))))
+
 (defun md-table-wrap-tests--render (s)
-  "Screen lines of S, with `:align-to' stretches expanded to spaces."
+  "Screen lines of S, with `:align-to' stretches expanded to spaces, and
+invisible characters (hidden markup) left out."
   (let ((lines nil) (line ""))
     (dotimes (i (length s))
       (let ((c (aref s i)) (d (get-text-property i 'display s)))
-        (cond ((and (consp d) (eq (car d) 'space))
+        (cond ((md-table-wrap-tests--hidden-p s i))
+              ((and (consp d) (eq (car d) 'space))
                (let ((to (car (plist-get (cdr d) :align-to))))
                  (setq line (concat line (make-string (max 0 (- to (string-width line)))
                                                       ?\s)))))
@@ -351,6 +359,8 @@ rows leave one column's last screen lines blank.")
          (s (md-table-wrap-tests--drawn (car r) (cdr r)))
          (i (text-property-not-all 0 (length s) 'cursor nil s)))
     (should i)
+    ;; A cursor on hidden text isn't drawn there.
+    (should-not (md-table-wrap-tests--hidden-p s i))
     (let ((lines (md-table-wrap-tests--render (substring s 0 i))))
       (cons (1- (length lines)) (string-width (car (last lines)))))))
 
@@ -436,6 +446,64 @@ holds the cursor on must outlast it, or C-n sticks there."
                                  ;; rows unbuilt; build them as it would.
                                  (jit-lock-fontify-now (point-min) (point-max))))
                      quiet)))))
+
+(defun md-table-wrap-tests--hide-markup ()
+  "Hide markup in cells, as `md-table-inline-mode' lets upstream do."
+  (md-table-inline-mode 1)
+  (markdown-ts-toggle-hide-markup)
+  (should markdown-ts-hide-markup))
+
+(defun md-table-wrap-tests--check-hidden-layout ()
+  "The links table drawn with its markup hidden: every screen line of a
+row shows some text, and C-n down the first column visits them all."
+  (let* ((lines (md-table-wrap-tests--screen))
+         (text (cl-loop for l in lines for i from 0
+                        when (string-prefix-p "│" l) collect i)))
+    ;; The markup hides: no bracket, no URL, no backtick drawn.
+    (should-not (seq-some (lambda (l) (string-match-p "https\\|](\\|`" l)) lines))
+    (should (seq-some (lambda (l) (string-match-p "│ widgetco-backend-" l)) lines))
+    ;; A hidden URL leaves no line of its own.
+    (dolist (i text)
+      (should (string-match-p "[^│ ]" (nth i lines))))
+    (md-table-wrap-tests--goto "PR")
+    (md-table-wrap-tests--press "C-f C-b")
+    (let ((down (md-table-wrap-tests--walk "C-n" (1- (length text)))))
+      (should (equal (mapcar #'car down) (cdr text)))
+      (should (seq-every-p (lambda (c) (= (cdr c) 2)) down)))))
+
+(ert-deftest md-table-wrap-test-hidden-markup-takes-no-room ()
+  "With markup hidden, cells are wrapped as they show: a link's URL is
+measured as nothing, and C-n walks the lines that are drawn."
+  (emacs-tools-test-with-frame-width md-table-wrap-tests--frame
+    (emacs-tools-test-with-buffer md-table-wrap-tests--links
+      (delete-other-windows)
+      (md-table-wrap-tests--hide-markup)
+      (md-table-wrap-mode 1)
+      (redisplay t)
+      (md-table-wrap-tests--check-hidden-layout))))
+
+(ert-deftest md-table-wrap-test-hiding-markup-rewraps-the-table ()
+  "Hiding markup in a table already drawn re-wraps it: refontified rows
+are re-modelled, and the widths reallocated when idle."
+  (md-table-wrap-tests--with-table md-table-wrap-tests--links
+    (md-table-wrap-tests--hide-markup)
+    (redisplay t)
+    (md-table-wrap--idle-realloc)
+    (redisplay t)
+    (md-table-wrap-tests--check-hidden-layout)))
+
+(ert-deftest md-table-wrap-test-point-steps-over-hidden-markup ()
+  "C-f and C-b move through a link cell one shown character at a time:
+point never rests on hidden markup, so every press moves the cursor."
+  (md-table-wrap-tests--with-table md-table-wrap-tests--links
+    (md-table-wrap-tests--hide-markup)
+    (redisplay t)
+    (md-table-wrap-tests--goto "[widgetco-backend-lib#218]")
+    (md-table-wrap-tests--press "C-f C-b")
+    (dolist (key '("C-f" "C-b"))
+      (let ((places (cons (md-table-wrap-tests--cursor)
+                          (md-table-wrap-tests--walk key 30))))
+        (cl-loop for (a b) on places while b do (should-not (equal a b)))))))
 
 (ert-deftest md-table-wrap-test-lines-added-far-away-keep-the-layout ()
   "A line printed below the table, outside any command, leaves its rows
