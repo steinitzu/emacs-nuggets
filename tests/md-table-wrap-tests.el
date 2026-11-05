@@ -364,15 +364,29 @@ carry over from the motion before."
   (redisplay t)
   (push (md-table-wrap-tests--cursor) md-table-wrap-tests--trail))
 
-(defun md-table-wrap-tests--walk (key n)
-  "The cursor's places after each of N presses of KEY, in one macro."
+(defvar md-table-wrap-tests--between nil
+  "Function run between a press and the record of where it went.")
+
+(defun md-table-wrap-tests--between ()
+  "Run `md-table-wrap-tests--between' as an idle timer would, between
+two commands: the motion before still counts as the last command."
+  (interactive)
+  (setq this-command last-command)
+  (funcall md-table-wrap-tests--between))
+
+(defun md-table-wrap-tests--walk (key n &optional between)
+  "The cursor's places after each of N presses of KEY, in one macro.
+BETWEEN, a function, runs after each press, before its place is read."
   (let ((md-table-wrap-tests--trail nil)
+        (md-table-wrap-tests--between between)
         (map (make-sparse-keymap)))
     (define-key map (kbd "<f12>") #'md-table-wrap-tests--record)
+    (define-key map (kbd "<f11>") #'md-table-wrap-tests--between)
     (let ((minor-mode-overriding-map-alist nil)
           (emulation-mode-map-alists (cons `((t . ,map)) emulation-mode-map-alists)))
       (md-table-wrap-tests--press
-       (mapconcat #'identity (make-list n (concat key " <f12>")) " ")))
+       (mapconcat #'identity
+                  (make-list n (concat key (if between " <f11>" "") " <f12>")) " ")))
     (nreverse md-table-wrap-tests--trail)))
 
 (ert-deftest md-table-wrap-test-vertical-motion-follows-the-screen ()
@@ -402,6 +416,41 @@ blank, as the cursor on a short line would."
             (down (md-table-wrap-tests--walk "C-n" 13)))
         (should (equal (mapcar #'car down) (cdr text)))
         (should (seq-every-p (lambda (c) (= (cdr c) x)) down))))))
+
+(ert-deftest md-table-wrap-test-vertical-motion-survives-a-relayout ()
+  "C-n down a column walks the same lines when every table is laid out
+anew between presses, as a chat buffer printing just below a table
+makes happen.  A re-layout makes every row anew; the line a blank cell
+holds the cursor on must outlast it, or C-n sticks there."
+  (md-table-wrap-tests--with-table md-table-wrap-tests--links
+    (md-table-wrap-tests--goto "Change")
+    (md-table-wrap-tests--press "C-f C-b")
+    (let ((quiet (md-table-wrap-tests--walk "C-n" 13)))
+      (md-table-wrap-tests--goto "Change")
+      (md-table-wrap-tests--press "C-f C-b")
+      (should (equal (md-table-wrap-tests--walk
+                      "C-n" 13 (lambda ()
+                                 (md-table-wrap--layout-all)
+                                 (md-table-wrap--follow-point)
+                                 ;; Inside a macro, redisplay leaves the
+                                 ;; rows unbuilt; build them as it would.
+                                 (jit-lock-fontify-now (point-min) (point-max))))
+                     quiet)))))
+
+(ert-deftest md-table-wrap-test-lines-added-far-away-keep-the-layout ()
+  "A line printed below the table, outside any command, leaves its rows
+be once the idle rescan finds the tables unchanged; a line that makes
+a new table gets it laid out."
+  (md-table-wrap-tests--with-table (concat md-table-wrap-tests--wide "\n\nTail.\n")
+    (let ((row (aref (md-table-wrap--table-rows (car md-table-wrap--tables)) 2)))
+      (save-excursion (goto-char (point-max)) (insert "More output.\n"))
+      (md-table-wrap--idle-realloc)
+      (md-table-wrap--rescan)
+      (should (eq (aref (md-table-wrap--table-rows (car md-table-wrap--tables)) 2) row))
+      (save-excursion (goto-char (point-max)) (insert "\n| x | y |\n|---|---|\n| 1 | 2 |\n"))
+      (md-table-wrap--idle-realloc)
+      (md-table-wrap--rescan)
+      (should (= (length md-table-wrap--tables) 2)))))
 
 (ert-deftest md-table-wrap-test-end-of-line-ends-at-the-last-text ()
   "C-e on a screen line whose last cell is blank there goes to the end
