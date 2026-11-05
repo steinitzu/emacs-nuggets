@@ -646,6 +646,7 @@ so no buffer is left scaled by a remapping nothing can now remove.
 ## Repository layout
 
 ```
+LICENSE                 GNU General Public License, version 3
 nuggets.el              collection loader; adds each extension to load-path
 md-table-wrap/          extension: display-only Markdown tables, wrapped to fit
 md-table-inline/        extension: inline markup inside Markdown table cells
@@ -656,3 +657,13 @@ termdex/                extension: directory-aware handling for many terminals
 docs/                   development notes: open questions and findings
 tests/                  test suite and TTY test runner
 ```
+
+## License
+
+nuggets is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. See [LICENSE](LICENSE).
+
+This covers every version in the repository's history, including commits made
+before the license file was added.
