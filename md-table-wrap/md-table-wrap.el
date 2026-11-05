@@ -1509,7 +1509,13 @@ reallocation."
   (md-table-wrap--schedule #'md-table-wrap--idle-realloc))
 
 (defun md-table-wrap--pre-redisplay (&optional win)
-  "Mirror overlay faces onto the copies of the rows on screen."
+  "Re-lay out for a width or font change, then mirror overlay faces onto
+the copies of the rows on screen.
+A change made without a command -- the buffer's first display, a face
+set by another package -- would otherwise wait for the next one."
+  (when md-table-wrap-mode
+    (with-demoted-errors "md-table-wrap: %S"
+      (md-table-wrap--check-geometry)))
   (when (and md-table-wrap-mode md-table-wrap-mirror-faces md-table-wrap--tables)
     (with-demoted-errors "md-table-wrap: %S"
       (let* ((w (if (windowp win) win (selected-window)))
@@ -1683,6 +1689,9 @@ cell by cell."
         (add-hook 'after-change-functions #'md-table-wrap--after-change nil t)
         ;; After the global `redisplay--update-region-highlight'.
         (add-hook 'pre-redisplay-functions #'md-table-wrap--pre-redisplay 90 t)
+        ;; Copied into a clone with the buffer's other local hooks, and
+        ;; run there.
+        (add-hook 'clone-indirect-buffer-hook #'md-table-wrap--cloned nil t)
         ;; `jit-lock-register' prepends; rows are built from fontified text,
         ;; so the builder runs after font-lock in the same pass.
         (jit-lock-register #'md-table-wrap--jit)
@@ -1695,6 +1704,7 @@ cell by cell."
     (remove-hook 'before-change-functions #'md-table-wrap--before-change t)
     (remove-hook 'after-change-functions #'md-table-wrap--after-change t)
     (remove-hook 'pre-redisplay-functions #'md-table-wrap--pre-redisplay t)
+    (remove-hook 'clone-indirect-buffer-hook #'md-table-wrap--cloned t)
     (dolist (v '(md-table-wrap--timer md-table-wrap--rescan-timer))
       (when (symbol-value v) (cancel-timer (symbol-value v)) (set v nil)))
     (md-table-wrap--forget)
@@ -1702,6 +1712,23 @@ cell by cell."
         (setq-local hl-line-range-function (plist-get md-table-wrap--saved :hl))
       (kill-local-variable 'hl-line-range-function))
     (setq md-table-wrap--saved nil)))
+
+(defun md-table-wrap--cloned ()
+  "Give an indirect clone a layout of its own.
+Runs in the clone, which copied its base's local variables and overlays.
+The copied tables are the base's own, with the base's markers and
+overlays, so they are dropped here rather than torn down."
+  (when md-table-wrap-mode
+    (save-restriction
+      (widen)
+      (remove-overlays (point-min) (point-max) 'md-table-wrap t))
+    (setq md-table-wrap--tables nil md-table-wrap--prow nil
+          md-table-wrap--built-rows nil md-table-wrap--realloc nil
+          md-table-wrap--dirty nil md-table-wrap--full nil
+          md-table-wrap--vline nil md-table-wrap--last-pt nil
+          ;; The base's timers, which run in the base.
+          md-table-wrap--timer nil md-table-wrap--rescan-timer nil)
+    (md-table-wrap--layout-all)))
 
 (defun md-table-wrap--maybe-enable ()
   "Enable `md-table-wrap-mode' if this buffer's mode calls for it."

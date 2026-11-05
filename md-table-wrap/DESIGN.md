@@ -502,7 +502,14 @@ Integration tests in a real TTY frame (`make test`), in real
 - typing into a cell re-wraps it;
 - refontifying a built row redraws it, with the cursor where it was, and
   faces `md-table-inline-mode` adds reach the copies in either order;
-- turning off removes every overlay.
+- turning off removes every overlay;
+- with no command run: a buffer enabled before it had a window fits the
+  one it is first shown in, a split window re-wraps, and a face remap
+  re-lays out (a terminal draws every face one column wide, so this
+  checks that the layout was redone, not how it looks);
+- an indirect clone, made with `clone-indirect-buffer` or as screenshot.el
+  makes it (narrowed, face set, no command), owns its layout's overlays
+  and markers, and the base's layout outlives it.
 
 Deviation, found while writing them: `posn-at-point` can't locate the
 cursor in a wrapped row. Point is inside hidden text there, so it reports
