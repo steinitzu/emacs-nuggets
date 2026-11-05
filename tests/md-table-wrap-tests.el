@@ -769,6 +769,40 @@ rows' overlays and markers belong to the base."
       (md-table-wrap-tests--owned-by-this-buffer)
       (md-table-wrap-tests--check-fits))))
 
+(defconst md-table-wrap-tests--last-row-wraps
+  "Prose before.
+
+| Name | Description | Status |
+|---|---|---|
+| gamma | Short. | open |
+| alpha | The first item, whose description runs on well past what one screen line of this window can hold. | open |"
+  "A wide table whose wrapped last row ends the text, with no newline.")
+
+(defun md-table-wrap-tests--check-closed ()
+  "The first table fits, and its last screen line is its bottom edge."
+  (md-table-wrap-tests--check-fits)
+  (should (string-prefix-p "└" (car (last (md-table-wrap-tests--screen))))))
+
+(ert-deftest md-table-wrap-test-last-row-at-end-of-buffer ()
+  "A wrapped last row with nothing after its closing pipe, not even a
+newline, is drawn whole, with the table's bottom edge under it."
+  (md-table-wrap-tests--with-table md-table-wrap-tests--last-row-wraps
+    (md-table-wrap-tests--check-closed)))
+
+(ert-deftest md-table-wrap-test-last-row-at-end-of-narrowing ()
+  "A buffer narrowed to end at the last row's closing pipe, as the
+`screenshot' command trims its region, and laid out again while narrowed
+(screenshot.el sets the face after narrowing), draws that row whole."
+  (md-table-wrap-tests--with-table (concat md-table-wrap-tests--last-row-wraps
+                                           "\n\nProse after.\n")
+    (goto-char (point-min))
+    (search-forward "open |" nil t 2)
+    (narrow-to-region (point-min) (point))
+    (buffer-face-set :weight 'bold)
+    (redisplay t)
+    (should (equal md-table-wrap--remap face-remapping-alist))
+    (md-table-wrap-tests--check-closed)))
+
 (ert-deftest md-table-wrap-test-screenshot-style-clone ()
   "What screenshot.el does: clone the buffer with `make-indirect-buffer',
 narrow the clone to the table, set its face, and show it in a window,
