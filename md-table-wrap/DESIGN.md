@@ -338,6 +338,34 @@ before. Fixed twice over: the hint names the row's start, and the rescan
 no longer re-lays out tables it finds unchanged. Found on a 3-column table
 of PR links, which walked fine in a quiet buffer.
 
+### Hidden markup
+
+With `markdown-ts-toggle-hide-markup` (and `md-table-inline-mode`, which
+lets it reach cells), a cell's delimiters carry an `invisible` property: a
+link's brackets and its whole destination, a code span's backticks. The
+copies are taken with `buffer-substring`, so they hide the same text. The
+model has to agree with them, or a link cell is wrapped as if its URL
+showed, and leaves blank lines where it went.
+
+- **Widths count visible characters.** A word's width, its pieces'
+  widths and a cell's natural width skip characters whose `invisible`
+  property `invisible-p` holds, so a hidden URL is zero-wide: it rides on
+  the line of the link text before it.
+- **Columns map over visible characters.** A screen column inside a cell
+  (C-n's goal) maps to the visible character covering it, and an offset to
+  the visible width before it. The cursor is never put on a hidden copy.
+- **Point leaves hidden text.** After a command leaves point on a hidden
+  character in a row, it moves on past the run, or back to the visible
+  character before it when point moved backward, as Emacs's own point
+  adjustment does for invisible text outside tables.
+- **The model follows fontification.** Hiding is font-lock's work, so a
+  row's hidden runs are only known once it is fontified. Laying a table
+  out fontifies it first when it is small enough to allocate from whole
+  (`md-table-wrap--alloc-rows`). And each row remembers the hidden runs
+  its model was made with: when jit-lock refontifies a row (toggling
+  hide-markup flushes font-lock) and they changed, the row is re-modelled
+  before it is built, and its table's widths are reallocated when idle.
+
 ### Edits
 
 - An edit inside a row re-parses and re-wraps only that row, then
