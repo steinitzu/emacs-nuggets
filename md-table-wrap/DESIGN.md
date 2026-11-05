@@ -249,6 +249,26 @@ every row wraps:
 
 Interpreted (no `.elc`), the same runs take about seven times as long.
 
+**Garbage.** Moving point stuttered: one move in ten took 10-14 ms, the
+moves that ran a garbage collection, and Emacs collected every few keys.
+Every anchoring rebuilt each line string of the row holding point: a fresh
+rule and top edge, a concatenation per line, and `default` added over the
+result. Now each line is defaulted once when built, the top edge and rule
+are made once per build, and finished line strings are cached (two per
+line, with and without the newline an empty span needs), so moving
+through a row makes only the line holding the cursor anew, and an
+overlay whose string is unchanged is not touched. An anchoring that would
+leave point and its line where they are is skipped outright.
+
+Measured on 40 rows of PR links with markup hidden, byte-compiled, 160
+motions (C-n, C-p, C-f): objects allocated per motion 4870 → 1577, p90
+11-12 ms → 2 ms. Interpreted, the same walk allocates 6576 per motion
+with the caching, which is why `emacs-tools-reload`, loading source,
+stutters more than a compiled install. Of what remains after a motion,
+most is `markdown-ts-mode`'s own table tracking
+(`markdown-ts--enable-in-table-mode` on `post-command-hook`), not this
+mode.
+
 ## Borders
 
 `md-table-wrap-style` picks how borders are drawn:
