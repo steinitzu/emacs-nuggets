@@ -1,5 +1,8 @@
 ;;; md-table-wrap-tests.el --- Tests for md-table-wrap -*- lexical-binding: t; -*-
 
+;; Copyright (C) 2026 Steinthor Palsson
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
 ;;; Commentary:
 
 ;; These run in real `markdown-ts-mode' buffers in a live TTY frame, with the

@@ -1,5 +1,8 @@
 ;;; termdex-tests.el --- Tests for termdex -*- lexical-binding: t; -*-
 
+;; Copyright (C) 2026 Steinthor Palsson
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
 ;;; Commentary:
 
 ;; Driven against real terminals running real shells: a terminal is started,

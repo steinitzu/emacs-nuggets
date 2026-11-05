@@ -1,5 +1,8 @@
 ;;; md-file-anchor-tests.el --- Tests for md-file-anchor -*- lexical-binding: t; -*-
 
+;; Copyright (C) 2026 Steinthor Palsson
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
 ;;; Commentary:
 
 ;; These run in real buffers under a real `markdown-ts-mode' with a real

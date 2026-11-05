@@ -1,5 +1,8 @@
 ;;; run-tests.el --- ERT driver for a TTY frame -*- lexical-binding: t; -*-
 
+;; Copyright (C) 2026 Steinthor Palsson
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
 ;;; Commentary:
 
 ;; Loaded by run-tests.sh inside an Emacs holding a real TTY frame.  Because

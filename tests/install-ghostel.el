@@ -1,5 +1,8 @@
 ;;; install-ghostel.el --- Install the ghostel the test suite needs -*- lexical-binding: t; -*-
 
+;; Copyright (C) 2026 Steinthor Palsson
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
 ;;; Commentary:
 
 ;; termdex's tests drive real terminals of every backend it supports, and

@@ -1,5 +1,8 @@
 ;;; nuggets-test-helpers.el --- Fixtures shared by the test suites -*- lexical-binding: t; -*-
 
+;; Copyright (C) 2026 Steinthor Palsson
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
 ;;; Commentary:
 
 ;; Buffer and frame scaffolding more than one suite needs.  Not a suite

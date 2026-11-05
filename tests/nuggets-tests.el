@@ -1,5 +1,8 @@
 ;;; nuggets-tests.el --- Tests for the collection loader -*- lexical-binding: t; -*-
 
+;; Copyright (C) 2026 Steinthor Palsson
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
 ;;; Commentary:
 
 ;; Exercises `nuggets-reload' against a real extension in a real buffer:

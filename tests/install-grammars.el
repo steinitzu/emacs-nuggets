@@ -1,5 +1,8 @@
 ;;; install-grammars.el --- Build the grammars the test suite needs -*- lexical-binding: t; -*-
 
+;; Copyright (C) 2026 Steinthor Palsson
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
 ;;; Commentary:
 
 ;; Interactively, `markdown-ts-mode' registers its own grammar recipes and

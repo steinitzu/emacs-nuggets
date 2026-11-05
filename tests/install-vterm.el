@@ -1,5 +1,8 @@
 ;;; install-vterm.el --- Install the vterm the test suite needs -*- lexical-binding: t; -*-
 
+;; Copyright (C) 2026 Steinthor Palsson
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
 ;;; Commentary:
 
 ;; termdex's tests drive real terminals, so they need a real `vterm' -- which
