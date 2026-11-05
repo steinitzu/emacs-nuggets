@@ -37,7 +37,7 @@ driven through a pty.
 | 1 | Does `/proc/PID/cwd` track a `cd` typed into vterm? | **Yes.** Terminal started in `/usr`, `cd /etc` → link followed to `/etc` immediately. |
 | 2 | Can idle-vs-busy be detected? | **Yes.** `tpgid` from `/proc/PID/stat` equals the shell's own `pgrp` at the prompt, differs while a foreground job runs, and returns on `C-c`. A `&` background job correctly reads as **idle**. |
 | 3 | Can the running command be named? | **Yes.** The shell's child whose `pgrp` matches `tpgid` is the foreground job; `/proc/CHILD/comm` gave `sleep`, and `/proc/CHILD/cwd` is available too. |
-| 4 | Does `vterm-buffer-name-string` track the title live? | **Yes.** Buffer renamed from `…: /home/…/emacs-tools` to `…: /etc` on `cd`. A second terminal claiming the same title became `…<2>` — Emacs handles collisions. |
+| 4 | Does `vterm-buffer-name-string` track the title live? | **Yes.** Buffer renamed from `…: /home/…/nuggets` to `…: /etc` on `cd`. A second terminal claiming the same title became `…<2>` — Emacs handles collisions. |
 | 5 | Do 1–3 survive a **nested shell** (`sudo -i`, `ssh`, plain `bash`)? | **Only with the descendant walk below.** Reading the pty leader alone, a nested shell makes the terminal read permanently busy and freezes its cwd at the outer shell's. |
 
 Experiment 1 also produced the finding that shapes the mechanism: **vterm's own
@@ -146,7 +146,7 @@ out of that:
 
 - **Recency is free.** `buffer-list` is already MRU-ordered, which is exactly
   the tiebreaker the matching rules and the switcher need.
-- **`emacs-tools-reload` is a non-event.** Nothing accumulates, so nothing needs
+- **`nuggets-reload` is a non-event.** Nothing accumulates, so nothing needs
   resetting. `termdex-unload-function` has only timers to cancel.
 
 The idle-terminal sweep, added later, keeps its own record of when a terminal
@@ -592,7 +592,7 @@ Two notes from building it:
   `termdex-terminal`, nil when remote). The background-job check needs it, and
   it is a fact the probe already walked the process tree to find — the
   alternative was walking it a second time from the sweep.
-- **Reloading is still a non-event.** `emacs-tools-reload` switches the feature's
+- **Reloading is still a non-event.** `nuggets-reload` switches the feature's
   minor modes off, unloads, loads — and the file's own `(termdex-cleanup-mode 1)`
   turns the mode on before the reloader switches it on again. That is harmless
   because starting the timer cancels any previous one first; checked directly,

@@ -18,7 +18,7 @@
 
 (require 'markdown-ts-mode)
 
-(let ((dir (or (getenv "EMACS_TOOLS_GRAMMAR_DIR")
+(let ((dir (or (getenv "NUGGETS_GRAMMAR_DIR")
                (expand-file-name ".test-env/tree-sitter"))))
   (make-directory dir t)
   ;; Without this, the post-install check looks only in the default location

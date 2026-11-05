@@ -263,7 +263,7 @@ leave point and its line where they are is skipped outright.
 Measured on 40 rows of PR links with markup hidden, byte-compiled, 160
 motions (C-n, C-p, C-f): objects allocated per motion 4870 → 1577, p90
 11-12 ms → 2 ms. Interpreted, the same walk allocates 6576 per motion
-with the caching, which is why `emacs-tools-reload`, loading source,
+with the caching, which is why `nuggets-reload`, loading source,
 stutters more than a compiled install. Of what remains after a motion,
 most is `markdown-ts-mode`'s own table tracking
 (`markdown-ts--enable-in-table-mode` on `post-command-hook`), not this

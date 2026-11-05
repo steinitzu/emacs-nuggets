@@ -1,4 +1,4 @@
-;;; emacs-tools-test-helpers.el --- Fixtures shared by the test suites -*- lexical-binding: t; -*-
+;;; nuggets-test-helpers.el --- Fixtures shared by the test suites -*- lexical-binding: t; -*-
 
 ;;; Commentary:
 
@@ -10,10 +10,10 @@
 
 (require 'markdown-ts-mode)
 
-(defmacro emacs-tools-test-with-buffer (text &rest body)
+(defmacro nuggets-test-with-buffer (text &rest body)
   "Display TEXT in a `markdown-ts-mode' buffer in a live window, then run BODY."
   (declare (indent 1) (debug t))
-  `(let ((buf (generate-new-buffer "*emacs-tools-test*")))
+  `(let ((buf (generate-new-buffer "*nuggets-test*")))
      (unwind-protect
          (progn
            (switch-to-buffer buf)
@@ -25,12 +25,12 @@
            ,@body)
        (kill-buffer buf))))
 
-(defmacro emacs-tools-test-with-read-only-text (text &rest body)
+(defmacro nuggets-test-with-read-only-text (text &rest body)
   "Run BODY over TEXT with every character carrying a `read-only' property.
 This is how a chat or transcript UI locks down what it has printed,
 rather than with `buffer-read-only'."
   (declare (indent 1) (debug t))
-  `(emacs-tools-test-with-buffer ,text
+  `(nuggets-test-with-buffer ,text
      (let ((inhibit-read-only t))
        (put-text-property (point-min) (point-max) 'read-only t))
      ;; Applying the property is itself a modification; the fixture's own
@@ -38,7 +38,7 @@ rather than with `buffer-read-only'."
      (set-buffer-modified-p nil)
      ,@body))
 
-(defmacro emacs-tools-test-with-frame-width (width &rest body)
+(defmacro nuggets-test-with-frame-width (width &rest body)
   "Run BODY with the frame WIDTH columns wide, then restore it."
   (declare (indent 1) (debug t))
   `(let ((original (frame-width)))
@@ -47,6 +47,6 @@ rather than with `buffer-read-only'."
        (set-frame-width nil original)
        (redisplay t))))
 
-(provide 'emacs-tools-test-helpers)
+(provide 'nuggets-test-helpers)
 
-;;; emacs-tools-test-helpers.el ends here
+;;; nuggets-test-helpers.el ends here

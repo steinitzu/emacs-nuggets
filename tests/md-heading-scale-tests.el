@@ -345,7 +345,7 @@ available, and when the frame cannot be measured."
 ;;;; Reload
 
 (ert-deftest md-heading-scale-tests-reload-leaves-one-set-of-remappings ()
-  "`emacs-tools-reload' comes back with the mode on and nothing doubled.
+  "`nuggets-reload' comes back with the mode on and nothing doubled.
 The mode is switched off and on around the unload, so a buffer must not
 end up holding both the old cookies and the new ones."
   (md-heading-scale-tests--with-buffer
@@ -353,7 +353,7 @@ end up holding both the old cookies and the new ones."
     (let ((buffer (current-buffer))
           (scaled (length face-remapping-alist)))
       (should (> scaled 0))
-      (emacs-tools-reload 'md-heading-scale)
+      (nuggets-reload 'md-heading-scale)
       (with-current-buffer buffer
         (should md-heading-scale-mode)
         (should (= (length face-remapping-alist) scaled))

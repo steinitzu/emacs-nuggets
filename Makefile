@@ -6,11 +6,11 @@ ELPA := $(TESTENV)/elpa
 
 # Extension directories, discovered the same way the loader discovers them:
 # every subdirectory holding Lisp, minus the ones that ship nothing.  Keep this
-# exclusion list in step with `emacs-tools-non-extension-directories'.
+# exclusion list in step with `nuggets-non-extension-directories'.
 NON_EXTENSIONS := tests hacks
 EXTENSIONS := $(filter-out $(addprefix $(ROOT)/,$(NON_EXTENSIONS)), \
                 $(sort $(patsubst %/,%,$(dir $(wildcard $(ROOT)/*/*.el)))))
-SOURCES := $(ROOT)/emacs-tools.el $(wildcard $(addsuffix /*.el,$(EXTENSIONS)))
+SOURCES := $(ROOT)/nuggets.el $(wildcard $(addsuffix /*.el,$(EXTENSIONS)))
 
 .PHONY: test deps compile clean
 
@@ -36,15 +36,15 @@ test: deps
 deps: $(GRAMMARS)/libtree-sitter-markdown.so $(ELPA)/.vterm-stamp $(ELPA)/.ghostel-stamp
 
 $(GRAMMARS)/libtree-sitter-markdown.so:
-	@EMACS_TOOLS_GRAMMAR_DIR=$(GRAMMARS) $(EMACS) --batch -l tests/install-grammars.el
+	@NUGGETS_GRAMMAR_DIR=$(GRAMMARS) $(EMACS) --batch -l tests/install-grammars.el
 
 $(ELPA)/.vterm-stamp:
-	@EMACS_TOOLS_ELPA_DIR=$(ELPA) $(EMACS) --batch -l tests/install-vterm.el \
+	@NUGGETS_ELPA_DIR=$(ELPA) $(EMACS) --batch -l tests/install-vterm.el \
 	  && mkdir -p $(ELPA) && touch $@ \
 	  || echo "WARNING: vterm unavailable -- termdex tests will skip" >&2
 
 $(ELPA)/.ghostel-stamp:
-	@EMACS_TOOLS_ELPA_DIR=$(ELPA) $(EMACS) --batch -l tests/install-ghostel.el \
+	@NUGGETS_ELPA_DIR=$(ELPA) $(EMACS) --batch -l tests/install-ghostel.el \
 	  && mkdir -p $(ELPA) && touch $@ \
 	  || echo "WARNING: ghostel unavailable -- its termdex tests will skip" >&2
 

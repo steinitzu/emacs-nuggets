@@ -22,7 +22,7 @@
 (require 'markdown-ts-mode)
 (require 'md-table-wrap)
 (require 'md-table-inline)
-(require 'emacs-tools-test-helpers)
+(require 'nuggets-test-helpers)
 
 ;;;; Fixtures
 
@@ -69,8 +69,8 @@ Prose after.
   "Show TEXT in a `markdown-ts-mode' buffer with `md-table-wrap-mode' on.
 BODY runs in a frame `md-table-wrap-tests--frame' columns wide."
   (declare (indent 1) (debug t))
-  `(emacs-tools-test-with-frame-width md-table-wrap-tests--frame
-     (emacs-tools-test-with-buffer ,text
+  `(nuggets-test-with-frame-width md-table-wrap-tests--frame
+     (nuggets-test-with-buffer ,text
        (delete-other-windows)
        (md-table-wrap-mode 1)
        (should md-table-wrap-mode)
@@ -184,8 +184,8 @@ wherever the `cursor' property puts it, on a copy."
 
 (ert-deftest md-table-wrap-test-read-only-buffer ()
   "A `buffer-read-only' buffer is wrapped, and stays unmodified."
-  (emacs-tools-test-with-frame-width md-table-wrap-tests--frame
-    (emacs-tools-test-with-buffer md-table-wrap-tests--wide
+  (nuggets-test-with-frame-width md-table-wrap-tests--frame
+    (nuggets-test-with-buffer md-table-wrap-tests--wide
       (setq buffer-read-only t)
       (md-table-wrap-mode 1)
       (redisplay t)
@@ -195,8 +195,8 @@ wherever the `cursor' property puts it, on a copy."
 (ert-deftest md-table-wrap-test-read-only-text ()
   "Text carrying a `read-only' property, as chat transcripts use, is wrapped.
 Measuring the table's indent copies such text into a work buffer."
-  (emacs-tools-test-with-frame-width md-table-wrap-tests--frame
-    (emacs-tools-test-with-read-only-text md-table-wrap-tests--list-item
+  (nuggets-test-with-frame-width md-table-wrap-tests--frame
+    (nuggets-test-with-read-only-text md-table-wrap-tests--list-item
       (md-table-wrap-mode 1)
       (redisplay t)
       (should (> (length (md-table-wrap-tests--screen)) 6))
@@ -474,8 +474,8 @@ row shows some text, and C-n down the first column visits them all."
 (ert-deftest md-table-wrap-test-hidden-markup-takes-no-room ()
   "With markup hidden, cells are wrapped as they show: a link's URL is
 measured as nothing, and C-n walks the lines that are drawn."
-  (emacs-tools-test-with-frame-width md-table-wrap-tests--frame
-    (emacs-tools-test-with-buffer md-table-wrap-tests--links
+  (nuggets-test-with-frame-width md-table-wrap-tests--frame
+    (nuggets-test-with-buffer md-table-wrap-tests--links
       (delete-other-windows)
       (md-table-wrap-tests--hide-markup)
       (md-table-wrap-mode 1)

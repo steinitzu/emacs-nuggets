@@ -16,7 +16,7 @@
 (require 'markdown-ts-mode)
 (require 'md-table-inline)
 (require 'md-table-wrap)
-(require 'emacs-tools-test-helpers)
+(require 'nuggets-test-helpers)
 
 ;;;; Fixtures
 
@@ -36,7 +36,7 @@
   "Display the fixture in `markdown-ts-mode', then run BODY.
 HIDE non-nil turns markup hiding on for the buffer."
   (declare (indent 1) (debug t))
-  `(emacs-tools-test-with-buffer md-table-inline-tests--document
+  `(nuggets-test-with-buffer md-table-inline-tests--document
      ;; Buffer-locally, the way `markdown-ts-view-mode' does it:
      ;; fontifiers read the variable lazily, at jit-lock time, so a
      ;; `let' around the mode call would have unwound by then.
@@ -154,7 +154,7 @@ per-cell parsers, while prose fontification survives."
 
 (ert-deftest md-table-inline-test-wrapped-copy-carries-cell-faces ()
   "A code span's face is on the copy `md-table-wrap' draws of it."
-  (emacs-tools-test-with-frame-width 60
+  (nuggets-test-with-frame-width 60
     (md-table-inline-tests--with-buffer nil
       (md-table-inline-tests--enable)
       (md-table-wrap-mode 1)
@@ -166,7 +166,7 @@ per-cell parsers, while prose fontification survives."
   "The same, with the wrapped table drawn before the cells had faces.
 The hook order an init file produces is not guaranteed, and this mode
 arriving second refontifies text whose copies are already drawn."
-  (emacs-tools-test-with-frame-width 60
+  (nuggets-test-with-frame-width 60
     (md-table-inline-tests--with-buffer nil
       (md-table-wrap-mode 1)
       (redisplay t)

@@ -1,4 +1,4 @@
-# emacs-tools
+# nuggets
 
 A small collection of Emacs extensions, installable as a single package.
 
@@ -10,11 +10,11 @@ on `load-path`; nothing is loaded until you `require` it.
 Clone the repository and point Emacs at it:
 
 ```elisp
-(add-to-list 'load-path "/path/to/emacs-tools")
-(require 'emacs-tools)
+(add-to-list 'load-path "/path/to/nuggets")
+(require 'nuggets)
 ```
 
-`emacs-tools` adds every extension directory to `load-path`, so afterwards:
+`nuggets` adds every extension directory to `load-path`, so afterwards:
 
 ```elisp
 (require 'md-table-wrap)
@@ -445,8 +445,8 @@ most once a minute. `M-x termdex-cleanup-now` runs one immediately.
 `M-x termdex-list` shows where each terminal stands, in its **Quiet** column:
 
 ```
-~/projects/emacs-tools   idle             12m 03s   *term emacs-tools*
-~/projects/emacs-tools   busy    sleep    busy      *term sleep*
+~/projects/nuggets       idle             12m 03s   *term nuggets*
+~/projects/nuggets       busy    sleep    busy      *term sleep*
 ~/src/kernel             idle             jobs      *term kernel*
 ~/notes                  idle             -         *term notes*
 ```
@@ -524,9 +524,9 @@ than failing the run.
 ### Reloading in a live session
 
 ```
-M-x emacs-tools-reload         ; one extension, completing over what is loaded
-M-x emacs-tools-reload-all     ; every loaded extension
-M-x emacs-tools-reload-loader  ; this loader itself, after editing emacs-tools.el
+M-x nuggets-reload         ; one extension, completing over what is loaded
+M-x nuggets-reload-all     ; every loaded extension
+M-x nuggets-reload-loader  ; this loader itself, after editing nuggets.el
 ```
 
 Use these rather than `load-file` while iterating. `load` on its own does not
@@ -540,7 +540,7 @@ give you a clean slate:
   survive;
 - a stale `.elc` shadows the `.el` you just edited.
 
-`emacs-tools-reload` unloads the feature first, which unbinds everything its
+`nuggets-reload` unloads the feature first, which unbinds everything its
 file defined, then byte-compiles the `.el` and loads the fresh `.elc`, which
 can't be stale. It compiles rather than loading the source because
 interpreted Lisp is several times slower and makes several times the garbage:
@@ -549,7 +549,7 @@ alone. The `.elc` is written next to its source, so the next Emacs start
 loads it compiled too. If compiling fails, the reload loads the `.el` instead
 and says so. Compiler warnings are logged in `*Warnings*` without popping it
 up; `make compile` is where they are errors. Set
-`emacs-tools-reload-compile` to nil to load source as before.
+`nuggets-reload-compile` to nil to load source as before.
 
 A `.elc` can still go stale between sessions: edit the source, restart, and
 `require` loads the old `.elc`, since `load-prefer-newer` is off by default.
@@ -564,11 +564,11 @@ recorded beforehand and put back — with their depth, so an appended entry stay
 appended.
 
 The loader cannot unload itself — that would remove the functions doing the
-unloading — so `emacs-tools-reload-loader` plainly `load`s `emacs-tools.el`
+unloading — so `nuggets-reload-loader` plainly `load`s `nuggets.el`
 instead. That is enough here: the file defines no `defcustom` and no stateful
 `defvar`, its functions are simply redefined, and its `load-path` setup is
-idempotent. Use it after editing `emacs-tools.el`, or a stale
-`emacs-tools-reload` will keep quietly doing the old thing.
+idempotent. Use it after editing `nuggets.el`, or a stale
+`nuggets-reload` will keep quietly doing the old thing.
 
 Extensions can hook the unload by defining `FEATURE-unload-function`, which
 `unload-feature` calls before stripping definitions; `md-table-wrap` uses it
@@ -583,7 +583,7 @@ under a pty to get a TTY frame; batch mode has no frame that lays text out.
 ## Repository layout
 
 ```
-emacs-tools.el          collection loader; adds each extension to load-path
+nuggets.el              collection loader; adds each extension to load-path
 md-table-wrap/          extension: display-only Markdown tables, wrapped to fit
 md-table-inline/        extension: inline markup inside Markdown table cells
 md-bare-url/            extension: make bare URLs in Markdown follow

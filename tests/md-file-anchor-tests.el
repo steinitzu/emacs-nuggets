@@ -385,7 +385,7 @@ destination is junk that should not be visited for real."
 
 ;;;; Reversibility
 ;;
-;; The mode installs global advice, so `emacs-tools-reload' depends on it
+;; The mode installs global advice, so `nuggets-reload' depends on it
 ;; coming back off cleanly.
 
 (ert-deftest md-file-anchor-test-disabling-restores-upstream-behaviour ()

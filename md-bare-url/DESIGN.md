@@ -178,7 +178,7 @@ a buffer-local mode would be a lie about what it controls.
 ```
 
 `md-bare-url-unload-function` switches the mode off before `unload-feature`
-strips the definitions, so `M-x emacs-tools-reload` cannot orphan the advice on
+strips the definitions, so `M-x nuggets-reload` cannot orphan the advice on
 a function this file no longer defines a filter for.
 
 No `defcustom`. There is nothing here a user would reasonably want to tune —
@@ -217,7 +217,7 @@ Checked after implementing, against a real Emacs 31.0.90 in a TTY frame.
 | `RET` on a bare URL reaches `browse-url` | Holds — `RET` resolves to `push-button`, which dispatches to `browse-url` |
 | `font-lock-flush` heals an already-fontified buffer | Holds |
 | Switching the mode off restores upstream behaviour | Holds — destination reverts, advice removed |
-| `emacs-tools-reload` leaves no orphaned advice | Holds — after a reload with the mode on, exactly one filter is installed, not two; `unload-feature` leaves none |
+| `nuggets-reload` leaves no orphaned advice | Holds — after a reload with the mode on, exactly one filter is installed, not two; `unload-feature` leaves none |
 
 The suite was also mutation-checked: neutering
 `md-bare-url--double-scheme-regexp` fails exactly the five tests that assert

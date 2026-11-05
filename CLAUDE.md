@@ -1,4 +1,4 @@
-# emacs-tools
+# nuggets
 
 A collection of Emacs extensions, distributed as a single installable package.
 
@@ -12,7 +12,7 @@ A collection of Emacs extensions, distributed as a single installable package.
 - Repo root holds shared docs (`README.md`, `CLAUDE.md`) and the loader.
 - `tests/` holds the suite. `hacks/` is untracked local scratch for one-off
   debug scripts — gitignored, and excluded from `load-path` by the loader via
-  `emacs-tools-non-extension-directories`.
+  `nuggets-non-extension-directories`.
 - `docs/` holds cross-session notes: open questions, decisions deferred, and
   findings worth not re-deriving. One file per question. These are working
   notes, distinct from `README.md` (for users) and `DESIGN.md` (per extension,
@@ -48,7 +48,7 @@ A collection of Emacs extensions, distributed as a single installable package.
 
 ### Live reloading
 
-The user iterates in a running Emacs. `M-x emacs-tools-reload` unloads a feature
+The user iterates in a running Emacs. `M-x nuggets-reload` unloads a feature
 and reloads its `.el`, resetting state a plain `load` keeps — `defcustom`
 defaults, overlays, hooks, and stale `.elc` files.
 

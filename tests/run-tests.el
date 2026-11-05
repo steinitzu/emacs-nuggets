@@ -45,7 +45,7 @@
 ;; Load extensions the way an end user does -- through the collection loader --
 ;; so `make test' also exercises the install path.
 (add-to-list 'load-path run-tests--root)
-(require 'emacs-tools)
+(require 'nuggets)
 
 ;; Suites require shared helpers, so the directory must be on `load-path'.
 (add-to-list 'load-path run-tests--dir)
@@ -55,7 +55,7 @@
                                (lambda (d) (not (string-match-p "/\\.test-env\\'" d)))))
 
 (defconst run-tests--elc-before (run-tests--elc-files)
-  "`.elc' files present before the run.  `emacs-tools-reload' compiles,
+  "`.elc' files present before the run.  `nuggets-reload' compiles,
 so the reload tests write some; those the run made, it removes.")
 
 (defun run-tests--finish (exit)

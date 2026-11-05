@@ -19,7 +19,7 @@
 
 (require 'package)
 
-(let ((dir (or (getenv "EMACS_TOOLS_ELPA_DIR")
+(let ((dir (or (getenv "NUGGETS_ELPA_DIR")
                (expand-file-name ".test-env/elpa"))))
   (setq package-user-dir dir)
   (add-to-list 'package-archives '("melpa" . "https://melpa.org/packages/") t)

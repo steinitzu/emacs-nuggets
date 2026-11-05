@@ -205,7 +205,7 @@ behaviour and each is worth calling directly:
   URL string.
 
 `md-file-anchor-unload-function` switches the mode off before
-`unload-feature` runs, so `M-x emacs-tools-reload` cannot orphan the advice.
+`unload-feature` runs, so `M-x nuggets-reload` cannot orphan the advice.
 
 No `defcustom`. The behaviour is "do what the link says"; there is nothing
 to tune. (If the pulse ever grates, that is the first candidate — but not
