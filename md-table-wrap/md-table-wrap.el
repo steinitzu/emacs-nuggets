@@ -1249,8 +1249,15 @@ A row already built is rebuilt: its text is being fontified again, so
 its copies hold stale faces -- a mode that adds faces, such as
 `md-table-inline-mode', arriving after the row was drawn.  Not while
 edits are pending, though: the row's model may not match its text, and
-the next command's update rebuilds the rows they touch."
+the next command's update rebuilds the rows they touch.
+The window's width is checked first: window-change hooks, which run
+after `pre-redisplay-functions' in the same redisplay, may have set
+margins (`visual-fill-column' does), and a frame that is not the
+selected one gets no second pass to fit them.  Not under a stale
+remap, which the next geometry check lays out from scratch."
   (with-demoted-errors "md-table-wrap: %S"
+    (when (equal face-remapping-alist md-table-wrap--remap)
+      (md-table-wrap--check-width))
     (let ((settled (not (or md-table-wrap--dirty md-table-wrap--full))))
       (dolist (tbl md-table-wrap--tables)
         (let ((rows (md-table-wrap--table-rows tbl)))
@@ -1445,16 +1452,20 @@ and the line motion that is passing through one."
 
 (defun md-table-wrap--check-geometry ()
   "Re-lay out after a width or font change."
-  (cond
-   ((not (equal face-remapping-alist md-table-wrap--remap)) (md-table-wrap--layout-all))
-   ((let ((w (md-table-wrap--window)))
-      (and w (not (eql (md-table-wrap--body-px w) md-table-wrap--win-px))))
-    (setq md-table-wrap--win-px (md-table-wrap--body-px (md-table-wrap--window)))
-    (dolist (tbl md-table-wrap--tables)
-      (let ((b (md-table-wrap--budget tbl)))
-        (unless (eql b (md-table-wrap--table-budget tbl))
-          (setf (md-table-wrap--table-budget tbl) b)
-          (md-table-wrap--relayout-widths tbl (md-table-wrap--allocate tbl))))))))
+  (if (not (equal face-remapping-alist md-table-wrap--remap))
+      (md-table-wrap--layout-all)
+    (md-table-wrap--check-width)))
+
+(defun md-table-wrap--check-width ()
+  "Re-allocate widths if the layout's window changed width."
+  (let ((w (md-table-wrap--window)))
+    (when (and w (not (eql (md-table-wrap--body-px w) md-table-wrap--win-px)))
+      (setq md-table-wrap--win-px (md-table-wrap--body-px w))
+      (dolist (tbl md-table-wrap--tables)
+        (let ((b (md-table-wrap--budget tbl)))
+          (unless (eql b (md-table-wrap--table-budget tbl))
+            (setf (md-table-wrap--table-budget tbl) b)
+            (md-table-wrap--relayout-widths tbl (md-table-wrap--allocate tbl))))))))
 
 (defun md-table-wrap--post-command ()
   (with-demoted-errors "md-table-wrap: %S"

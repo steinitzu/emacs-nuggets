@@ -420,6 +420,22 @@ enough for every redisplay. It always uses the layout's window
 (`md-table-wrap--window`), not the one being redisplayed, so two windows
 of different widths don't make each other re-lay out (see Limits).
 
+The width part runs again in `md-table-wrap--jit`, before rows are built.
+Window-change hooks run after `pre-redisplay-functions` in the same
+redisplay, and `visual-fill-column` sets its margins from them. On the
+selected frame, a margin change makes redisplay retry its pass, which
+catches it. A frame that is not selected gets no second pass: under
+screenshot.el (a posframe child frame, exported after one redisplay) the
+table was laid out for the margin-less width and every row overflowed
+the margin. The jit check sees the margins, since rows are built after
+the window-change hooks. It is skipped under a stale remap, which the
+next pre-redisplay check lays out from scratch.
+
+A terminal frame is always the selected one, so the TTY suite can't
+reproduce the unselected-frame case. It was reproduced, and the fix
+checked, by driving screenshot.el with `visual-fill-column` in a GUI
+Emacs on Xvfb and reading the exported PNG.
+
 ## Replacing md-table-align
 
 This mode shipped alongside `md-table-align`. It switched
