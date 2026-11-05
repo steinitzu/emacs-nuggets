@@ -106,11 +106,28 @@ Label columns are kept unwrapped where that is cheap."
              (and (memq c md-table-wrap--soft-break-chars)
                   (not (memq nx md-table-wrap--soft-break-chars)))))))
 
+(defun md-table-wrap--hidden-p (text k)
+  "Non-nil if character K of TEXT is invisible (hidden markup, say).
+Call in the buffer TEXT comes from: its invisibility spec decides."
+  (let ((v (get-text-property k 'invisible text)))
+    (and v (invisible-p v))))
+
+(defun md-table-wrap--width (text s e)
+  "Width TEXT[S,E) shows, invisible characters taking none."
+  (if (not (text-property-not-all s e 'invisible nil text))
+      (string-width text s e)
+    (cl-loop for k from s below e
+             unless (md-table-wrap--hidden-p text k)
+             sum (char-width (aref text k)))))
+
+(defun md-table-wrap--char-width (text k)
+  (if (md-table-wrap--hidden-p text k) 0 (char-width (aref text k))))
+
 (defun md-table-wrap--word (text s e)
   "[S E WIDTH PIECES CJK] for the word TEXT[S,E).
 PIECES, the word's break points, are computed on first use by
 `md-table-wrap--pieces': most words never need them."
-  (vector s e (string-width text s e) nil
+  (vector s e (md-table-wrap--width text s e) nil
           (cl-loop for k from s below e
                    thereis (let ((c (aref text k)))
                              (and (> c 127) (md-table-wrap--cjk-p c))))))
@@ -122,9 +139,9 @@ PIECES, the word's break points, are computed on first use by
             (let* ((s (aref word 0)) (e (aref word 1)) (pieces nil) (ps s))
               (cl-loop for k from (1+ s) below e
                        when (md-table-wrap--break-before-p text k)
-                       do (push (list ps k (string-width text ps k)) pieces)
+                       do (push (list ps k (md-table-wrap--width text ps k)) pieces)
                        (setq ps k))
-              (push (list ps e (string-width text ps e)) pieces)
+              (push (list ps e (md-table-wrap--width text ps e)) pieces)
               (nreverse pieces)))))
 
 (defun md-table-wrap--words (text)
@@ -179,7 +196,7 @@ PIECES, the word's break points, are computed on first use by
                    (t
                     (flush)
                     (cl-loop for k from (nth 0 p) below (nth 1 p)
-                             for cw = (char-width (aref text k))
+                             for cw = (md-table-wrap--char-width text k)
                              do (when (and ls (> (+ used cw) w)) (flush))
                              (put k (1+ k) cw 0)))))
                 (setq first nil)))))))
@@ -306,7 +323,8 @@ saves the most lines per unit of width.  Leftover goes to deficits."
 ;; wraps: non-nil when some cell is wider than its column, so rows get rules.
 
 (cl-defstruct (md-table-wrap--row (:constructor md-table-wrap--row-make))
-  tbl m len delim bounds cells cm wraps height lines offs ovs lc pt fp pc ti idx)
+  tbl m len delim bounds cells cm wraps height lines offs ovs lc pt fp pc ti idx vis)
+;; vis: the hidden runs (`md-table-wrap--hidden-runs') cm was made with.
 ;; ti: index in its table's rows.  idx: index in the buffer's run of table
 ;; rows, across tables.  pc: (FP . LINES), lines painted with the foreign
 ;; faces FP.  m: marker at the row's first character.  bounds: offsets of the pipes
@@ -417,12 +435,35 @@ taking them off, so users check `md-table-wrap--built-p'.")
                            cells))))))
 
 (defun md-table-wrap--cell-text-at (row c)
+  "Text of ROW's cell C, with its `invisible' property alone: the model
+measures what shows."
   (let ((cell (nth c (md-table-wrap--row-cells row))) (beg (md-table-wrap--beg row)))
-    (if cell
-        (buffer-substring-no-properties (+ beg (car cell)) (+ beg (cdr cell)))
-      "")))
+    (if (not cell)
+        ""
+      (let* ((s (+ beg (car cell))) (e (+ beg (cdr cell)))
+             (text (buffer-substring-no-properties s e)))
+        (while (< s e)
+          (let ((nx (next-single-property-change s 'invisible nil e))
+                (v (get-text-property s 'invisible)))
+            (when v
+              (put-text-property (- s beg (car cell)) (- nx beg (car cell))
+                                 'invisible v text))
+            (setq s nx)))
+        text))))
+
+(defun md-table-wrap--hidden-runs (row)
+  "(S . E) offsets of ROW's runs of invisible text."
+  (let* ((beg (md-table-wrap--beg row)) (end (md-table-wrap--end row))
+         (p beg) runs)
+    (while (< p end)
+      (let ((nx (next-single-property-change p 'invisible nil end))
+            (v (get-text-property p 'invisible)))
+        (when (and v (invisible-p v)) (push (cons (- p beg) (- nx beg)) runs))
+        (setq p nx)))
+    (nreverse runs)))
 
 (defun md-table-wrap--model-row (row n)
+  (setf (md-table-wrap--row-vis row) (md-table-wrap--hidden-runs row))
   (setf (md-table-wrap--row-cm row)
         (apply #'vector
                (cl-loop for c below n
@@ -787,7 +828,8 @@ the table's bottom edge in the `box' style."
       (let ((off (- pt beg)) (best 0) bestd)
         (dotimes (j (length offs))
           (let ((o (aref offs j)))
-            (when o
+            ;; Not on hidden markup: a cursor there isn't drawn.
+            (when (and o (not (md-table-wrap--hidden-p s j)))
               (let ((d (- off o)))
                 (when (and (>= d 0) (or (null bestd) (< d bestd)))
                   (setq best j bestd d))))))
@@ -863,6 +905,27 @@ the table's bottom edge in the `box' style."
     (max 0 (min (1- n) (or (cl-position-if (lambda (c) (<= off (cdr c))) cells)
                            (1- (length cells)))))))
 
+(defun md-table-wrap--text-x (row i ls rel)
+  "Columns cell I's text shows from its offset LS to REL, past its end
+counting padding: invisible characters take none."
+  (let* ((text (md-table-wrap--cell-text (aref (md-table-wrap--row-cm row) i)))
+         (n (length text)))
+    (+ (md-table-wrap--width text (min ls n) (max (min ls n) (min rel n)))
+       (max 0 (- rel (max ls n))))))
+
+(defun md-table-wrap--visible-at (row i line dx)
+  "Offset from the row start of the character at column DX of cell I's
+screen LINE, or the line's end: hidden characters are passed over."
+  (let* ((text (md-table-wrap--cell-text (aref (md-table-wrap--row-cm row) i)))
+         (l (nth line (nth i (md-table-wrap--row-wraps row))))
+         (k (car l)) (acc 0))
+    (while (and (< k (cdr l))
+                (or (md-table-wrap--hidden-p text k)
+                    (<= (+ acc (char-width (aref text k))) dx)))
+      (cl-incf acc (md-table-wrap--char-width text k))
+      (cl-incf k))
+    (+ (car (nth i (md-table-wrap--row-cells row))) k)))
+
 (defun md-table-wrap--cell-line-x (row i off)
   "(LINE . X) of offset OFF within, or just after, cell I's text."
   (let* ((tbl (md-table-wrap--row-tbl row)) (s (car (nth i (md-table-wrap--row-cells row))))
@@ -876,10 +939,11 @@ the table's bottom edge in the `box' style."
              when (or (< off (+ s (cdr l)))
                       (and (= off (+ s (cdr l)))
                            (not (and more (= (car (car more)) (cdr l))))))
-             return (cons line (+ x0 (max 0 (- off s (car l)))))
+             return (cons line (+ x0 (md-table-wrap--text-x row i (car l) (max (car l) (- off s)))))
              finally return
              (let ((l (car (last fw))))
-               (cons (1- (length fw)) (min xmax (+ x0 (- off s (car l)))))))))
+               (cons (1- (length fw))
+                     (min xmax (+ x0 (md-table-wrap--text-x row i (car l) (- off s)))))))))
 
 (defun md-table-wrap--pos-line-x (row off)
   "(LINE . X) of offset OFF in ROW, X in table characters.
@@ -920,7 +984,7 @@ line's first character, and gets the same treatment."
                 (1- n)))
          (b (md-table-wrap--bounds row i line)))
     (cond
-     (b (+ (car b) (min (- (cdr b) (car b)) (max 0 (- x (aref xs i))))))
+     (b (md-table-wrap--visible-at row i line (max 0 (- x (aref xs i)))))
      ((nth i (md-table-wrap--row-wraps row)) (cdr (nth i (md-table-wrap--row-cells row))))
      (t
       (or (cl-loop for j from (1+ i) below n
@@ -964,7 +1028,9 @@ the start of a cell with no text there."
     (or (cl-loop for i below (length (md-table-wrap--row-cells row))
                  for b = (md-table-wrap--bounds row i line)
                  when (and b (<= (car b) off (cdr b)))
-                 return (+ (aref xs i) (- off (car b))))
+                 return (let ((s (car (nth i (md-table-wrap--row-cells row)))))
+                          (+ (aref xs i)
+                             (md-table-wrap--text-x row i (- (car b) s) (- off s)))))
         (aref xs (md-table-wrap--owner row off)))))
 
 (defun md-table-wrap--point-line-x (row)
@@ -1074,9 +1140,16 @@ redisplay shows."
              do (mapc #'delete-overlay (md-table-wrap--row-ovs r))
              (setf (md-table-wrap--row-ovs r) nil (md-table-wrap--row-wraps r) nil)
              (md-table-wrap--parse-row r))
-    ;; Measuring reads the delimiter row's face.
-    (md-table-wrap--fontify-row (or (cl-find-if #'md-table-wrap--row-delim rows)
-                                    (aref rows 0)))
+    ;; Measuring reads the delimiter row's face.  A table small enough to
+    ;; allocate from whole is fontified whole, so its widths are made from
+    ;; the text that shows (hidden markup, see DESIGN.md); a bigger one's
+    ;; rows are re-modelled as jit-lock fontifies them.
+    (if (<= (length rows) (+ 2 md-table-wrap--alloc-rows))
+        (md-table-wrap--fontify (md-table-wrap--beg (aref rows 0))
+                                (min (point-max)
+                                     (1+ (md-table-wrap--end (aref rows (1- (length rows)))))))
+      (md-table-wrap--fontify-row (or (cl-find-if #'md-table-wrap--row-delim rows)
+                                      (aref rows 0))))
     (md-table-wrap--measure tbl)
     (let ((n (cl-loop for r across rows
                       maximize (max 1 (length (md-table-wrap--row-cells r))))))
@@ -1105,6 +1178,17 @@ rebuilt; the rest are wrapped when next needed."
 (defvar md-table-wrap--keep-rows 60
   "Built rows further than this from point and every window start are evicted.")
 
+(defun md-table-wrap--rehide (row)
+  "Re-model ROW if fontifying it hid or showed text its model counted.
+Its table's widths are reallocated when idle."
+  (unless (or (md-table-wrap--row-delim row)
+              (equal (md-table-wrap--hidden-runs row) (md-table-wrap--row-vis row)))
+    (let ((tbl (md-table-wrap--row-tbl row)))
+      (md-table-wrap--model-row row (md-table-wrap--table-ncols tbl))
+      (md-table-wrap--wrap-row row)
+      (cl-pushnew tbl md-table-wrap--realloc)
+      (md-table-wrap--schedule #'md-table-wrap--idle-realloc))))
+
 (defun md-table-wrap--jit (beg end)
   "Build the rows of laid-out tables intersecting BEG..END, for redisplay.
 A row already built is rebuilt: its text is being fontified again, so
@@ -1127,6 +1211,7 @@ the next command's update rebuilds the rows they touch."
                      do (when (or (< (md-table-wrap--beg r) beg)
                                   (> (md-table-wrap--end r) end))
                           (md-table-wrap--fontify-row r))
+                     (md-table-wrap--rehide r)
                      (md-table-wrap--build
                       r (and (eq r md-table-wrap--prow) (md-table-wrap--row-pt r)))))))))
   nil)
@@ -1203,6 +1288,19 @@ the next command's update rebuilds the rows they touch."
     scroll-up-line scroll-down-line mwheel-scroll pixel-scroll-precision)
   "Commands that leave point at the window start.")
 
+(defvar-local md-table-wrap--last-pt nil "Point after the last command.")
+
+(defun md-table-wrap--leave-hidden (row)
+  "Move point off hidden text in ROW: on past it, or back before it if
+point moved backward, as Emacs adjusts point out of invisible text."
+  (let ((beg (md-table-wrap--beg row)) (end (md-table-wrap--end row)))
+    (cl-flet ((hidden () (let ((v (get-text-property (point) 'invisible)))
+                           (and v (invisible-p v)))))
+      (when (hidden)
+        (if (and md-table-wrap--last-pt (< (point) md-table-wrap--last-pt))
+            (while (and (> (point) beg) (hidden)) (backward-char))
+          (while (and (< (point) end) (hidden)) (forward-char)))))))
+
 (defun md-table-wrap--follow-point ()
   ;; A scroll leaves point at `window-start', which may be line L's anchor:
   ;; on screen that is line L, though the model reads it as line 0.
@@ -1214,6 +1312,8 @@ the next command's update rebuilds the rows they touch."
         (when (and l (> l 0))
           (goto-char (+ (md-table-wrap--beg row) (md-table-wrap--pos-at row l 0)))))))
   (let ((row (md-table-wrap--row-at (point))))
+    (when (and row (not (md-table-wrap--row-delim row)))
+      (md-table-wrap--leave-hidden row))
     (when (and md-table-wrap--prow (not (eq row md-table-wrap--prow))
                (md-table-wrap--live-p md-table-wrap--prow))
       (md-table-wrap--anchor md-table-wrap--prow nil))
@@ -1311,6 +1411,7 @@ and the line motion that is passing through one."
     (md-table-wrap--process)
     (md-table-wrap--check-geometry)
     (md-table-wrap--follow-point)
+    (setq md-table-wrap--last-pt (point))
     (md-table-wrap--evict)))
 
 (defun md-table-wrap--schedule (fn &optional rescan)
