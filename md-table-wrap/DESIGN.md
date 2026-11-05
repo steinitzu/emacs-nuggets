@@ -397,7 +397,28 @@ showed, and leaves blank lines where it went.
   tables' row starts changed: lines printed away from every table, as a
   chat buffer prints them, leave the layout and its rows alone.
 - A change of window width or `face-remapping-alist` (text scaling)
-  re-allocates or re-lays out on the next command.
+  re-allocates or re-lays out before the next redisplay
+  (`pre-redisplay-functions`), as well as after each command.
+
+*Changed:* the geometry check ran only on `post-command-hook`. A change
+made without a command went unseen until the next one, and the table
+was drawn on the old grid until then: `:align-to` stretches placed for the
+old font or width, pipes landing right after their text. Two cases
+showed it:
+
+- **Opening a file.** The major mode turns the mode on before the buffer
+  has a window, so the layout used the 80-character fallback budget,
+  and was measured before a `mixed-pitch` or `visual-fill-column`
+  setup had remapped the faces and set the margins. Moving point fixed
+  it.
+- **screenshot.el**, which clones the region into an indirect buffer,
+  sets its font with `buffer-face-set` and exports a new frame, with no
+  command in between.
+
+The check is an `equal` on the remap and a width comparison, cheap
+enough for every redisplay. It always uses the layout's window
+(`md-table-wrap--window`), not the one being redisplayed, so two windows
+of different widths don't make each other re-lay out (see Limits).
 
 ## Replacing md-table-align
 
@@ -449,6 +470,16 @@ These are known and accepted for a first version:
   removing overlays, hooks and timers before the definitions go.
 - Turning the mode off removes every overlay it made (they all carry the
   `md-table-wrap` property) and restores `hl-line-range-function`.
+- **Indirect clones** (`clone-indirect-buffer`, `C-x 4 c`, or
+  `make-indirect-buffer` with CLONE, as screenshot.el uses) copy the base
+  buffer's local variables and overlays. The copied `md-table-wrap--tables`
+  is the base's own list: its rows' markers and overlays belong to the
+  base, so a row built in the clone moved overlays in the base, while the
+  clone showed frozen copies. A buffer-local `clone-indirect-buffer-hook`
+  runs in the clone: it drops the copied overlays and resets the state
+  the clone shares with the base, without touching the base's markers,
+  then lays the clone out afresh. An indirect buffer made without CLONE
+  copies nothing, and the mode is off there.
 
 ## Testing
 
