@@ -931,10 +931,17 @@ line's first character, and gets the same treatment."
           0)))))
 
 (defvar-local md-table-wrap--vline nil
-  "(POS ROW LINE): point at POS shows on ROW's screen LINE.
+  "(POS BEG LINE): point at POS shows on screen LINE of the row at BEG.
 Set by line motion where the model would show POS on another line: in
 a cell with no text on LINE, or at the end of a line broken inside a
-word.  Holds while point stays at POS and only line motion runs.")
+word.  Holds while point stays at POS and only line motion runs.
+The row is named by its start, not its struct: a re-layout, which an
+edit elsewhere in the buffer can bring between two presses of C-n,
+makes every row anew.")
+
+(defun md-table-wrap--hint (pos row line)
+  "Record that point at POS shows on ROW's screen LINE."
+  (setq md-table-wrap--vline (list pos (md-table-wrap--beg row) line)))
 
 (defconst md-table-wrap--motion-commands
   '(md-table-wrap-next-line md-table-wrap-previous-line
@@ -945,7 +952,8 @@ word.  Holds while point stays at POS and only line motion runs.")
 (defun md-table-wrap--line-of (row pt)
   "Screen line of ROW on which the cursor shows with point at PT."
   (let ((h md-table-wrap--vline))
-    (if (and h (eql (car h) pt) (eq (nth 1 h) row))
+    (if (and h (eql (car h) pt) (eql (nth 1 h) (md-table-wrap--beg row))
+             (< (nth 2 h) (md-table-wrap--row-height (md-table-wrap--wrapped row))))
         (nth 2 h)
       (car (md-table-wrap--pos-line-x row (- pt (md-table-wrap--beg row)))))))
 
@@ -971,9 +979,9 @@ the start of a cell with no text there."
   (let* ((off (md-table-wrap--pos-at row line x))
          (pos (+ (md-table-wrap--beg row) off)))
     (goto-char pos)
-    (setq md-table-wrap--vline
-          (and (/= line (car (md-table-wrap--pos-line-x row off)))
-               (list pos row line)))))
+    (setq md-table-wrap--vline nil)
+    (when (/= line (car (md-table-wrap--pos-line-x row off)))
+      (md-table-wrap--hint pos row line))))
 
 (defun md-table-wrap--anchor (row pt)
   "Anchor ROW's lines at rest, or around PT if non-nil."
@@ -1261,7 +1269,7 @@ the next command's update rebuilds the rows they touch."
      ((and full (cl-some #'md-table-wrap--near-table-p full))
       (md-table-wrap--layout-all))
      (t
-      (when full (md-table-wrap--schedule #'md-table-wrap--layout-all 'rescan))
+      (when full (md-table-wrap--schedule #'md-table-wrap--rescan 'rescan))
       (let (relayout)
         (dolist (row (delete-dups (delq nil (mapcar #'md-table-wrap--row-at dirty))))
           (when (md-table-wrap--update-row row)
@@ -1269,6 +1277,17 @@ the next command's update rebuilds the rows they touch."
         (when relayout
           (mapc #'md-table-wrap--layout-table relayout)
           (setq md-table-wrap--prow nil)))))))
+
+(defun md-table-wrap--rescan ()
+  "Lay every table out again if lines added or removed away from them
+made or unmade one.  A chat buffer printing below its tables adds lines
+all the time; re-laying them out for each would tear down every row,
+and the line motion that is passing through one."
+  (unless (equal (md-table-wrap--discover)
+                 (cl-loop for tbl in md-table-wrap--tables
+                          collect (cl-loop for r across (md-table-wrap--table-rows tbl)
+                                           collect (md-table-wrap--beg r))))
+    (md-table-wrap--layout-all)))
 
 (defun md-table-wrap--check-geometry ()
   "Re-lay out after a width or font change."
@@ -1465,9 +1484,9 @@ line: the first or last text on it, skipping cells blank there."
                              (cl-loop for i downfrom k to 0 thereis (aref offs i))))))
           (goto-char (+ (md-table-wrap--beg row) (or off 0)))
           ;; Show the cursor on the line clicked, as line motion does.
-          (setq md-table-wrap--vline
-                (and line off (/= line (car (md-table-wrap--pos-line-x row off)))
-                     (list (point) row line))))))))
+          (setq md-table-wrap--vline nil)
+          (when (and line off (/= line (car (md-table-wrap--pos-line-x row off))))
+            (md-table-wrap--hint (point) row line)))))))
 
 (defun md-table-wrap-refresh ()
   "Find and lay out every table in the buffer again."
