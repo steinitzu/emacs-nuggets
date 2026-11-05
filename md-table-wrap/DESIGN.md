@@ -309,7 +309,9 @@ A buffer position doesn't always pick out one screen line:
   which the model places on the cell's last line.
 - **C-e at a break inside a word**: the line's end is the next line's start.
 
-For these, line motion records `md-table-wrap--vline`, (POS ROW LINE).
+For these, line motion records `md-table-wrap--vline`, (POS BEG LINE),
+naming the row by its start BEG rather than its struct: a re-layout
+between two presses makes every row anew, and must not drop the hint.
 While point stays at POS, the row is anchored, and its cursor drawn, on
 LINE rather than the model's line. A blank cell's cursor sits on the
 stretch filling it, at the cell's start. On the next C-n the goal column
@@ -329,6 +331,13 @@ ambiguous offset went to the earlier line, so C-n stuck at a mid-word
 break forever, its cursor on the end of the line above. A blank cell line
 sent C-n into a neighbouring column. Found on a table of PR links.
 
+*Changed again:* the hint named its row by struct. In a chat buffer still
+printing below a table, each printed line brought a full re-layout (see
+Edits), the struct went stale, and C-n stuck on a blank cell line as
+before. Fixed twice over: the hint names the row's start, and the rescan
+no longer re-lays out tables it finds unchanged. Found on a 3-column table
+of PR links, which walked fine in a quiet buffer.
+
 ### Edits
 
 - An edit inside a row re-parses and re-wraps only that row, then
@@ -336,7 +345,9 @@ sent C-n into a neighbouring column. Found on a table of PR links.
   (`md-table-wrap-idle-delay`), sticky as above.
 - An edit that adds or removes a newline near a table, or changes a row's
   shape (cell count, delimiter-ness), re-lays out the whole buffer.
-  Elsewhere it schedules an idle rescan.
+  Elsewhere it schedules an idle rescan, which re-lays out only if the
+  tables' row starts changed: lines printed away from every table, as a
+  chat buffer prints them, leave the layout and its rows alone.
 - A change of window width or `face-remapping-alist` (text scaling)
   re-allocates or re-lays out on the next command.
 
@@ -407,6 +418,8 @@ Integration tests in a real TTY frame (`make test`), in real
   links in order, each in the starting column, over the delimiter row,
   mid-word breaks and blank cell lines (the cursor read off the drawn
   screen, after each press in one macro so the goal column carries);
+- the same walk with every table re-laid out between presses, and a
+  line printed below a table, outside any command, leaving its rows be;
 - typing into a cell re-wraps it;
 - refontifying a built row redraws it, with the cursor where it was, and
   faces `md-table-inline-mode` adds reach the copies in either order;
